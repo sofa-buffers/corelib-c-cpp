@@ -7,7 +7,7 @@
 
 [Would you like to know more?](https://github.com/sofa-buffers)
 
-## SofaBuffers C library
+## SofaBuffers C/C++ library
 
 [GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
 
@@ -20,11 +20,11 @@
 
 | Target | Status
 | - | -
-| GCC x86_64 (little endian) | ![badge](https://github.com/Andste82/sofabuffers-c-cpp/actions/workflows/build-gcc-x86_64.yaml/badge.svg)
-| Clang x86_64 (little endian) | ![badge](https://github.com/Andste82/sofabuffers-c-cpp/actions/workflows/build-clang-x86_64.yaml/badge.svg)
-| GCC MIPS (big endian) | ![badge](https://github.com/Andste82/sofabuffers-c-cpp/actions/workflows/build-gcc-mips.yaml/badge.svg)
-| GCC PowerPC (big endian) | ![badge](https://github.com/Andste82/sofabuffers-c-cpp/actions/workflows/build-gcc-powerpc.yaml/badge.svg)
-| GCC RISCV-V 64 (little endian) | ![badge](https://github.com/Andste82/sofabuffers-c-cpp/actions/workflows/build-gcc-riscv64.yaml/badge.svg)
+| GCC x86_64 (little endian) | ![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml/badge.svg)
+| Clang x86_64 (little endian) | ![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-clang-x86_64.yaml/badge.svg)
+| GCC MIPS (big endian) | ![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-mips.yaml/badge.svg)
+| GCC PowerPC (big endian) | ![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml/badge.svg)
+| GCC RISCV-V 64 (little endian) | ![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml/badge.svg)
 
 ### Tested on the following architectures
 
