@@ -15,44 +15,44 @@ typedef void (*isr_t)(void);
 
 typedef struct
 {
-	uint32_t *stack_top;
-	isr_t reset;
-	isr_t nmi;
-	isr_t hardfault;
+    uint32_t *stack_top;
+    isr_t reset;
+    isr_t nmi;
+    isr_t hardfault;
 } vector_table_t;
 
 __attribute__((section(".isr_vector")))
 const vector_table_t vector_table =
 {
-	(uint32_t *)&__stack_top,
-	Reset_Handler,
-	Default_Handler,
-	Default_Handler
+    (uint32_t *)&__stack_top,
+    Reset_Handler,
+    Default_Handler,
+    Default_Handler
 };
 
 void Reset_Handler(void)
 {
-	// Zero initialize .bss section
-	uint32_t *bss = &__bss_start;
-	while (bss < &__bss_end)
-	{
-		*bss++ = 0;
-	}
+    // Zero initialize .bss section
+    uint32_t *bss = &__bss_start;
+    while (bss < &__bss_end)
+    {
+        *bss++ = 0;
+    }
 
-	// Initialize .data section
-	uint32_t *data_rom = &__data_rom_start;
-	uint32_t *data_ram = &__data_start;
-	while (data_ram < &__data_end)
-	{
-		*data_ram++ = *data_rom++;
-	}
+    // Initialize .data section
+    uint32_t *data_rom = &__data_rom_start;
+    uint32_t *data_ram = &__data_start;
+    while (data_ram < &__data_end)
+    {
+        *data_ram++ = *data_rom++;
+    }
 
-	// Call the application's entry point
-	main();
-	// while (1);
+    // Call the application's entry point
+    main();
+    // while (1);
 }
 
 void Default_Handler(void)
 {
-	while (1);
+    while (1);
 }
