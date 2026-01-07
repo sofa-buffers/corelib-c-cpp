@@ -1,0 +1,43 @@
+name: GCC AVR Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        mcu: [ atmega8 ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install AVR toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            avr-libc gcc-avr binutils-avr cmake make
+
+      - name: Configure with CMake (${{ matrix.mcu }})
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_PROCESSOR=avr \
+            -DAVR_MCU=${{ matrix.mcu }} \
+            -DCMAKE_TOOLCHAIN_FILE=utils/toolchain-avr.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSOFAB_ENABLE_CPP=OFF
+
+      - name: Build project
+        run: cmake --build build
+
+      - name: Verify C binary (${{ matrix.mcu }})
+        working-directory: build/test/c
+        run: |
+          file sofabtest
+          readelf -h -A sofabtest

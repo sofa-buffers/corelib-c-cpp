@@ -1,0 +1,51 @@
+name: GCC MIPS Build & Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-mips-linux-gnu g++-mips-linux-gnu cmake make \
+            qemu-user qemu-user-static
+
+      - name: Configure with CMake
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_PROCESSOR=mips \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_C_COMPILER=mips-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=mips-linux-gnu-g++ \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static"
+
+      - name: Build project
+        run: cmake --build build
+
+      - name: Verify C binary
+        working-directory: build/test/c
+        run: |
+          file sofabtest
+          readelf -h -A sofabtest
+
+      - name: Verify C++ binary
+        working-directory: build/test/cpp
+        run: |
+          file sofabpptest
+          readelf -h -A sofabpptest
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure --verbose

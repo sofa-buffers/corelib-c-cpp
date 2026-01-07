@@ -1,0 +1,18 @@
+{
+    "folders": [
+        {
+            "path": "."
+        }
+    ],
+    "settings": {
+        "files.associations": {
+            "*.cpp": "cpp",
+            "*.hpp": "cpp",
+            "*.h": "cpp",
+            "*.c": "cpp"
+        },
+        "C_Cpp.codeAnalysis.clangTidy.enabled": true,
+        "C_Cpp.codeAnalysis.clangTidy.useBuildPath": true,
+        "C_Cpp.default.cppStandard": "c++20"
+    }
+}

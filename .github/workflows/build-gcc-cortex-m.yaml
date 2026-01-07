@@ -1,0 +1,79 @@
+name: GCC Cortex-M Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - name: cortex-m0
+            march: armv6-m
+            mtune: cortex-m0
+
+          - name: cortex-m0plus
+            march: armv6-m
+            mtune: cortex-m0plus
+
+          - name: cortex-m3
+            march: armv7-m
+            mtune: cortex-m3
+
+          - name: cortex-m4
+            march: armv7e-m+fp
+            mtune: cortex-m4
+
+          - name: cortex-m7
+            march: armv7e-m+fp.dp
+            mtune: cortex-m7
+
+          - name: cortex-m23
+            march: armv8-m.base
+            mtune: cortex-m23
+
+          - name: cortex-m33
+            march: armv8-m.main+fp
+            mtune: cortex-m33
+
+          - name: cortex-m55
+            march: armv8.1-m.main+mve
+            mtune: cortex-m55
+
+          - name: cortex-m85
+            march: armv8.1-m.main+mve
+            mtune: cortex-m85
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install ARM Cortex-M toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-arm-none-eabi gdb-arm-none-eabi cmake make
+
+      - name: Configure with CMake
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_PROCESSOR=arm \
+            -DARM_MARCH=${{ matrix.march }} \
+            -DARM_MTUNE=${{ matrix.mtune }} \
+            -DCMAKE_TOOLCHAIN_FILE=utils/toolchain-arm-none-eabi.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSOFAB_ENABLE_CPP=OFF
+
+      - name: Build project
+        run: cmake --build build
+
+      - name: Verify C binary (${{ matrix.name }})
+        working-directory: build/test/c
+        run: |
+          file sofabtest
+          readelf -h -A sofabtest

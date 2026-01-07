@@ -1,0 +1,79 @@
+name: Clang x86_64 Build & Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang llvm lld libc++-dev libc++abi-dev cmake make
+
+      - name: Configure with CMake
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_COVERAGE=ON
+
+      - name: Build project
+        run: cmake --build build
+
+      - name: Verify C binary
+        working-directory: build/test/c
+        run: |
+          file sofabtest
+          readelf -h -A sofabtest
+
+      - name: Verify C++ binary
+        working-directory: build/test/cpp
+        run: |
+          file sofabpptest
+          readelf -h -A sofabpptest
+
+      - name: Run tests
+        working-directory: build
+        env:
+          LLVM_PROFILE_FILE: "sofabtest.profraw"
+        run: ctest --output-on-failure --verbose
+
+      - name: Test coverage report
+        working-directory: build/test/c
+        run: |
+          llvm-profdata merge -sparse sofabtest.profraw -o sofabtest.profdata
+          llvm-cov report ./sofabtest -instr-profile=sofabtest.profdata -format=text \
+            -ignore-filename-regex="test/" -ignore-filename-regex="_deps/"
+
+      - name: Test coverage badge JSON
+        working-directory: build/test/c
+        run: |
+          llvm-cov export ./sofabtest -instr-profile=sofabtest.profdata -format=text \
+            -ignore-filename-regex="test/" -ignore-filename-regex="_deps/" > coverage.json
+          jq '
+            .data[0].totals.lines |
+            (if .count == 0 then 0 else (.covered / .count * 100) end) as $pct |
+            {
+              schemaVersion: 1,
+              label: "llvm-cov",
+              message: (($pct * 10 | round / 10) | tostring + "%"),
+              color: (if $pct >= 90 then "brightgreen" elif $pct >= 75 then "yellow" else "red" end)
+            }
+          ' coverage.json > badge.json
+          echo "$(<badge.json)"
+
+#      - name: Upload artifact for GitHub Pages
+#        uses: actions/upload-pages-artifact@v3
+#        with:
+#          path: badge.json
