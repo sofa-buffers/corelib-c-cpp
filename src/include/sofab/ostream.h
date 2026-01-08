@@ -32,6 +32,11 @@
 #ifndef _SOFAB_OSTREAM_H
 #define _SOFAB_OSTREAM_H
 
+/**
+ * @defgroup c_api C API
+ * @{
+ */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -568,5 +573,7 @@ extern sofab_ret_t sofab_ostream_write_sequence_end (sofab_ostream_t *ctx);
 #ifdef __cplusplus
 }
 #endif
+
+/** @} */ // end of defgroup
 
 #endif /* _SOFAB_OSTREAM_H */

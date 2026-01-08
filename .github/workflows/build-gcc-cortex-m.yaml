@@ -50,8 +50,8 @@ jobs:
             mtune: cortex-m85
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install ARM Cortex-M toolchain
         run: |

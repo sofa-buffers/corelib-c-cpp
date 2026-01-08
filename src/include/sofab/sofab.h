@@ -8,6 +8,11 @@
 #ifndef _SOFAB_H
 #define _SOFAB_H
 
+/**
+ * @defgroup c_api C API
+ * @{
+ */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -87,5 +92,7 @@ typedef int64_t sofab_signed_t;
 #ifdef __cplusplus
 }
 #endif
+
+/** @} */ // end of defgroup
 
 #endif /* _SOFAB_H */

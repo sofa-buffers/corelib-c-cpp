@@ -24,6 +24,11 @@
 #ifndef _SOFAB_ISTREAM_H
 #define _SOFAB_ISTREAM_H
 
+/**
+ * @defgroup c_api C API
+ * @{
+ */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -556,5 +561,7 @@ extern void sofab_istream_read_sequence (
 #ifdef __cplusplus
 }
 #endif
+
+/** @} */ // end of defgroup
 
 #endif /* _SOFAB_ISTREAM_H */

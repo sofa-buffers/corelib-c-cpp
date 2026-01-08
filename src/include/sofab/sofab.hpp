@@ -8,6 +8,11 @@
 #ifndef _SOFAB_HPP
 #define _SOFAB_HPP
 
+/**
+ * @defgroup cpp_api C++ API
+ * @{
+ */
+
 /* includes *******************************************************************/
 #include <array>
 #include <concepts>
@@ -725,5 +730,7 @@ namespace sofab
         }
     };
 };
+
+/** @} */ // end of defgroup
 
 #endif // _SOFAB_HPP
