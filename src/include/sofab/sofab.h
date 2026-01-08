@@ -28,6 +28,7 @@ extern "C" {
 #include <stdbool.h>
 
 /* constants ******************************************************************/
+/*! @brief SofaBuffers C API version */
 #define SOFAB_API_VERSION 1
 
 /* macros *********************************************************************/
@@ -66,23 +67,18 @@ typedef enum
     SOFAB_FIXLENTYPE_BLOB            = 0x03,
 } sofab_fixlentype_t;
 
+/*! @brief Field identifier type */
 typedef uint32_t sofab_id_t;
+#define SOFAB_ID_MAX (INT32_MAX)
 
-// ID range: 0 .. INT32_MAX
-#define SOFAB_ID_MAX         (INT32_MAX)
-
+/*! @brief Unsigned value type */
 typedef uint64_t sofab_unsigned_t;
+#define SOFAB_UNSIGNED_MAX (UINT64_MAX)
+
+/*! @brief Signed value type */
 typedef int64_t sofab_signed_t;
-#define SOFAB_UNSIGNED_MAX   (UINT64_MAX)
-#define SOFAB_SIGNED_MAX     (INT64_MAX)
-#define SOFAB_SIGNED_MIN     (INT64_MIN)
-// #else
-// typedef uint32_t sofab_unsigned_t;
-// typedef int32_t sofab_signed_t;
-// #define SOFAB_UNSIGNED_MAX   (UINT32_MAX)
-// #define SOFAB_SIGNED_MAX     (INT32_MAX)
-// #define SOFAB_SIGNED_MIN     (INT32_MIN)
-// #endif
+#define SOFAB_SIGNED_MAX (INT64_MAX)
+#define SOFAB_SIGNED_MIN (INT64_MIN)
 
 /* exported vars **************************************************************/
 // SOFAB_EXTERN type sofab_<varname>;

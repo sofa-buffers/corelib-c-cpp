@@ -53,9 +53,9 @@ public:
     uint32_t id = 0;
     float value = 0;
 
-    void _onFieldCallback(sofab::IStream &_istream, sofab_id_t _id, size_t size) noexcept override
+    void _onFieldCallback(sofab::IStream &_istream, sofab::id _id, size_t _size) noexcept override
     {
-        (void)size;
+        (void)_size;
 
         switch (_id)
         {
@@ -80,11 +80,11 @@ TEST_CASE("IStream: inline feed buffer")
     uint8_t value = 0x55;
 
     sofab::IStreamInline istream{
-        [&](sofab::IStream& _istream, sofab_id_t id, size_t size) noexcept
+        [&](sofab::IStream& _istream, sofab::id _id, size_t _size) noexcept
         {
-            (void)size;
+            (void)_size;
 
-            if (id == 0)
+            if (_id == 0)
             {
                 _istream.read(value);
             }
@@ -102,11 +102,11 @@ TEST_CASE("IStream: inline feed buffer stream")
     std::string value;
 
     sofab::IStreamInline istream{
-        [&](sofab::IStream& _istream, sofab_id_t id, size_t size) noexcept
+        [&](sofab::IStream& _istream, sofab::id _id, size_t _size) noexcept
         {
-            if (id == 0)
+            if (_id == 0)
             {
-                value.resize(size);
+                value.resize(_size);
                 _istream.read(value);
             }
         }

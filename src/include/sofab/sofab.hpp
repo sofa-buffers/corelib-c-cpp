@@ -45,6 +45,8 @@ namespace sofab
 
     using flushCallback = std::function<void(std::span<const uint8_t>)>;
 
+	using id = sofab_id_t;
+
     class OStreamMessage;
     class OStream
     {
@@ -662,7 +664,7 @@ namespace sofab
 
     class IStreamInline : public IStream
     {
-        using fieldCallback = std::function<void(IStream& _istream, sofab_id_t _id, size_t _size)>;
+        using fieldCallback = std::function<void(IStream& _istream, sofab::id _id, size_t _size)>;
 
     private:
         fieldCallback callback_;
@@ -708,7 +710,7 @@ namespace sofab
         }
 
     public:
-        virtual void _onFieldCallback(sofab::IStream &_istream, sofab_id_t _id, size_t _size) noexcept = 0;
+        virtual void _onFieldCallback(sofab::IStream &_istream, sofab::id _id, size_t _size) noexcept = 0;
     };
 
     template <class MessageType>
