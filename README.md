@@ -26,13 +26,6 @@
 | GCC PowerPC (big endian) | ![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml/badge.svg)
 | GCC RISCV-V 64 (little endian) | ![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml/badge.svg)
 
-### Tested on the following architectures
-
-* x86_64 (little endian)
-* ARMv5T (little endian)
-* MIPS (big endian)
-* PowerPC (big endian)
-
 ### Who is this suitable for?
 
 The C core library is very much aimed at small embedded devices, where C is simply essential. The focus here was therefore on minimal resource consumption.
@@ -43,14 +36,26 @@ The C++ core library is aimed more at IoT devices. Such devices do not necessari
 
 Since the focus was on embedded devices, special attention was paid to the following features during implementation:
 
-- **Keep it simple** and don't use anything too fancy.
-* Fully streaming-capable to be able to **serialize larger messages than the available memory**.
-* The start of the serialized message in the target buffer can be defined by an offset value, so the message buffer can be used directly to write underlying protocol headers to the same buffer.
-* It should be possible to **serialize data without using the heap** to avoid heap fragmentation.
-* The API of the core lib should still be clearly structured so that it **can be used without a code generator**.
+* **Keep it simple** and don't use anything too fancy.
+* Fully streaming-capable to serialize **messages larger than the available memory**.
+* The start of the message in the destination buffer can be defined by an offset value to reserve space for protocol headers of underlying protocols, thus **reducing the amount of copy operations**.
+* Data can be serialized and deserialized **without heap** to avoid heap fragmentation.
+* The corelib API should remain clearly structured so that it **can be used without a code generator**.
+* **No dependencies** on other libraries to be embeddable.
 
 ### Is this C/C++ implementation zero-copy?
 
-No. It is designed to run on small MCUs, and many of these architectures do not allow unaligned access to words.
-SofaBuffers focuses on generating as little overhead as possible, which is why words in the payload of a message are not always aligned.
-To be compatible with all architectures, the data from the message is copied into memory provided by the user.
+No. SofaBuffers focuses on generating as little protocol overhead as possible, which is why the words in the payload of a message are not always aligned.
+To be compatible with all architectures, the data from the message is copied to user-provided memory.
+
+
+### Footprint
+
+This table shows the memory requirements of the C corelib for different architectures. The lib was always built with `-Os`.
+
+| Architecture | .text | .data | .bss
+| - | - | - | -
+| ARMv6-m |            ~1.8KB | 0.0KB | 0.0KB
+| ARMv7-m+fp.dp |      ~1.9KB | 0.0KB | 0.0KB
+| ARMv8-m.main+fp |    ~1.9KB | 0.0KB | 0.0KB
+| ARMv8.1-m.main+mve | ~1.9KB | 0.0KB | 0.0KB
