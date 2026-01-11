@@ -10,7 +10,7 @@
  * Typical usage:
  *  - Initialize an sofab_ostream_t with sofab_ostream_init(), providing a buffer
  *    and optionally a flush callback.
- *  - Use the sofab_ostream_write_* functions to append fields (unsigned,
+ *  - Use the sofab_ostream_write_*() functions to append fields (unsigned,
  *    signed, fixed-length, arrays, nested sequences).
  *  - If a flush callback is provided, it will be invoked automatically when
  *    the internal buffer needs space; the callback is responsible for handling

@@ -10,13 +10,12 @@
  * sofab_istream_read_*() function to bind a destination buffer or to start
  * decoding nested sequences.
  *
- * Features:
- * - Streaming operation (partial chunks supported)
- * - Nested sequences with independent decoders
- * - Variable-length integers (varints), signed and unsigned
- * - Fixed-length fields
- * - Arrays of primitive and fixed-size data
- * - Callback-based field routing
+ * Typical usage:
+ *  - Initialize a sofab_istream with a user context and a field callback.
+ *  - Feed incoming data incrementally using sofab_istream_feed().
+ *  - Dispatch fields in the callback and select the appropriate sofab_istream_read_*() function for reception.
+ *  - Continue feeding data until the message is fully consumed.
+ *  - After all data has been fed, the message data is available in the user-provided buffers.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -85,10 +84,11 @@ typedef struct sofab_istream sofab_istream_t;
  * @param ctx       Pointer to the active input stream context.
  * @param id        Field ID that was encountered.
  * @param size      Size of the field's value in bytes (for fixed-length types).
+ * @param count     Number of elements (for array types).
  * @param usrptr    Optional user-provided pointer (provided at initialization).
  */
 typedef void (*sofab_istream_field_cb_t) (
-    sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrptr);
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr);
 
 /*!
  * @brief Decoder context used for Sofab sequences.

@@ -79,6 +79,12 @@ typedef int64_t sofab_signed_t;
 #define SOFAB_SIGNED_MAX (INT64_MAX)
 #define SOFAB_SIGNED_MIN (INT64_MIN)
 
+/*! @brief Maximum fixed-length field size in bytes */
+#define SOFAB_FIXLEN_MAX (INT32_MAX)
+
+/*! @brief Maximum number of elements in an array */
+#define SOFAB_ARRAY_MAX (INT32_MAX)
+
 /* exported vars **************************************************************/
 // SOFAB_EXTERN type sofab_<varname>;
 

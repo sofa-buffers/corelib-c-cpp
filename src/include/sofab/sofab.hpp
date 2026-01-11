@@ -683,9 +683,10 @@ namespace sofab
         fieldCallback callback_;
 
         static void _field_callback(
-            sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrptr)
+            sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
         {
             (void)ctx;
+            (void)count;
 
             auto *self = static_cast<IStreamInline*>(usrptr);
             self->callback_(*self, id, size);

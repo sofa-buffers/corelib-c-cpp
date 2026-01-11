@@ -55,19 +55,21 @@ typedef struct
     field_type_t target_type;
     void *target_ptr;
     size_t target_size;
-    uint8_t calls;
+    size_t filed_size;
+    size_t filed_count;
+    int calls;
 } test_single_field_t;
 
-static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrptr)
+static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
 {
-    (void)size;
-
     test_single_field_t *test = (test_single_field_t *)usrptr;
     if (test == NULL)
     {
         return;
     }
 
+    test->filed_size = size;
+    test->filed_count = count;
     test->calls++;
 
     if (id != test->expected_id)
@@ -458,7 +460,7 @@ static void test_msg_invalid_array_count_overflow (void)
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to array count overflow, callback is not called
 }
 
 static void test_msg_invalid_array_count_zero (void)
@@ -483,7 +485,7 @@ static void test_msg_invalid_array_count_zero (void)
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to zero array count, callback is not called
 }
 
 static void test_msg_invalid_array_fixlen_type (void)
@@ -618,7 +620,10 @@ static void test_read_unsigned_min (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(0, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_unsigned_max (void)
@@ -641,7 +646,10 @@ static void test_read_unsigned_max (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_signed_min (void)
@@ -664,7 +672,10 @@ static void test_read_signed_min (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT64(INT64_MIN, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_signed_max (void)
@@ -687,7 +698,10 @@ static void test_read_signed_max (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(INT64_MAX, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_i8 (void)
@@ -710,7 +724,10 @@ static void test_read_i8 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT8(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_u8 (void)
@@ -733,7 +750,10 @@ static void test_read_u8 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_i16 (void)
@@ -756,7 +776,10 @@ static void test_read_i16 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT16(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_u16 (void)
@@ -779,7 +802,10 @@ static void test_read_u16 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT16(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_i32 (void)
@@ -802,7 +828,10 @@ static void test_read_i32 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT32(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_u32 (void)
@@ -825,7 +854,10 @@ static void test_read_u32 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT32(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_i64 (void)
@@ -848,7 +880,10 @@ static void test_read_i64 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT64(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_u64 (void)
@@ -871,7 +906,10 @@ static void test_read_u64 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(0x7F, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_boolean (void)
@@ -894,7 +932,10 @@ static void test_read_boolean (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(true, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_fp32 (void)
@@ -917,7 +958,10 @@ static void test_read_fp32 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_FLOAT(3.1415f, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(sizeof(value), test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_fp64 (void)
@@ -940,7 +984,10 @@ static void test_read_fp64 (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_DOUBLE(3.141592653589793f, value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(sizeof(value), test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_string (void)
@@ -963,7 +1010,10 @@ static void test_read_string (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_STRING("Hello Couch!", value);
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(strlen(value), test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_blob (void)
@@ -988,7 +1038,10 @@ static void test_read_blob (void)
 
     const uint8_t expected[] = {0x01, 0x02, 0x03, 0x04, 0x05};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(sizeof(expected), test.filed_size);
+    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_i8 (void)
@@ -1013,7 +1066,10 @@ static void test_read_array_of_i8 (void)
 
     const int8_t expected[] = {-1, -2, -3, INT8_MIN, INT8_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_i8_varint_count (void)
@@ -1050,7 +1106,10 @@ static void test_read_array_of_i8_varint_count (void)
     int8_t expected[128];
     memset(expected, -42, sizeof(expected));
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_u8 (void)
@@ -1075,7 +1134,10 @@ static void test_read_array_of_u8 (void)
 
     const uint8_t expected[] = {1, 2, 3, 0, UINT8_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_i16 (void)
@@ -1100,7 +1162,10 @@ static void test_read_array_of_i16 (void)
 
     const int16_t expected[] = {-1, -2, -3, INT16_MIN, INT16_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_u16 (void)
@@ -1125,7 +1190,10 @@ static void test_read_array_of_u16 (void)
 
     const uint16_t expected[] = {1, 2, 3, 0, UINT16_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_i32 (void)
@@ -1150,7 +1218,10 @@ static void test_read_array_of_i32 (void)
 
     const int32_t expected[] = {-1, -2, -3, INT32_MIN, INT32_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_u32 (void)
@@ -1175,7 +1246,10 @@ static void test_read_array_of_u32 (void)
 
     const uint32_t expected[] = {1, 2, 3, 0, UINT32_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_i64 (void)
@@ -1203,7 +1277,10 @@ static void test_read_array_of_i64 (void)
 
     const int64_t expected[] = {-1, -2, -3, INT64_MIN, INT64_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_u64 (void)
@@ -1230,7 +1307,10 @@ static void test_read_array_of_u64 (void)
 
     const uint64_t expected[] = {1, 2, 3, 0, UINT64_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(0, test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_fp32 (void)
@@ -1257,7 +1337,10 @@ static void test_read_array_of_fp32 (void)
 
     const float expected[] = {1.0f, 2.0f, 3.0f, -FLT_MAX, FLT_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(sizeof(value[0]), test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 static void test_read_array_of_fp64 (void)
@@ -1286,7 +1369,10 @@ static void test_read_array_of_fp64 (void)
 
     const double expected[] = {1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
-    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+
+    TEST_ASSERT_EQUAL(sizeof(value[0]), test.filed_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
 }
 
 typedef struct
@@ -1304,9 +1390,10 @@ typedef struct
 
 static sofab_decoder_t _nested_sequence_decoder;
 
-static void _fields(sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrptr)
+static void _fields(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
 {
     (void)size;
+    (void)count;
     test_nested_t *seq = (test_nested_t *)usrptr;
 
     switch (id)
@@ -1320,9 +1407,10 @@ static void _fields(sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrp
     }
 }
 
-static void _fields_with_nested_sequence(sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrptr)
+static void _fields_with_nested_sequence(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
 {
     (void)size;
+    (void)count;
     test_sequence_t *seq = (test_sequence_t *)usrptr;
 
     switch (id)

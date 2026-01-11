@@ -145,7 +145,7 @@ static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
 #endif
 
 static sofab_ret_t _call_field_callback (
-    sofab_istream_t *ctx, size_t size)
+    sofab_istream_t *ctx)
 {
     uint8_t field_opt = ctx->target_opt;
 
@@ -157,7 +157,7 @@ static sofab_ret_t _call_field_callback (
 
     // call field callback to notify about new field with size
     ctx->decoder->field_callback(
-        ctx, ctx->id, size, ctx->decoder->usrptr);
+        ctx, ctx->id, ctx->target_len, ctx->target_count, ctx->decoder->usrptr);
 
     // after call:
     //   target_ptr can be NULL (not interested in field)
@@ -239,18 +239,20 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 ctx->id = (sofab_id_t)(id);
                 ctx->target_opt = type;
 
-                // reset target buffer
+                // reset target infos used in field callback
                 ctx->target_ptr = NULL;
+                ctx->target_len = 0;
+                ctx->target_count = 0;
 
-                // call field callback for non-fixlen types
-                // for fixlen types, we need to know the length first
                 if (type != SOFAB_TYPE_FIXLEN &&
+                    type != SOFAB_TYPE_VARINTARRAY_UNSIGNED &&
+                    type != SOFAB_TYPE_VARINTARRAY_SIGNED &&
                     type != SOFAB_TYPE_FIXLENARRAY &&
                     type != SOFAB_TYPE_SEQUENCE_END)
                 {
                     sofab_ret_t ret;
 
-                    if ((ret = _call_field_callback(ctx, 0)) != SOFAB_RET_OK)
+                    if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
                     {
                         return ret;
                     }
@@ -438,10 +440,10 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
             case _DECODER_STATE_FIXLEN_LEN:
             {
                 sofab_ret_t ret;
-                sofab_unsigned_t length;
+                sofab_unsigned_t fixlen_length;
 
                 // read fixlen length + type
-                if ((dec = _varint_decode(ctx, *p, &length)) == -1)
+                if ((dec = _varint_decode(ctx, *p, &fixlen_length)) == -1)
                 {
                     // need more data
                     continue;
@@ -453,29 +455,33 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
 
                 // extract type from length
-                uint8_t fixlen_type = _type_decode(&length);
+                uint8_t fixlen_type = _type_decode(&fixlen_length);
                 if (fixlen_type > SOFAB_FIXLENTYPE_BLOB)
                 {
                     // invalid fixlen type
                     return SOFAB_RET_E_INVALID_MSG;
                 }
 
-                // store fixlen type in target_opt
-                ctx->target_opt |= fixlen_type << 3;
+                if (fixlen_length > SOFAB_FIXLEN_MAX)
+                {
+                    // invalid fixlen length in message
+                    return SOFAB_RET_E_INVALID_MSG;
+                }
 
-                // now we know the length of the fixed-length field,
-                // so call field callback with size
-                if ((ret = _call_field_callback(ctx, (size_t)length)) != SOFAB_RET_OK)
+                // store fixlen type and length
+                ctx->target_opt |= fixlen_type << 3;
+                size_t length = (size_t)(fixlen_length);
+                ctx->target_len = length;
+
+                // fixlen filed with zero length are allowed
+                // e.g., empty strings or blobs
+
+                if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
                 {
                     return ret;
                 }
 
-                if (!ctx->target_ptr)
-                {
-                    // no target set, so we need to skip the following bytes
-                    ctx->target_len = (size_t)(length);
-                }
-                else
+                if (ctx->target_ptr)
                 {
                     if (_OPT_STRINGTERM(ctx->target_opt))
                     {
@@ -499,7 +505,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
 
                 // store source length to know how many bytes to consume
-                ctx->fixlen_remaining = (size_t)(length);
+                ctx->fixlen_remaining = ctx->target_len;
 
                 switch (fixlen_type)
                 {
@@ -566,10 +572,11 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
             case _DECODER_STATE_ARRAY_COUNT:
             {
-                sofab_unsigned_t count;
+                sofab_ret_t ret;
+                sofab_unsigned_t array_count;
 
                 // read array element count
-                if ((dec = _varint_decode(ctx, *p, &count)) == -1)
+                if ((dec = _varint_decode(ctx, *p, &array_count)) == -1)
                 {
                     // need more data
                     continue;
@@ -580,21 +587,37 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     return SOFAB_RET_E_INVALID_MSG;
                 }
 
-                if (count == 0)
+                if (array_count > SOFAB_ARRAY_MAX)
                 {
                     // invalid array count in message
                     return SOFAB_RET_E_INVALID_MSG;
                 }
 
-                if (!ctx->target_ptr)
+                // store array element count
+                size_t count = (size_t)(array_count);
+                ctx->target_count = count;
+
+                if (count == 0)
                 {
-                    // no target set, so we need to skip the following items
-                    ctx->target_count = count;
-                }
-                else if (count != ctx->target_count)
-                {
-                    // array too long or short for target buffer
+                    // arrays with zero elements are not allowed
                     return SOFAB_RET_E_INVALID_MSG;
+                }
+
+                if (_OPT_FIELDTYPE(ctx->target_opt) != SOFAB_TYPE_FIXLENARRAY)
+                {
+                    if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
+                    {
+                        return ret;
+                    }
+                }
+
+                if (ctx->target_ptr)
+                {
+                    if (count != ctx->target_count)
+                    {
+                        // array size missmatch
+                        return SOFAB_RET_E_INVALID_MSG;
+                    }
                 }
 
                 // read array elements (see IDLE state for type check)
