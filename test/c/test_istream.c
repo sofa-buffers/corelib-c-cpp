@@ -55,6 +55,7 @@ typedef struct
     field_type_t target_type;
     void *target_ptr;
     size_t target_size;
+    uint8_t calls;
 } test_single_field_t;
 
 static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrptr)
@@ -66,6 +67,8 @@ static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t s
     {
         return;
     }
+
+    test->calls++;
 
     if (id != test->expected_id)
     {
@@ -182,13 +185,15 @@ static void test_feed_buffer (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT8U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(127, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_feed_buffer_stream (void)
@@ -203,7 +208,8 @@ static void test_feed_buffer_stream (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_STRING,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -214,6 +220,7 @@ static void test_feed_buffer_stream (void)
         TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     }
     TEST_ASSERT_EQUAL_STRING("Hello Couch!", value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_usage_invalid_field_type (void)
@@ -228,12 +235,14 @@ static void test_usage_invalid_field_type (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_FP32, // invalid type test (fp32 != u64)
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_usage_invalid_field_type_fixlen (void)
@@ -248,12 +257,14 @@ static void test_usage_invalid_field_type_fixlen (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT8U, // invalid field type (u8 != string)
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_usage_invalid_target_len_varint_unsigned (void)
@@ -268,12 +279,14 @@ static void test_usage_invalid_target_len_varint_unsigned (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_UNSIGNED_ERROR, // invalid size test
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_usage_invalid_target_len_varint_signed (void)
@@ -288,12 +301,14 @@ static void test_usage_invalid_target_len_varint_signed (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_SIGNED_ERROR, // invalid size test
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_nothing (void)
@@ -319,13 +334,15 @@ static void test_id_max (void)
         .expected_id = SOFAB_ID_MAX,
         .target_type = FIELD_TYPE_INT8U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(0, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_id_overflow (void)
@@ -340,12 +357,14 @@ static void test_msg_invalid_id_overflow (void)
         .expected_id = SOFAB_ID_MAX,
         .target_type = FIELD_TYPE_INT8U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to id overflow, callback is not called
 }
 
 static void test_msg_invalid_varint_unsigned_overflow (void)
@@ -360,12 +379,14 @@ static void test_msg_invalid_varint_unsigned_overflow (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT64U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_varint_signed_overflow (void)
@@ -380,12 +401,14 @@ static void test_msg_invalid_varint_signed_overflow (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT64,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_fixlen_length_overflow (void)
@@ -403,12 +426,14 @@ static void test_msg_invalid_fixlen_length_overflow (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_FP32,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to fixlen lenght overflow, callback is not called
 }
 
 static void test_msg_invalid_array_count_overflow (void)
@@ -426,12 +451,14 @@ static void test_msg_invalid_array_count_overflow (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_array_count_zero (void)
@@ -449,12 +476,14 @@ static void test_msg_invalid_array_count_zero (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_array_fixlen_type (void)
@@ -471,12 +500,14 @@ static void test_msg_invalid_array_fixlen_type (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_FP32,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to invalid fixlen type, callback is not called
 }
 
 static void test_msg_invalid_target_len_fixlen (void)
@@ -491,12 +522,14 @@ static void test_msg_invalid_target_len_fixlen (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_FP32_ERROR, // invalid size test
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_target_len_fixlen_string (void)
@@ -511,12 +544,14 @@ static void test_msg_invalid_target_len_fixlen_string (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_STRING,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_target_array_count_too_small (void)
@@ -531,12 +566,14 @@ static void test_msg_invalid_target_array_count_too_small (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = 2 // smaller than the 5 elements in the message
+        .target_size = 2, // smaller than the 5 elements in the message
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_msg_invalid_target_array_count_too_big (void)
@@ -551,12 +588,14 @@ static void test_msg_invalid_target_array_count_too_big (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = 10 // larger than the 5 elements in the message
+        .target_size = 10, // larger than the 5 elements in the message
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_unsigned_min (void)
@@ -571,13 +610,15 @@ static void test_read_unsigned_min (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT8U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(0, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_unsigned_max (void)
@@ -592,13 +633,15 @@ static void test_read_unsigned_max (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT64U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_signed_min (void)
@@ -613,13 +656,15 @@ static void test_read_signed_min (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT64,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT64(INT64_MIN, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_signed_max (void)
@@ -634,13 +679,15 @@ static void test_read_signed_max (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT64,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(INT64_MAX, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_i8 (void)
@@ -655,13 +702,15 @@ static void test_read_i8 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT8,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT8(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_u8 (void)
@@ -676,13 +725,15 @@ static void test_read_u8 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT8U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_i16 (void)
@@ -697,13 +748,15 @@ static void test_read_i16 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT16,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT16(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_u16 (void)
@@ -718,13 +771,15 @@ static void test_read_u16 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT16U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT16(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_i32 (void)
@@ -739,13 +794,15 @@ static void test_read_i32 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT32,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT32(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_u32 (void)
@@ -760,13 +817,15 @@ static void test_read_u32 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT32U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT32(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_i64 (void)
@@ -781,13 +840,15 @@ static void test_read_i64 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT64,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT64(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_u64 (void)
@@ -802,13 +863,15 @@ static void test_read_u64 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT64U,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(0x7F, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_boolean (void)
@@ -823,13 +886,15 @@ static void test_read_boolean (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_BOOLEAN,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(true, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_fp32 (void)
@@ -844,13 +909,15 @@ static void test_read_fp32 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_FP32,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_FLOAT(3.1415f, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_fp64 (void)
@@ -865,13 +932,15 @@ static void test_read_fp64 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_FP64,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_DOUBLE(3.141592653589793f, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_string (void)
@@ -886,13 +955,15 @@ static void test_read_string (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_STRING,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_STRING("Hello Couch!", value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_blob (void)
@@ -907,7 +978,8 @@ static void test_read_blob (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_BLOB,
         .target_ptr = &value,
-        .target_size = sizeof(value)
+        .target_size = sizeof(value),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -916,6 +988,7 @@ static void test_read_blob (void)
 
     const uint8_t expected[] = {0x01, 0x02, 0x03, 0x04, 0x05};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_i8 (void)
@@ -930,7 +1003,8 @@ static void test_read_array_of_i8 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -939,6 +1013,7 @@ static void test_read_array_of_i8 (void)
 
     const int8_t expected[] = {-1, -2, -3, INT8_MIN, INT8_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_i8_varint_count (void)
@@ -964,7 +1039,8 @@ static void test_read_array_of_i8_varint_count (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -974,6 +1050,7 @@ static void test_read_array_of_i8_varint_count (void)
     int8_t expected[128];
     memset(expected, -42, sizeof(expected));
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_u8 (void)
@@ -988,7 +1065,8 @@ static void test_read_array_of_u8 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8U,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -997,6 +1075,7 @@ static void test_read_array_of_u8 (void)
 
     const uint8_t expected[] = {1, 2, 3, 0, UINT8_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_i16 (void)
@@ -1011,7 +1090,8 @@ static void test_read_array_of_i16 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT16,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1020,6 +1100,7 @@ static void test_read_array_of_i16 (void)
 
     const int16_t expected[] = {-1, -2, -3, INT16_MIN, INT16_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_u16 (void)
@@ -1034,7 +1115,8 @@ static void test_read_array_of_u16 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT16U,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1043,6 +1125,7 @@ static void test_read_array_of_u16 (void)
 
     const uint16_t expected[] = {1, 2, 3, 0, UINT16_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_i32 (void)
@@ -1057,7 +1140,8 @@ static void test_read_array_of_i32 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT32,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1066,6 +1150,7 @@ static void test_read_array_of_i32 (void)
 
     const int32_t expected[] = {-1, -2, -3, INT32_MIN, INT32_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_u32 (void)
@@ -1080,7 +1165,8 @@ static void test_read_array_of_u32 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT32U,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1089,6 +1175,7 @@ static void test_read_array_of_u32 (void)
 
     const uint32_t expected[] = {1, 2, 3, 0, UINT32_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_i64 (void)
@@ -1106,7 +1193,8 @@ static void test_read_array_of_i64 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT64,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1115,6 +1203,7 @@ static void test_read_array_of_i64 (void)
 
     const int64_t expected[] = {-1, -2, -3, INT64_MIN, INT64_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_u64 (void)
@@ -1131,7 +1220,8 @@ static void test_read_array_of_u64 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT64U,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1140,6 +1230,7 @@ static void test_read_array_of_u64 (void)
 
     const uint64_t expected[] = {1, 2, 3, 0, UINT64_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_fp32 (void)
@@ -1156,7 +1247,8 @@ static void test_read_array_of_fp32 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_FP32,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1165,6 +1257,7 @@ static void test_read_array_of_fp32 (void)
 
     const float expected[] = {1.0f, 2.0f, 3.0f, -FLT_MAX, FLT_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 static void test_read_array_of_fp64 (void)
@@ -1183,7 +1276,8 @@ static void test_read_array_of_fp64 (void)
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_FP64,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0])
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
@@ -1192,6 +1286,7 @@ static void test_read_array_of_fp64 (void)
 
     const double expected[] = {1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
 typedef struct
