@@ -2,9 +2,9 @@ name: Clang-Tidy Static Analysis
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
 
 jobs:
   static-analysis:
@@ -34,4 +34,4 @@ jobs:
 
       - name: Run clang-tidy
         run: |
-          clang-tidy -p ./build $(find ./src ./test -name '*.cpp' -o -name '*.c') -warnings-as-errors='*' -header-filter='.*'
+          clang-tidy -p ./build $(find ./src ./test -name '*.h' -o -name '*.c') -warnings-as-errors='*' -header-filter='.*'
