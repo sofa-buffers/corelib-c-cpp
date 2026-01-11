@@ -356,7 +356,7 @@ static void test_invalid_arg_via_array_of_unsigned_element_size (void)
 
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     ret =  sofab_ostream_write_array_of_unsigned(&ctx, 0, array, sizeof(array) / sizeof(array[0]), 3);
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_INVALID_ARG, "ret != SOFAB_RET_E_INVALID_ARG");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 static void test_invalid_arg_via_array_of_signed_element_size (void)
@@ -369,7 +369,7 @@ static void test_invalid_arg_via_array_of_signed_element_size (void)
 
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     ret =  sofab_ostream_write_array_of_signed(&ctx, 0, array, sizeof(array) / sizeof(array[0]), 3);
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_INVALID_ARG, "ret != SOFAB_RET_E_INVALID_ARG");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 static void test_id_min (void)
@@ -416,7 +416,7 @@ static void test_id_overflow (void)
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     ret = sofab_ostream_write_unsigned(&ctx, (uint32_t)(SOFAB_ID_MAX) + 1, 0);
 
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_INVALID_ARG, "ret != SOFAB_RET_E_INVALID_ARG");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 static void _write_unsigned (uint64_t value, const uint8_t *expected, size_t expected_len)

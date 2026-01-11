@@ -104,6 +104,7 @@ typedef struct sofab_decoder
     uint8_t state;                              /*!< Internal parsing state machine */
     uint8_t skip_depth;                         /*!< Counter for skipped nested fields */
 } sofab_decoder_t;
+
 /*!
  * @brief Internal state of the Sofab input stream.
  */
@@ -117,7 +118,7 @@ struct sofab_istream
     uint32_t target_count;              /*!< Number of elements expected for array reads */
     uint8_t *target_ptr;                /*!< Pointer to output buffer for field data */
     sofab_decoder_t *decoder;           /*!< Currently active decoder (may be nested) */
-    uint8_t target_opts;                /*!< Field options (used for type checks and flags) */
+    uint8_t target_opt;                 /*!< Field options (used for type checks and flags) */
     uint8_t varint_shift;               /*!< Current shift offset for varint decoding */
 };
 
@@ -155,7 +156,7 @@ extern sofab_ret_t sofab_istream_feed (
 /* read functions *************************************************************/
 
 /*!
- * @brief Reads an unsigned integer field.
+ * @brief Reads an variable length integer field.
  *
  * This function must only be invoked inside a field callback. The value is
  * written to @p var using @p varlen bytes.
@@ -163,34 +164,9 @@ extern sofab_ret_t sofab_istream_feed (
  * @param ctx       Pointer to the input stream context.
  * @param var       Output variable.
  * @param varlen    Size of the output variable in bytes.
+ * @param opt       Field options (type and flags).
  */
-extern void sofab_istream_read_unsigned (
-    sofab_istream_t *ctx, void *var, size_t varlen);
-
-/*!
- * @brief Reads a signed integer field.
- *
- * Must be called from within a field callback. Applies zigzag decoding to the
- * incoming varint and writes the result to @p var.
- *
- * @param ctx       Pointer to the input stream context.
- * @param var       Output variable.
- * @param varlen    Size of the output variable in bytes.
- */
-extern void sofab_istream_read_signed (
-    sofab_istream_t *ctx, void *var, size_t varlen);
-
-/*!
- * @brief Reads a fixed-length field.
- *
- * Must be called from within a field callback. Reads exactly @p varlen bytes
- * into the provided buffer.
- *
- * @param ctx       Pointer to the input stream context.
- * @param var       Destination buffer.
- * @param varlen    Number of bytes to read.
- */
-extern void sofab_istream_read_fixlen (
+extern void sofab_istream_read_field (
     sofab_istream_t *ctx, void *var, size_t varlen, uint8_t opt);
 
 /* inline convenience functions ***********************************************/
@@ -203,7 +179,8 @@ extern void sofab_istream_read_fixlen (
  */
 static inline void sofab_istream_read_i8 (sofab_istream_t *ctx, int8_t *var)
 {
-    sofab_istream_read_signed(ctx, var, sizeof(int8_t));
+    sofab_istream_read_field(ctx, var, sizeof(int8_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
 }
 
 /*!
@@ -214,7 +191,8 @@ static inline void sofab_istream_read_i8 (sofab_istream_t *ctx, int8_t *var)
  */
 static inline void sofab_istream_read_u8 (sofab_istream_t *ctx, uint8_t *var)
 {
-    sofab_istream_read_unsigned(ctx, var, sizeof(uint8_t));
+    sofab_istream_read_field(ctx, var, sizeof(uint8_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
 
 /*!
@@ -225,7 +203,8 @@ static inline void sofab_istream_read_u8 (sofab_istream_t *ctx, uint8_t *var)
  */
 static inline void sofab_istream_read_i16 (sofab_istream_t *ctx, int16_t *var)
 {
-    sofab_istream_read_signed(ctx, var, sizeof(int16_t));
+    sofab_istream_read_field(ctx, var, sizeof(int16_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
 }
 
 /*!
@@ -236,7 +215,8 @@ static inline void sofab_istream_read_i16 (sofab_istream_t *ctx, int16_t *var)
  */
 static inline void sofab_istream_read_u16 (sofab_istream_t *ctx, uint16_t *var)
 {
-    sofab_istream_read_unsigned(ctx, var, sizeof(uint16_t));
+    sofab_istream_read_field(ctx, var, sizeof(uint16_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
 
 /*!
@@ -247,7 +227,8 @@ static inline void sofab_istream_read_u16 (sofab_istream_t *ctx, uint16_t *var)
  */
 static inline void sofab_istream_read_i32 (sofab_istream_t *ctx, int32_t *var)
 {
-    sofab_istream_read_signed(ctx, var, sizeof(int32_t));
+    sofab_istream_read_field(ctx, var, sizeof(int32_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
 }
 
 /*!
@@ -258,7 +239,8 @@ static inline void sofab_istream_read_i32 (sofab_istream_t *ctx, int32_t *var)
  */
 static inline void sofab_istream_read_u32 (sofab_istream_t *ctx, uint32_t *var)
 {
-    sofab_istream_read_unsigned(ctx, var, sizeof(uint32_t));
+    sofab_istream_read_field(ctx, var, sizeof(uint32_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
 
 /*!
@@ -269,7 +251,8 @@ static inline void sofab_istream_read_u32 (sofab_istream_t *ctx, uint32_t *var)
  */
 static inline void sofab_istream_read_i64 (sofab_istream_t *ctx, int64_t *var)
 {
-    sofab_istream_read_signed(ctx, var, sizeof(int64_t));
+    sofab_istream_read_field(ctx, var, sizeof(int64_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
 }
 
 /*!
@@ -280,7 +263,8 @@ static inline void sofab_istream_read_i64 (sofab_istream_t *ctx, int64_t *var)
  */
 static inline void sofab_istream_read_u64 (sofab_istream_t *ctx, uint64_t *var)
 {
-    sofab_istream_read_unsigned(ctx, var, sizeof(uint64_t));
+    sofab_istream_read_field(ctx, var, sizeof(uint64_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
 
 /*!
@@ -291,7 +275,8 @@ static inline void sofab_istream_read_u64 (sofab_istream_t *ctx, uint64_t *var)
  */
 static inline void sofab_istream_read_bool (sofab_istream_t *ctx, bool *var)
 {
-    sofab_istream_read_unsigned(ctx, var, 1);
+    sofab_istream_read_field(ctx, var, 1,
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
 
 /*!
@@ -302,7 +287,7 @@ static inline void sofab_istream_read_bool (sofab_istream_t *ctx, bool *var)
  */
 static inline void sofab_istream_read_fp32 (sofab_istream_t *ctx, float *var)
 {
-    sofab_istream_read_fixlen(ctx, var, sizeof(float),
+    sofab_istream_read_field(ctx, var, sizeof(float),
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32));
 }
@@ -315,7 +300,7 @@ static inline void sofab_istream_read_fp32 (sofab_istream_t *ctx, float *var)
  */
 static inline void sofab_istream_read_fp64 (sofab_istream_t *ctx, double *var)
 {
-    sofab_istream_read_fixlen(ctx, var, sizeof(double),
+    sofab_istream_read_field(ctx, var, sizeof(double),
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64));
 }
@@ -331,7 +316,7 @@ static inline void sofab_istream_read_fp64 (sofab_istream_t *ctx, double *var)
  */
 static inline void sofab_istream_read_string (sofab_istream_t *ctx, char *var, size_t varlen)
 {
-    sofab_istream_read_fixlen(ctx, var, varlen,
+    sofab_istream_read_field(ctx, var, varlen,
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING) |
         SOFAB_ISTREAM_OPT_STRINGTERM);
@@ -348,7 +333,7 @@ static inline void sofab_istream_read_string (sofab_istream_t *ctx, char *var, s
  */
 static inline void sofab_istream_read_string_noterm (sofab_istream_t *ctx, char *var, size_t varlen)
 {
-    sofab_istream_read_fixlen(ctx, var, varlen,
+    sofab_istream_read_field(ctx, var, varlen,
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING));
 }
@@ -362,7 +347,7 @@ static inline void sofab_istream_read_string_noterm (sofab_istream_t *ctx, char 
  */
 static inline void sofab_istream_read_blob (sofab_istream_t *ctx, void *var, size_t varlen)
 {
-    sofab_istream_read_fixlen(ctx, var, varlen,
+    sofab_istream_read_field(ctx, var, varlen,
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB));
 }
@@ -370,40 +355,15 @@ static inline void sofab_istream_read_blob (sofab_istream_t *ctx, void *var, siz
 /* read array functions *******************************************************/
 
 /*!
- * @brief Reads an array of unsigned integers.
- *
- * Each element is decoded using unsigned varint rules.
- *
- * @param ctx            Pointer to the input stream context.
- * @param var            Destination array.
- * @param element_count  Number of elements to read.
- * @param element_size   Size of each element in bytes.
- */
-extern void sofab_istream_read_array_of_unsigned (
-    sofab_istream_t *ctx, void *var, size_t element_count, size_t element_size);
-
-/*!
- * @brief Reads an array of signed integers.
- *
- * Each element is decoded using signed varint rules.
- *
- * @param ctx            Pointer to the input stream context.
- * @param var            Destination array.
- * @param element_count  Number of elements to read.
- * @param element_size   Size of each element in bytes.
- */
-extern void sofab_istream_read_array_of_signed (
-    sofab_istream_t *ctx, void *var, size_t element_count, size_t element_size);
-
-/*!
- * @brief Reads an array of fixed-length elements.
+ * @brief Reads an array of elements.
  *
  * @param ctx            Pointer to the input stream context.
  * @param var            Destination array.
  * @param element_count  Number of fixed-size elements.
  * @param element_size   Size of each element in bytes.
+ * @param opt            Field options (type and flags).
  */
-extern void sofab_istream_read_array_of_fixlen (
+extern void sofab_istream_read_array (
     sofab_istream_t *ctx, void *var, size_t element_count, size_t element_size, uint8_t opt);
 
 /* inline convenience array functions *****************************************/
@@ -418,7 +378,8 @@ extern void sofab_istream_read_array_of_fixlen (
 static inline void sofab_istream_read_array_of_i8 (
     sofab_istream_t *ctx, int8_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_signed(ctx, var, element_count, sizeof(int8_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(int8_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
 }
 
 /*!
@@ -431,7 +392,8 @@ static inline void sofab_istream_read_array_of_i8 (
 static inline void sofab_istream_read_array_of_u8 (
     sofab_istream_t *ctx, uint8_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_unsigned(ctx, var, element_count, sizeof(uint8_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(uint8_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 }
 
 /*!
@@ -444,7 +406,8 @@ static inline void sofab_istream_read_array_of_u8 (
 static inline void sofab_istream_read_array_of_i16 (
     sofab_istream_t *ctx, int16_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_signed(ctx, var, element_count, sizeof(int16_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(int16_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
 }
 
 /*!
@@ -457,7 +420,8 @@ static inline void sofab_istream_read_array_of_i16 (
 static inline void sofab_istream_read_array_of_u16 (
     sofab_istream_t *ctx, uint16_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_unsigned(ctx, var, element_count, sizeof(uint16_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(uint16_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 }
 
 /*!
@@ -470,7 +434,8 @@ static inline void sofab_istream_read_array_of_u16 (
 static inline void sofab_istream_read_array_of_i32 (
     sofab_istream_t *ctx, int32_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_signed(ctx, var, element_count, sizeof(int32_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(int32_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
 }
 
 /*!
@@ -483,7 +448,8 @@ static inline void sofab_istream_read_array_of_i32 (
 static inline void sofab_istream_read_array_of_u32 (
     sofab_istream_t *ctx, uint32_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_unsigned(ctx, var, element_count, sizeof(uint32_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(uint32_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 }
 
 /*!
@@ -496,7 +462,8 @@ static inline void sofab_istream_read_array_of_u32 (
 static inline void sofab_istream_read_array_of_i64 (
     sofab_istream_t *ctx, int64_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_signed(ctx, var, element_count, sizeof(int64_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(int64_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
 }
 
 /*!
@@ -509,7 +476,8 @@ static inline void sofab_istream_read_array_of_i64 (
 static inline void sofab_istream_read_array_of_u64 (
     sofab_istream_t *ctx, uint64_t *var, size_t element_count)
 {
-    sofab_istream_read_array_of_unsigned(ctx, var, element_count, sizeof(uint64_t));
+    sofab_istream_read_array(ctx, var, element_count, sizeof(uint64_t),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 }
 
 /*!
@@ -522,7 +490,7 @@ static inline void sofab_istream_read_array_of_u64 (
 static inline void sofab_istream_read_array_of_fp32 (
     sofab_istream_t *ctx, float *var, size_t element_count)
 {
-    sofab_istream_read_array_of_fixlen(ctx, var, element_count, sizeof(float),
+    sofab_istream_read_array(ctx, var, element_count, sizeof(float),
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32));
 }
@@ -537,7 +505,7 @@ static inline void sofab_istream_read_array_of_fp32 (
 static inline void sofab_istream_read_array_of_fp64 (
     sofab_istream_t *ctx, double *var, size_t element_count)
 {
-    sofab_istream_read_array_of_fixlen(ctx, var, element_count, sizeof(double),
+    sofab_istream_read_array(ctx, var, element_count, sizeof(double),
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64));
 }

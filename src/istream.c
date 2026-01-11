@@ -13,11 +13,23 @@
 #include <assert.h>
 
 /* constants ******************************************************************/
+#define _CHECK_INT_OVERFLOW 1
 
 /* macros *********************************************************************/
 #define _OPT_FIELDTYPE(type)    ((type) & 0x07)
 #define _OPT_FIXLENTYPE(type)   (((type) >> 3) & 0x07)
 #define _OPT_STRINGTERM(type)   ((type) & 0x40)
+
+#if _CHECK_INT_OVERFLOW == 1
+# define _FITS_UNSIGNED_CHECK(val, bits) \
+    if (!_fits_unsigned_n((val), (bits))) return SOFAB_RET_E_INVALID_MSG;
+
+# define _FITS_SIGNED_CHECK(val, bits) \
+    if (!_fits_signed_n((val), (bits))) return SOFAB_RET_E_INVALID_MSG;
+#else
+# define _FITS_UNSIGNED_CHECK(val, bits)   do {} while (0)
+# define _FITS_SIGNED_CHECK(val, bits)     do {} while (0)
+#endif
 
 /* types **********************************************************************/
 typedef enum
@@ -65,6 +77,20 @@ static int _varint_decode (sofab_istream_t *ctx, uint8_t byte, sofab_unsigned_t 
     const int bits = sizeof(sofab_unsigned_t) * 8;
     return (ctx->varint_shift >= bits) ? -2 : -1;
 }
+
+#if _CHECK_INT_OVERFLOW == 1
+static int _fits_unsigned_n (sofab_unsigned_t x, int n)
+{
+    if (n == sizeof(sofab_unsigned_t) * 8) return 1;
+    return (x >> n) == 0;
+}
+
+static int _fits_signed_n (sofab_signed_t x, int n)
+{
+    if (n == sizeof(sofab_unsigned_t) * 8) return 1;
+    return (x >> (n - 1)) == (x >> 63);
+}
+#endif
 
 static uint8_t _type_decode (sofab_unsigned_t *value)
 {
@@ -121,7 +147,7 @@ static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
 static sofab_ret_t _call_field_callback (
     sofab_istream_t *ctx, size_t size)
 {
-    uint8_t field_opts = ctx->target_opts;
+    uint8_t field_opt = ctx->target_opt;
 
     // field is ignored, so let's skip all children
     if (ctx->decoder->skip_depth > 0)
@@ -146,7 +172,7 @@ static sofab_ret_t _call_field_callback (
     {
         // ctx->target_opts can be changed by the callback via read functions,
         // so verify that it matches the actual field type
-        if ((ctx->target_opts ^ field_opts) & 0x3F)
+        if ((ctx->target_opt ^ field_opt) & 0x3F)
         {
             // target type mismatch
             return SOFAB_RET_E_USAGE;
@@ -211,7 +237,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                 // store current field id and type
                 ctx->id = (sofab_id_t)(id);
-                ctx->target_opts = type;
+                ctx->target_opt = type;
 
                 // reset target buffer
                 ctx->target_ptr = NULL;
@@ -325,12 +351,15 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     else
                     {
                         // invalid target length
-                        return SOFAB_RET_E_INVALID_DST;
+                        return SOFAB_RET_E_USAGE;
                     }
+
+                    // optional: check integer overflow
+                    _FITS_UNSIGNED_CHECK(unsigned_value, ctx->target_len * 8);
                 }
 
                 // if decoding an array of unsigned values ...
-                if (_OPT_FIELDTYPE(ctx->target_opts) == SOFAB_TYPE_VARINTARRAY_UNSIGNED)
+                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_VARINTARRAY_UNSIGNED)
                 {
                     // decode next array element
                     if (ctx->target_ptr) ctx->target_ptr += ctx->target_len;
@@ -380,12 +409,15 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     else
                     {
                         // invalid target length
-                        return SOFAB_RET_E_INVALID_DST;
+                        return SOFAB_RET_E_USAGE;
                     }
+
+                    // optional: check integer overflow
+                    _FITS_SIGNED_CHECK(signed_value, ctx->target_len * 8);
                 }
 
                 // if decoding an array of signed values ...
-                if (_OPT_FIELDTYPE(ctx->target_opts) == SOFAB_TYPE_VARINTARRAY_SIGNED)
+                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_VARINTARRAY_SIGNED)
                 {
                     // decode next array element
                     if (ctx->target_ptr) ctx->target_ptr += ctx->target_len;
@@ -428,8 +460,8 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     return SOFAB_RET_E_INVALID_MSG;
                 }
 
-                // store fixlen type in target_opts
-                ctx->target_opts |= fixlen_type << 3;
+                // store fixlen type in target_opt
+                ctx->target_opt |= fixlen_type << 3;
 
                 // now we know the length of the fixed-length field,
                 // so call field callback with size
@@ -445,12 +477,12 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
                 else
                 {
-                    if (_OPT_STRINGTERM(ctx->target_opts))
+                    if (_OPT_STRINGTERM(ctx->target_opt))
                     {
                         if (length > ctx->target_len - 1)
                         {
-                            // target buffer too small to store null-terminated string
-                            return SOFAB_RET_E_INVALID_DST;
+                            // message too long to be stored as null-terminated string
+                            return SOFAB_RET_E_INVALID_MSG;
                         }
 
                         // add null-terminator after string
@@ -460,8 +492,8 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     {
                         if (length > ctx->target_len)
                         {
-                            // target buffer too small
-                            return SOFAB_RET_E_INVALID_DST;
+                            // message too long to be stored in target buffer
+                            return SOFAB_RET_E_INVALID_MSG;
                         }
                     }
                 }
@@ -501,7 +533,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
 #endif
 
-                if (_OPT_FIELDTYPE(ctx->target_opts) == SOFAB_TYPE_FIXLENARRAY)
+                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
                 {
                     ctx->target_count--;
                     if (ctx->target_count > 0)
@@ -561,12 +593,12 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
                 else if (count != ctx->target_count)
                 {
-                    // target array count mismatch
-                    return SOFAB_RET_E_INVALID_DST;
+                    // array too long or short for target buffer
+                    return SOFAB_RET_E_INVALID_MSG;
                 }
 
                 // read array elements (see IDLE state for type check)
-                uint8_t type = _OPT_FIELDTYPE(ctx->target_opts);
+                uint8_t type = _OPT_FIELDTYPE(ctx->target_opt);
                 if (type == SOFAB_TYPE_VARINTARRAY_UNSIGNED)
                     ctx->decoder->state = _DECODER_STATE_VARINT_UNSIGNED;
                 else if (type == SOFAB_TYPE_VARINTARRAY_SIGNED)
@@ -582,31 +614,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     return SOFAB_RET_OK;
 }
 
-extern void sofab_istream_read_unsigned (
-    sofab_istream_t *ctx, void *var, size_t varlen)
-{
-    assert(ctx != NULL);
-    assert(var != NULL);
-    assert(varlen > 0);
-
-    ctx->target_ptr = (uint8_t *)var;
-    ctx->target_len = varlen;
-    ctx->target_opts = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED);
-}
-
-extern void sofab_istream_read_signed (
-    sofab_istream_t *ctx, void *var, size_t varlen)
-{
-    assert(ctx != NULL);
-    assert(var != NULL);
-    assert(varlen > 0);
-
-    ctx->target_ptr = (uint8_t *)var;
-    ctx->target_len = varlen;
-    ctx->target_opts = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED);
-}
-
-extern void sofab_istream_read_fixlen (
+extern void sofab_istream_read_field (
     sofab_istream_t *ctx, void *var, size_t varlen, uint8_t opt)
 {
     assert(ctx != NULL);
@@ -615,40 +623,10 @@ extern void sofab_istream_read_fixlen (
 
     ctx->target_ptr = (uint8_t *)var;
     ctx->target_len = varlen;
-    ctx->target_opts = opt;
+    ctx->target_opt = opt;
 }
 
-extern void sofab_istream_read_array_of_unsigned (
-    sofab_istream_t *ctx, void *var,
-    size_t element_count, size_t element_size)
-{
-    assert(ctx != NULL);
-    assert(var != NULL);
-    assert(element_count > 0);
-    assert(element_size > 0);
-
-    ctx->target_ptr = (uint8_t *)var;
-    ctx->target_count = element_count;
-    ctx->target_len = element_size;
-    ctx->target_opts = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED);
-}
-
-extern void sofab_istream_read_array_of_signed (
-    sofab_istream_t *ctx, void *var,
-    size_t element_count, size_t element_size)
-{
-    assert(ctx != NULL);
-    assert(var != NULL);
-    assert(element_count > 0);
-    assert(element_size > 0);
-
-    ctx->target_ptr = (uint8_t *)var;
-    ctx->target_count = element_count;
-    ctx->target_len = element_size;
-    ctx->target_opts = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED);
-}
-
-extern void sofab_istream_read_array_of_fixlen (
+extern void sofab_istream_read_array (
     sofab_istream_t *ctx, void *var,
     size_t element_count, size_t element_size, uint8_t opt)
 {
@@ -660,7 +638,7 @@ extern void sofab_istream_read_array_of_fixlen (
     ctx->target_ptr = (uint8_t *)var;
     ctx->target_count = element_count;
     ctx->target_len = element_size;
-    ctx->target_opts = opt;
+    ctx->target_opt = opt;
 }
 
 extern void sofab_istream_read_sequence (
@@ -680,5 +658,5 @@ extern void sofab_istream_read_sequence (
 
     ctx->decoder = decoder;
     ctx->target_ptr = (uint8_t *)decoder; // just to have a non-NULL value
-    ctx->target_opts = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START);
+    ctx->target_opt = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START);
 }

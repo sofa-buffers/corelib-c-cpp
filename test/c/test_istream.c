@@ -144,13 +144,15 @@ static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t s
             sofab_istream_read_array_of_fp64(ctx, (double *)test->target_ptr, test->target_size);
             break;
         case FIELD_TYPE_UNSIGNED_ERROR:
-            sofab_istream_read_unsigned(ctx, test->target_ptr, 5 /* invalid size */);
+            sofab_istream_read_field(ctx, test->target_ptr, 5 /* invalid size */,
+                SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
             break;
         case FIELD_TYPE_SIGNED_ERROR:
-            sofab_istream_read_signed(ctx, test->target_ptr, 5 /* invalid size */);
+            sofab_istream_read_field(ctx, test->target_ptr, 5 /* invalid size */,
+                SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
             break;
         case FIELD_TYPE_FP32_ERROR:
-            sofab_istream_read_fixlen(ctx, test->target_ptr, 3 /* invalid size */,
+            sofab_istream_read_field(ctx, test->target_ptr, 3 /* invalid size */,
                 SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
                 SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32));
             break;
@@ -245,6 +247,46 @@ static void test_usage_invalid_field_type_fixlen (void)
     {
         .expected_id = 0,
         .target_type = FIELD_TYPE_INT8U, // invalid field type (u8 != string)
+        .target_ptr = &value,
+        .target_size = sizeof(value)
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+}
+
+static void test_usage_invalid_target_len_varint_unsigned (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
+
+    uint64_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_UNSIGNED_ERROR, // invalid size test
+        .target_ptr = &value,
+        .target_size = sizeof(value)
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+}
+
+static void test_usage_invalid_target_len_varint_signed (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x01, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
+
+    int64_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_SIGNED_ERROR, // invalid size test
         .target_ptr = &value,
         .target_size = sizeof(value)
     };
@@ -437,47 +479,7 @@ static void test_msg_invalid_array_fixlen_type (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
-static void test_dst_invalid_target_len_varint_unsigned (void)
-{
-    sofab_istream_t ctx;
-    sofab_ret_t ret;
-    const uint8_t buffer[] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
-
-    uint64_t value = 0x55;
-    test_single_field_t test =
-    {
-        .expected_id = 0,
-        .target_type = FIELD_TYPE_UNSIGNED_ERROR, // invalid size test
-        .target_ptr = &value,
-        .target_size = sizeof(value)
-    };
-
-    sofab_istream_init(&ctx, _single_field_callback, &test);
-    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_DST, ret);
-}
-
-static void test_dst_invalid_target_len_varint_signed (void)
-{
-    sofab_istream_t ctx;
-    sofab_ret_t ret;
-    const uint8_t buffer[] = {0x01, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
-
-    int64_t value = 0x55;
-    test_single_field_t test =
-    {
-        .expected_id = 0,
-        .target_type = FIELD_TYPE_SIGNED_ERROR, // invalid size test
-        .target_ptr = &value,
-        .target_size = sizeof(value)
-    };
-
-    sofab_istream_init(&ctx, _single_field_callback, &test);
-    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_DST, ret);
-}
-
-static void test_dst_invalid_target_len_fixlen (void)
+static void test_msg_invalid_target_len_fixlen (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -494,10 +496,10 @@ static void test_dst_invalid_target_len_fixlen (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_DST, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
-static void test_dst_invalid_target_len_fixlen_string (void)
+static void test_msg_invalid_target_len_fixlen_string (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -514,10 +516,10 @@ static void test_dst_invalid_target_len_fixlen_string (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_DST, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
-static void test_dst_invalid_target_array_count_too_small (void)
+static void test_msg_invalid_target_array_count_too_small (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -534,10 +536,10 @@ static void test_dst_invalid_target_array_count_too_small (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_DST, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
-static void test_dst_invalid_target_array_count_too_big (void)
+static void test_msg_invalid_target_array_count_too_big (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -554,7 +556,7 @@ static void test_dst_invalid_target_array_count_too_big (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_DST, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
 static void test_read_unsigned_min (void)
@@ -1575,6 +1577,8 @@ int test_istream_main (void)
     RUN_TEST(test_feed_buffer_stream);
     RUN_TEST(test_usage_invalid_field_type);
     RUN_TEST(test_usage_invalid_field_type_fixlen);
+    RUN_TEST(test_usage_invalid_target_len_varint_unsigned);
+    RUN_TEST(test_usage_invalid_target_len_varint_signed);
     RUN_TEST(test_read_nothing);
 
     RUN_TEST(test_id_max);
@@ -1588,13 +1592,10 @@ int test_istream_main (void)
     RUN_TEST(test_msg_invalid_array_fixlen_type);
     RUN_TEST(test_msg_invalid_nested_sequence_depth);
     RUN_TEST(test_msg_invalid_nested_sequence_extra_end);
-
-    RUN_TEST(test_dst_invalid_target_len_varint_unsigned);
-    RUN_TEST(test_dst_invalid_target_len_varint_signed);
-    RUN_TEST(test_dst_invalid_target_len_fixlen);
-    RUN_TEST(test_dst_invalid_target_len_fixlen_string);
-    RUN_TEST(test_dst_invalid_target_array_count_too_small);
-    RUN_TEST(test_dst_invalid_target_array_count_too_big);
+    RUN_TEST(test_msg_invalid_target_len_fixlen);
+    RUN_TEST(test_msg_invalid_target_len_fixlen_string);
+    RUN_TEST(test_msg_invalid_target_array_count_too_small);
+    RUN_TEST(test_msg_invalid_target_array_count_too_big);
 
     RUN_TEST(test_read_unsigned_min);
     RUN_TEST(test_read_unsigned_max);

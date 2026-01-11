@@ -89,7 +89,7 @@ static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_ty
 {
     if (id > SOFAB_ID_MAX)
     {
-        return SOFAB_RET_E_INVALID_ARG;
+        return SOFAB_RET_E_ARGUMENT;
     }
 
     if (_varint_encode(ctx, _type_encode(id, type)) < 0)
@@ -306,7 +306,7 @@ extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
         else
         {
             // unsupported element size
-            return SOFAB_RET_E_INVALID_ARG;
+            return SOFAB_RET_E_ARGUMENT;
         }
 
         if (_varint_encode(ctx, value) < 0)
@@ -357,7 +357,7 @@ extern sofab_ret_t sofab_ostream_write_array_of_signed (
         else
         {
             // unsupported element size
-            return SOFAB_RET_E_INVALID_ARG;
+            return SOFAB_RET_E_ARGUMENT;
         }
 
         if (_varint_encode(ctx, _zigzag_encode(value)) < 0)

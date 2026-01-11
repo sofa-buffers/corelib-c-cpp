@@ -38,11 +38,10 @@ extern "C" {
 typedef enum
 {
     SOFAB_RET_OK,                //!< OK
-    SOFAB_RET_E_INVALID_ARG,     //!< Invalid argument
+    SOFAB_RET_E_ARGUMENT,        //!< Invalid argument
     SOFAB_RET_E_USAGE,           //!< Invalid usage
     SOFAB_RET_E_BUFFER_FULL,     //!< Sofab serialization failed due to buffer overflow
     SOFAB_RET_E_INVALID_MSG,     //!< Sofab deserialization failed due to invalid message
-    SOFAB_RET_E_INVALID_DST,     //!< Sofab deserialization failed due to too short destination buffer
 } sofab_ret_t;
 
 /*! @brief SofaBuffers 3bit field data types */

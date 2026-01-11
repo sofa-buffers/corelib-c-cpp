@@ -38,9 +38,8 @@ namespace sofab
         None = SOFAB_RET_OK,
         UsageError = SOFAB_RET_E_USAGE,
         BufferFull = SOFAB_RET_E_BUFFER_FULL,
-        InvalidArgument = SOFAB_RET_E_INVALID_ARG,
-        InvalidMessage = SOFAB_RET_E_INVALID_MSG,
-        InvalidDestination = SOFAB_RET_E_INVALID_DST
+        InvalidArgument = SOFAB_RET_E_ARGUMENT,
+        InvalidMessage = SOFAB_RET_E_INVALID_MSG
     };
 
     using flushCallback = std::function<void(std::span<const uint8_t>)>;
@@ -583,13 +582,15 @@ namespace sofab
                 {
                     if constexpr (std::is_unsigned_v<T>)
                     {
-                        sofab_istream_read_unsigned(
-                            &ctx_, reinterpret_cast<void*>(&value), sizeof(T));
+                        sofab_istream_read_field(
+                            &ctx_, reinterpret_cast<void*>(&value), sizeof(T),
+                            SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
                     }
                     else
                     {
-                        sofab_istream_read_signed(
-                            &ctx_, reinterpret_cast<void*>(&value), sizeof(T));
+                        sofab_istream_read_field(
+                            &ctx_, reinterpret_cast<void*>(&value), sizeof(T),
+                            SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
                     }
                 }
                 else if constexpr (std::is_same_v<T, bool>)
@@ -623,19 +624,21 @@ namespace sofab
                     {
                         if constexpr (std::is_unsigned_v<Elem>)
                         {
-                            sofab_istream_read_array_of_unsigned(
+                            sofab_istream_read_array(
                                 &ctx_,
                                 span.data(),
                                 static_cast<int32_t>(span.size()),
-                                sizeof(Elem));
+                                sizeof(Elem),
+                                SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
                         }
                         else
                         {
-                            sofab_istream_read_array_of_signed(
+                            sofab_istream_read_array(
                                 &ctx_,
                                 span.data(),
                                 static_cast<int32_t>(span.size()),
-                                sizeof(Elem));
+                                sizeof(Elem),
+                                SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
                         }
                     }
                     else if constexpr (std::is_same_v<Elem, float>)
