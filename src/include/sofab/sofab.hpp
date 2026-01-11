@@ -45,7 +45,7 @@ namespace sofab
 
     using flushCallback = std::function<void(std::span<const uint8_t>)>;
 
-	using id = sofab_id_t;
+    using id = sofab_id_t;
 
     class OStreamMessage;
     class OStream
@@ -577,87 +577,97 @@ namespace sofab
         template <typename T>
         void read(T &value) noexcept
         {
-            if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
+            if constexpr (!std::is_const_v<T>)
             {
-                if constexpr (std::is_unsigned_v<T>)
+                if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
                 {
-                    sofab_istream_read_unsigned(
-                        &ctx_, reinterpret_cast<void*>(&value), sizeof(T));
-                }
-                else
-                {
-                    sofab_istream_read_signed(
-                        &ctx_, reinterpret_cast<void*>(&value), sizeof(T));
-                }
-            }
-            else if constexpr (std::is_same_v<T, bool>)
-            {
-                sofab_istream_read_boolean(&ctx_, &value);
-            }
-            else if constexpr (std::is_same_v<T, float>)
-            {
-                sofab_istream_read_fp32(&ctx_, &value);
-            }
-            else if constexpr (std::is_same_v<T, double>)
-            {
-                sofab_istream_read_fp64(&ctx_, &value);
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
-            {
-                // std::string doesn't need a null terminator, so we use read_noterm
-                sofab_istream_read_string_noterm(&ctx_, value.data(), value.size());
-            }
-            else if constexpr (
-                requires { typename T::value_type; } &&
-                std::same_as<T, std::span<typename T::value_type>>)
-            {
-                using Elem = typename T::value_type;
-
-                if constexpr (std::is_integral_v<Elem> && !std::is_same_v<Elem, bool>)
-                {
-                    if constexpr (std::is_unsigned_v<Elem>)
+                    if constexpr (std::is_unsigned_v<T>)
                     {
-                        sofab_istream_read_array_of_unsigned(
-                            &ctx_,
-                            value.data(),
-                            static_cast<int32_t>(value.size()),
-                            sizeof(Elem));
+                        sofab_istream_read_unsigned(
+                            &ctx_, reinterpret_cast<void*>(&value), sizeof(T));
                     }
                     else
                     {
-                        sofab_istream_read_array_of_signed(
-                            &ctx_,
-                            value.data(),
-                            static_cast<int32_t>(value.size()),
-                            sizeof(Elem));
+                        sofab_istream_read_signed(
+                            &ctx_, reinterpret_cast<void*>(&value), sizeof(T));
                     }
                 }
-                else if constexpr (std::is_same_v<Elem, float>)
+                else if constexpr (std::is_same_v<T, bool>)
                 {
-                    sofab_istream_read_array_of_fp32(
-                        &ctx_,
-                        value.data(),
-                        static_cast<int32_t>(value.size()),
-                        sizeof(Elem));
+                    sofab_istream_read_bool(&ctx_, &value);
                 }
-                else if constexpr (std::is_same_v<Elem, double>)
+                else if constexpr (std::is_same_v<T, float>)
                 {
-                    sofab_istream_read_array_of_fp64(
-                        &ctx_,
-                        value.data(),
-                        static_cast<int32_t>(value.size()),
-                        sizeof(Elem));
+                    sofab_istream_read_fp32(&ctx_, &value);
+                }
+                else if constexpr (std::is_same_v<T, double>)
+                {
+                    sofab_istream_read_fp64(&ctx_, &value);
+                }
+                else if constexpr (std::is_same_v<T, std::string>)
+                {
+                    // std::string doesn't need a null terminator, so we use read_noterm
+                    sofab_istream_read_string_noterm(&ctx_, value.data(), value.size());
+                }
+                else if constexpr (
+                    requires {
+                        typename T::value_type;
+                        std::span{ std::declval<const T&>() };
+                    } &&
+                    !std::is_const_v<typename T::value_type>)
+                {
+                    using Elem = typename T::value_type;
+                    std::span<Elem> span{value};
+
+                    if constexpr (std::is_integral_v<Elem> && !std::is_same_v<Elem, bool>)
+                    {
+                        if constexpr (std::is_unsigned_v<Elem>)
+                        {
+                            sofab_istream_read_array_of_unsigned(
+                                &ctx_,
+                                span.data(),
+                                static_cast<int32_t>(span.size()),
+                                sizeof(Elem));
+                        }
+                        else
+                        {
+                            sofab_istream_read_array_of_signed(
+                                &ctx_,
+                                span.data(),
+                                static_cast<int32_t>(span.size()),
+                                sizeof(Elem));
+                        }
+                    }
+                    else if constexpr (std::is_same_v<Elem, float>)
+                    {
+                        sofab_istream_read_array_of_fp32(
+                            &ctx_,
+                            span.data(),
+                            static_cast<int32_t>(span.size()));
+                    }
+                    else if constexpr (std::is_same_v<Elem, double>)
+                    {
+                        sofab_istream_read_array_of_fp64(
+                            &ctx_,
+                            span.data(),
+                            static_cast<int32_t>(span.size()));
+                    }
+                    else
+                    {
+                        static_assert(always_false_v<T>,
+                            "Unsupported span element type in IStream::read()");
+                    }
                 }
                 else
                 {
                     static_assert(always_false_v<T>,
-                        "Unsupported span element type in IStream::read()");
+                        "Unsupported type passed to IStream::read()");
                 }
             }
             else
             {
                 static_assert(always_false_v<T>,
-                    "Unsupported type passed to IStream::read()");
+                    "Cannot read into const variable in IStream::read()");
             }
         }
     };

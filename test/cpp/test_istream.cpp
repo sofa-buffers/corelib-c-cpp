@@ -59,12 +59,12 @@ public:
 
         switch (_id)
         {
-        case 1:
-            _istream.read(id);
-            break;
-        case 2:
-            _istream.read(value);
-            break;
+            case 1:
+                _istream.read(id);
+                break;
+            case 2:
+                _istream.read(value);
+                break;
         }
     }
 };

@@ -12,7 +12,10 @@
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
-            }
+            },
+			"problemMatcher": [
+                "$gcc"
+            ]
         },
         {
             "label": "CMake: build (Debug)",

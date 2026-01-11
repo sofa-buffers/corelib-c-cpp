@@ -84,6 +84,7 @@ typedef struct sofab_istream sofab_istream_t;
  *
  * @param ctx       Pointer to the active input stream context.
  * @param id        Field ID that was encountered.
+ * @param size      Size of the field's value in bytes (for fixed-length types).
  * @param usrptr    Optional user-provided pointer (provided at initialization).
  */
 typedef void (*sofab_istream_field_cb_t) (
