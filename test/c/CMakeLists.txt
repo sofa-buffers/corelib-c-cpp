@@ -26,7 +26,7 @@ add_executable(sofabtest
 )
 
 target_compile_options(sofabtest
-    PRIVATE -Wall -Wextra -Wpedantic -Werror
+    PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-error=cpp
 )
 
 # --- add startup code and stubs for bare metal targets ---

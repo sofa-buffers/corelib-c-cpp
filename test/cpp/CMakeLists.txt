@@ -19,7 +19,7 @@ add_executable(sofabpptest
 )
 
 target_compile_options(sofabpptest
-    PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter
+    PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-error=cpp
 )
 
 # --- link libraries ---

@@ -4,7 +4,7 @@ add_library(sofabuffers
 )
 
 target_include_directories(sofabuffers PUBLIC include)
-target_compile_options(sofabuffers PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(sofabuffers PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-error=cpp)
 
 find_program(SIZE_EXECUTABLE NAMES size)
 if(SIZE_EXECUTABLE)
