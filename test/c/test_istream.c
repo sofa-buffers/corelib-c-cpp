@@ -251,6 +251,28 @@ static void test_usage_invalid_field_type_fixlen (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
+    const uint8_t buffer[] = {0x04, 0x05, 0x01, 0x03, 0x05, 0xFF, 0x01, 0xFE, 0x01};
+
+    uint8_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_STRING, // invalid field type (string != i8_array)
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+static void test_usage_invalid_field_type_array (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
     const uint8_t buffer[] = {0x02, 0x62, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x43, 0x6F, 0x75, 0x63, 0x68, 0x21};
 
     uint8_t value = 0x55;
@@ -369,7 +391,7 @@ static void test_msg_invalid_id_overflow (void)
     TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to id overflow, callback is not called
 }
 
-static void test_msg_invalid_varint_unsigned_overflow (void)
+static void test_msg_invalid_varint_unsigned_varint_overflow (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -391,7 +413,7 @@ static void test_msg_invalid_varint_unsigned_overflow (void)
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
-static void test_msg_invalid_varint_signed_overflow (void)
+static void test_msg_invalid_varint_signed_varint_overflow (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -413,7 +435,7 @@ static void test_msg_invalid_varint_signed_overflow (void)
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
-static void test_msg_invalid_fixlen_length_overflow (void)
+static void test_msg_invalid_fixlen_length_varint_overflow (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -438,7 +460,32 @@ static void test_msg_invalid_fixlen_length_overflow (void)
     TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to fixlen lenght overflow, callback is not called
 }
 
-static void test_msg_invalid_array_count_overflow (void)
+static void test_msg_invalid_fixlen_length_limit_overflow (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x02,
+        0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x03,
+        0x56, 0x0E, 0x49, 0x40};
+
+    float value = 0.0f;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_FP32,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to fixlen length > SOFAB_FIXLEN_MAX, callback is not called
+}
+
+static void test_msg_invalid_array_count_varint_overflow (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -461,6 +508,31 @@ static void test_msg_invalid_array_count_overflow (void)
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
     TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to array count overflow, callback is not called
+}
+
+static void test_msg_invalid_array_count_limit_overflow (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x04,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        0x53};
+
+    int8_t value[128] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_INT8,
+        .target_ptr = &value,
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to array count > SOFAB_ARRAY_MAX, callback is not called
 }
 
 static void test_msg_invalid_array_count_zero (void)
@@ -1760,6 +1832,7 @@ int test_istream_main (void)
     RUN_TEST(test_feed_buffer_stream);
     RUN_TEST(test_usage_invalid_field_type);
     RUN_TEST(test_usage_invalid_field_type_fixlen);
+    RUN_TEST(test_usage_invalid_field_type_array);
     RUN_TEST(test_usage_invalid_target_len_varint_unsigned);
     RUN_TEST(test_usage_invalid_target_len_varint_signed);
     RUN_TEST(test_read_nothing);
@@ -1767,10 +1840,12 @@ int test_istream_main (void)
     RUN_TEST(test_id_max);
 
     RUN_TEST(test_msg_invalid_id_overflow);
-    RUN_TEST(test_msg_invalid_varint_unsigned_overflow);
-    RUN_TEST(test_msg_invalid_varint_signed_overflow);
-    RUN_TEST(test_msg_invalid_fixlen_length_overflow);
-    RUN_TEST(test_msg_invalid_array_count_overflow);
+    RUN_TEST(test_msg_invalid_varint_unsigned_varint_overflow);
+    RUN_TEST(test_msg_invalid_varint_signed_varint_overflow);
+    RUN_TEST(test_msg_invalid_fixlen_length_varint_overflow);
+    RUN_TEST(test_msg_invalid_fixlen_length_limit_overflow);
+    RUN_TEST(test_msg_invalid_array_count_varint_overflow);
+    RUN_TEST(test_msg_invalid_array_count_limit_overflow);
     RUN_TEST(test_msg_invalid_array_count_zero);
     RUN_TEST(test_msg_invalid_array_fixlen_type);
     RUN_TEST(test_msg_invalid_nested_sequence_depth);
