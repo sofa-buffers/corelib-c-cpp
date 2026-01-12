@@ -30,6 +30,28 @@ else()
     endif()
 endif()
 
+# --- fuzzing ---
+option(SOFAB_ENABLE_FUZZ "Enable fuzzing instrumentation" OFF)
+if(SOFAB_ENABLE_FUZZ)
+    if(COMPILER_CLANG)
+        add_compile_options(
+            -O1 -g -fno-omit-frame-pointer
+            -fsanitize=address,undefined,integer
+        )
+        add_link_options(
+            -fsanitize=address,undefined,integer
+        )
+    elseif(COMPILER_GCC)
+        add_compile_options(
+            -O1 -g -fno-omit-frame-pointer
+            -fsanitize=address,undefined,signed-integer-overflow,shift
+        )
+        add_link_options(
+            -fsanitize=address,undefined,signed-integer-overflow,shift
+        )
+    endif()
+endif()
+
 # --- compilation flags ---
 add_compile_options(-ffunction-sections -fdata-sections)
 add_link_options(-Wl,--gc-sections -Wl,-Map=mapfile.map)
@@ -47,6 +69,11 @@ add_subdirectory(test/c)
 option(SOFAB_ENABLE_CPP "Enable C++ test build" ON)
 if(SOFAB_ENABLE_CPP)
     add_subdirectory(test/cpp)
+endif()
+
+# --- build fuzz tests ---
+if(SOFAB_ENABLE_FUZZ)
+    add_subdirectory(test/fuzz)
 endif()
 
 # --- doxygen target ---
