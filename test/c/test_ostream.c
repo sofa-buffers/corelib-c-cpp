@@ -931,6 +931,13 @@ static void test_write_array_of_fp32_specials (void)
 
     float nan_value;
     memcpy(&nan_value, &buffer[used - sizeof(array[0])], sizeof(nan_value));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    uint32_t tmp;
+    memcpy(&tmp, &nan_value, sizeof(tmp));
+    tmp = __builtin_bswap32(tmp);
+    memcpy(&nan_value, &tmp, sizeof(nan_value));
+#endif
+
     TEST_ASSERT_TRUE_MESSAGE(isnan(nan_value), "last value is not NAN");
 }
 
@@ -982,6 +989,13 @@ static void test_write_array_of_fp64_specials (void)
 
     double nan_value;
     memcpy(&nan_value, &buffer[used - sizeof(array[0])], sizeof(nan_value));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    uint64_t tmp;
+    memcpy(&tmp, &nan_value, sizeof(tmp));
+    tmp = __builtin_bswap64(tmp);
+    memcpy(&nan_value, &tmp, sizeof(nan_value));
+#endif
+
     TEST_ASSERT_TRUE_MESSAGE(isnan(nan_value), "last value is not NAN");
 }
 

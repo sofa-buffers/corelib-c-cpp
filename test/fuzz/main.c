@@ -1,6 +1,6 @@
 /*!
  * @file main.c
- * @brief SofaBuffers C - Test
+ * @brief SofaBuffers C - Fuzz testing for input stream C API
  *
  * SPDX-License-Identifier: MIT
  */
