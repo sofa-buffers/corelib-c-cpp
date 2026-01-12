@@ -907,6 +907,33 @@ static void test_write_array_of_fp32 (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
 }
 
+static void test_write_array_of_fp32_specials (void)
+{
+    sofab_ostream_t ctx;
+    sofab_ret_t ret;
+    uint8_t buffer[32];
+    memset(buffer, 0x55, sizeof(buffer));
+
+    const float array[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
+
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
+    ret = sofab_ostream_write_array_of_fp32(&ctx, 0, array, sizeof(array) / sizeof(array[0]));
+    size_t used = sofab_ostream_bytes_used(&ctx);
+
+    const uint8_t expected[] = {
+        0x05, 0x05, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00,
+        0x00, 0x80, 0x7F, 0x00, 0x00, 0x80, 0xFF
+        /*, 0x00, 0x00, 0xC0, 0x7F => test NaN separately, as there are multiple binary representations */};
+
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used - sizeof(array[0]), "used != sizeof(expected)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used - sizeof(array[0]), "buffer != expected");
+
+    float nan_value;
+    memcpy(&nan_value, &buffer[used - sizeof(array[0])], sizeof(nan_value));
+    TEST_ASSERT_TRUE_MESSAGE(isnan(nan_value), "last value is not NAN");
+}
+
 static void test_write_array_of_fp64 (void)
 {
     sofab_ostream_t ctx;
@@ -928,6 +955,34 @@ static void test_write_array_of_fp64 (void)
     TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
+}
+
+static void test_write_array_of_fp64_specials (void)
+{
+    sofab_ostream_t ctx;
+    sofab_ret_t ret;
+    uint8_t buffer[64];
+    memset(buffer, 0x55, sizeof(buffer));
+
+    const double array[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
+
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
+    ret = sofab_ostream_write_array_of_fp64(&ctx, 0, array, sizeof(array) / sizeof(array[0]));
+    size_t used = sofab_ostream_bytes_used(&ctx);
+
+    const uint8_t expected[] = {
+        0x05, 0x05, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xF0, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF,
+        /* 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x7F => test NaN separately, as there are multiple binary representations */};
+
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used - sizeof(array[0]), "used != sizeof(expected)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used - sizeof(array[0]), "buffer != expected");
+
+    double nan_value;
+    memcpy(&nan_value, &buffer[used - sizeof(array[0])], sizeof(nan_value));
+    TEST_ASSERT_TRUE_MESSAGE(isnan(nan_value), "last value is not NAN");
 }
 
 static void test_write_nested_sequence (void)
@@ -1047,8 +1102,8 @@ static void test_write_full_scale_example (void)
 
         sofab_ostream_write_sequence_begin(&ctx, 10);
         {
-            sofab_ostream_write_array_of_fp32(&ctx, 0, (const float[]){+0.0, -0.0, +INFINITY, -INFINITY, NAN}, 5);
-            sofab_ostream_write_array_of_fp64(&ctx, 1, (const double[]){+0.0, -0.0, +INFINITY, -INFINITY, NAN}, 5);
+            sofab_ostream_write_array_of_fp32(&ctx, 0, (const float[]){1.0, 2.0, 3.0, -FLT_MAX, FLT_MAX}, 5);
+            sofab_ostream_write_array_of_fp64(&ctx, 1, (const double[]){1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX}, 5);
         }
         sofab_ostream_write_sequence_end(&ctx);
     }
@@ -1089,12 +1144,12 @@ static void test_write_full_scale_example (void)
         0xFF, 0xFF, 0xFF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
         0x7F, 0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0xFE,
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x56, 0x05, 0x05,
-        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x80,
-        0x7F, 0x00, 0x00, 0x80, 0xFF, 0x00, 0x00, 0xC0, 0x7F, 0x0D, 0x05, 0x41,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x7F,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0xF8, 0x7F, 0x07, 0x07, 0xC6, 0x0C, 0x02, 0x6A, 0x48, 0x65,
+        0x20, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40,
+        0x40, 0xFF, 0xFF, 0x7F, 0xFF, 0xFF, 0xFF, 0x7F, 0x7F, 0x0D, 0x05, 0x41,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x40,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xEF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xEF, 0x7F, 0x07, 0x07, 0xC6, 0x0C, 0x02, 0x6A, 0x48, 0x65,
         0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x53, 0x6F, 0x66, 0x61, 0x62, 0x21, 0x0A,
         0x02, 0x12, 0x52, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
         0x30, 0x1A, 0x72, 0xC3, 0xA4, 0xC3, 0xB6, 0xC3, 0xBC, 0xC3, 0x84, 0xC3,
@@ -1187,7 +1242,9 @@ int test_ostream_main (void)
     RUN_TEST(test_write_array_of_i64);
     RUN_TEST(test_write_array_of_u64);
     RUN_TEST(test_write_array_of_fp32);
+    RUN_TEST(test_write_array_of_fp32_specials);
     RUN_TEST(test_write_array_of_fp64);
+    RUN_TEST(test_write_array_of_fp64_specials);
 
     RUN_TEST(test_write_nested_sequence);
     RUN_TEST(test_write_nested_sequence_with_array);

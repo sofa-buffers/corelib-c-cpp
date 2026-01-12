@@ -1192,7 +1192,7 @@ static void test_read_array_of_i8 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const int8_t expected[] = {-1, -2, -3, INT8_MIN, INT8_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_INT8_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1232,7 +1232,7 @@ static void test_read_array_of_i8_varint_count (void)
 
     int8_t expected[128];
     memset(expected, -42, sizeof(expected));
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_INT8_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1260,7 +1260,7 @@ static void test_read_array_of_u8 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const uint8_t expected[] = {1, 2, 3, 0, UINT8_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1288,7 +1288,7 @@ static void test_read_array_of_i16 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const int16_t expected[] = {-1, -2, -3, INT16_MIN, INT16_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_INT16_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1316,7 +1316,7 @@ static void test_read_array_of_u16 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const uint16_t expected[] = {1, 2, 3, 0, UINT16_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT16_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1344,7 +1344,7 @@ static void test_read_array_of_i32 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const int32_t expected[] = {-1, -2, -3, INT32_MIN, INT32_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_INT32_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1372,7 +1372,7 @@ static void test_read_array_of_u32 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const uint32_t expected[] = {1, 2, 3, 0, UINT32_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT32_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1403,7 +1403,7 @@ static void test_read_array_of_i64 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const int64_t expected[] = {-1, -2, -3, INT64_MIN, INT64_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_INT64_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1433,7 +1433,7 @@ static void test_read_array_of_u64 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const uint64_t expected[] = {1, 2, 3, 0, UINT64_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_UINT64_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(0, test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1463,7 +1463,37 @@ static void test_read_array_of_fp32 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const float expected[] = {1.0f, 2.0f, 3.0f, -FLT_MAX, FLT_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_FLOAT_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
+
+    TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
+}
+
+static void test_read_array_of_fp32_specials (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x05, 0x05, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00,
+        0x00, 0x80, 0x7F, 0x00, 0x00, 0x80, 0xFF, 0x00, 0x00, 0xC0, 0x7F};
+
+    float value[5] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_FP32,
+        .target_ptr = &value,
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+
+    const float expected[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
+    TEST_ASSERT_EQUAL_FLOAT_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -1495,7 +1525,39 @@ static void test_read_array_of_fp64 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
 
     const double expected[] = {1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX};
-    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+    TEST_ASSERT_EQUAL_DOUBLE_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
+
+    TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
+}
+
+static void test_read_array_of_fp64_specials (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x05, 0x05, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xF0, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x7F};
+
+    double value[5] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_FP64,
+        .target_ptr = &value,
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+
+    const double expected[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
+    TEST_ASSERT_EQUAL_DOUBLE_ARRAY(expected, value, sizeof(expected) / sizeof(expected[0]));
 
     TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
@@ -2049,12 +2111,12 @@ static void test_read_full_scale_example (void)
         0xFF, 0xFF, 0xFF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
         0x7F, 0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0xFE,
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x56, 0x05, 0x05,
-        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x80,
-        0x7F, 0x00, 0x00, 0x80, 0xFF, 0x00, 0x00, 0xC0, 0x7F, 0x0D, 0x05, 0x41,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x7F,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0xF8, 0x7F, 0x07, 0x07, 0xC6, 0x0C, 0x02, 0x6A, 0x48, 0x65,
+        0x20, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40,
+        0x40, 0xFF, 0xFF, 0x7F, 0xFF, 0xFF, 0xFF, 0x7F, 0x7F, 0x0D, 0x05, 0x41,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x40,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xEF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xEF, 0x7F, 0x07, 0x07, 0xC6, 0x0C, 0x02, 0x6A, 0x48, 0x65,
         0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x53, 0x6F, 0x66, 0x61, 0x62, 0x21, 0x0A,
         0x02, 0x12, 0x52, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
         0x30, 0x1A, 0x72, 0xC3, 0xA4, 0xC3, 0xB6, 0xC3, 0xBC, 0xC3, 0x84, 0xC3,
@@ -2108,8 +2170,8 @@ static void test_read_full_scale_example (void)
         TEST_ASSERT_EQUAL_INT64_ARRAY(expected_i64, value.arrays.i64, sizeof(expected_i64) / sizeof(expected_i64[0]));
 
         {
-            const float expected_fp32[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
-            const double expected_fp64[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
+            const float expected_fp32[] = {1.0, 2.0, 3.0, -FLT_MAX, FLT_MAX};
+            const double expected_fp64[] = {1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX};
 
             TEST_ASSERT_FLOAT_ARRAY_WITHIN(0.001f, expected_fp32, value.arrays.nested.fp32, sizeof(expected_fp32) / sizeof(expected_fp32[0]));
             TEST_ASSERT_DOUBLE_ARRAY_WITHIN(0.001, expected_fp64, value.arrays.nested.fp64, sizeof(expected_fp64) / sizeof(expected_fp64[0]));
@@ -2196,7 +2258,9 @@ int test_istream_main (void)
     RUN_TEST(test_read_array_of_i64);
     RUN_TEST(test_read_array_of_u64);
     RUN_TEST(test_read_array_of_fp32);
+    RUN_TEST(test_read_array_of_fp32_specials);
     RUN_TEST(test_read_array_of_fp64);
+    RUN_TEST(test_read_array_of_fp64_specials);
 
     RUN_TEST(test_read_nested_sequence);
     RUN_TEST(test_read_nested_sequence_skip);
