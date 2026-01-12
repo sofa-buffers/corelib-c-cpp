@@ -219,7 +219,7 @@ extern sofab_ret_t sofab_ostream_write_signed (
  *
  * @param ctx      Pointer to the output stream context.
  * @param id       Field identifier.
- * @param data     Pointer to bytes to write.
+ * @param data     Pointer to bytes to write (may be NULL if datalen is 0).
  * @param datalen  Number of bytes to write from @p data.
  * @param type     Semantic fixed-length type (sofab_fixlentype_t).
  *

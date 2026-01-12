@@ -231,8 +231,7 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
     sofab_ret_t ret;
 
     assert(ctx != NULL);
-    assert(data != NULL);
-    assert(datalen > 0);
+    assert(datalen == 0 || data != NULL);
 
     if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_FIXLEN)) != SOFAB_RET_OK)
     {

@@ -106,7 +106,7 @@ static uint8_t _type_decode (sofab_unsigned_t *value)
 static size_t _read_fixlen (sofab_istream_t *ctx, uint8_t byte)
 {
     // if interested in field ...
-    if (ctx->target_ptr)
+    if (ctx->target_ptr && ctx->fixlen_remaining)
     {
         // store byte in target buffer
         *(ctx->target_ptr) = byte;
@@ -504,20 +504,29 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     }
                 }
 
-                // store source length to know how many bytes to consume
-                ctx->fixlen_remaining = ctx->target_len;
-
-                switch (fixlen_type)
+                if (length)
                 {
-                    case SOFAB_FIXLENTYPE_FP32:
-                    case SOFAB_FIXLENTYPE_FP64:
-                        ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
-                        break;
+                    // store source length to know how many bytes to consume
+                    ctx->fixlen_remaining = length;
 
-                    case SOFAB_FIXLENTYPE_STRING:
-                    case SOFAB_FIXLENTYPE_BLOB:
-                        ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
-                        break;
+                    switch (fixlen_type)
+                    {
+                        case SOFAB_FIXLENTYPE_FP32:
+                        case SOFAB_FIXLENTYPE_FP64:
+                            ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
+                            break;
+
+                        case SOFAB_FIXLENTYPE_STRING:
+                        case SOFAB_FIXLENTYPE_BLOB:
+                            ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
+                            break;
+                    }
+                }
+                else
+                {
+                    // go back to idle
+                    ctx->decoder->state = _DECODER_STATE_IDLE;
+                    break;
                 }
 
                 break;

@@ -55,8 +55,8 @@ typedef struct
     field_type_t target_type;
     void *target_ptr;
     size_t target_size;
-    size_t filed_size;
-    size_t filed_count;
+    size_t field_size;
+    size_t field_count;
     int calls;
 } test_single_field_t;
 
@@ -68,8 +68,8 @@ static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t s
         return;
     }
 
-    test->filed_size = size;
-    test->filed_count = count;
+    test->field_size = size;
+    test->field_count = count;
     test->calls++;
 
     if (id != test->expected_id)
@@ -693,8 +693,8 @@ static void test_read_unsigned_min (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(0, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -719,8 +719,8 @@ static void test_read_unsigned_max (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -745,8 +745,8 @@ static void test_read_signed_min (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT64(INT64_MIN, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -771,8 +771,8 @@ static void test_read_signed_max (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(INT64_MAX, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -797,8 +797,8 @@ static void test_read_i8 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT8(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -823,8 +823,8 @@ static void test_read_u8 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -849,8 +849,8 @@ static void test_read_i16 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT16(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -875,8 +875,8 @@ static void test_read_u16 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT16(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -901,8 +901,8 @@ static void test_read_i32 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT32(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -927,8 +927,8 @@ static void test_read_u32 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT32(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -953,8 +953,8 @@ static void test_read_i64 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_INT64(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -979,8 +979,8 @@ static void test_read_u64 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT64(0x7F, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1005,8 +1005,8 @@ static void test_read_boolean (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(true, value);
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1031,8 +1031,8 @@ static void test_read_fp32 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_FLOAT(3.1415f, value);
 
-    TEST_ASSERT_EQUAL(sizeof(value), test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(sizeof(value), test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1057,8 +1057,8 @@ static void test_read_fp64 (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_DOUBLE(3.141592653589793f, value);
 
-    TEST_ASSERT_EQUAL(sizeof(value), test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(sizeof(value), test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1083,8 +1083,34 @@ static void test_read_string (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_STRING("Hello Couch!", value);
 
-    TEST_ASSERT_EQUAL(strlen(value), test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(strlen(value), test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
+}
+
+static void test_read_string_empty (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x02, 0x02};
+
+    char value[] = {0x55, 0x55, 0x55, 0x55};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_STRING,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_STRING("", value);
+
+    TEST_ASSERT_EQUAL(strlen(value), test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1111,8 +1137,37 @@ static void test_read_blob (void)
     const uint8_t expected[] = {0x01, 0x02, 0x03, 0x04, 0x05};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(sizeof(expected), test.filed_size);
-    TEST_ASSERT_EQUAL(0, test.filed_count);
+    TEST_ASSERT_EQUAL(sizeof(expected), test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
+}
+
+static void test_read_blob_empty (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x02, 0x03};
+
+    uint8_t value[4] = {0x55, 0x55, 0x55, 0x55};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_BLOB,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+
+    // empty blob, value should remain unchanged
+    const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
+
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1139,8 +1194,8 @@ static void test_read_array_of_i8 (void)
     const int8_t expected[] = {-1, -2, -3, INT8_MIN, INT8_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1179,8 +1234,8 @@ static void test_read_array_of_i8_varint_count (void)
     memset(expected, -42, sizeof(expected));
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1207,8 +1262,8 @@ static void test_read_array_of_u8 (void)
     const uint8_t expected[] = {1, 2, 3, 0, UINT8_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1235,8 +1290,8 @@ static void test_read_array_of_i16 (void)
     const int16_t expected[] = {-1, -2, -3, INT16_MIN, INT16_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1263,8 +1318,8 @@ static void test_read_array_of_u16 (void)
     const uint16_t expected[] = {1, 2, 3, 0, UINT16_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1291,8 +1346,8 @@ static void test_read_array_of_i32 (void)
     const int32_t expected[] = {-1, -2, -3, INT32_MIN, INT32_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1319,8 +1374,8 @@ static void test_read_array_of_u32 (void)
     const uint32_t expected[] = {1, 2, 3, 0, UINT32_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1350,8 +1405,8 @@ static void test_read_array_of_i64 (void)
     const int64_t expected[] = {-1, -2, -3, INT64_MIN, INT64_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1380,8 +1435,8 @@ static void test_read_array_of_u64 (void)
     const uint64_t expected[] = {1, 2, 3, 0, UINT64_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(0, test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1410,8 +1465,8 @@ static void test_read_array_of_fp32 (void)
     const float expected[] = {1.0f, 2.0f, 3.0f, -FLT_MAX, FLT_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(sizeof(value[0]), test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1442,8 +1497,8 @@ static void test_read_array_of_fp64 (void)
     const double expected[] = {1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX};
     TEST_ASSERT_EQUAL_MEMORY(expected, value, sizeof(expected));
 
-    TEST_ASSERT_EQUAL(sizeof(value[0]), test.filed_size);
-    TEST_ASSERT_EQUAL(test.target_size, test.filed_count);
+    TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
 
@@ -1823,6 +1878,260 @@ static void test_msg_invalid_nested_sequence_depth (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
+typedef struct
+{
+    float f32;
+    double f64;
+    char str[32];
+    uint8_t bytes[4];
+} full_scale_seq_struct_t;
+
+typedef struct
+{
+    float fp32[5];
+    double fp64[5];
+} full_scale_seq_struct_of_fp_arrays_t;
+
+typedef struct
+{
+    uint8_t u8[5];
+    int8_t i8[5];
+    uint16_t u16[5];
+    int16_t i16[5];
+    uint32_t u32[5];
+    int32_t i32[5];
+    uint64_t u64[5];
+    int64_t i64[5];
+    full_scale_seq_struct_of_fp_arrays_t nested;
+} full_scale_struct_of_arrays_t;
+
+typedef struct
+{
+    uint8_t u8[5];
+    int8_t i8[5];
+    uint16_t u16[5];
+    int16_t i16[5];
+    uint32_t u32[5];
+    int32_t i32[5];
+    uint64_t u64[5];
+    int64_t i64[5];
+    full_scale_seq_struct_of_fp_arrays_t nested;
+} full_scale_seq_struct_of_arrays_t;
+
+typedef struct
+{
+    char strings[5][64];
+} full_scale_seq_array_of_strings_t;
+
+typedef struct
+{
+    uint8_t u8;
+    int8_t i8;
+    uint16_t u16;
+    int16_t i16;
+    uint32_t u32;
+    int32_t i32;
+    uint64_t u64;
+    int64_t i64;
+    full_scale_seq_struct_t nested;
+    full_scale_seq_struct_of_arrays_t arrays;
+    full_scale_seq_array_of_strings_t string_array;
+} full_scale_example_t;
+
+static sofab_decoder_t _full_scale_decoder[2];
+
+static void _full_scale_example_struct(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    full_scale_seq_struct_t *seq = (full_scale_seq_struct_t *)usrptr;
+
+    switch (id)
+    {
+        case 0: sofab_istream_read_fp32(ctx, &seq->f32); break;
+        case 1: sofab_istream_read_fp64(ctx, &seq->f64); break;
+        case 2: sofab_istream_read_string(ctx, seq->str, sizeof(seq->str)); break;
+        case 3: sofab_istream_read_blob(ctx, seq->bytes, sizeof(seq->bytes)); break;
+    }
+}
+
+static void _full_scale_example_struct_of_fp_arrays(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    full_scale_seq_struct_of_fp_arrays_t *seq = (full_scale_seq_struct_of_fp_arrays_t *)usrptr;
+
+    switch (id)
+    {
+        case 0: sofab_istream_read_array_of_fp32(ctx, seq->fp32, sizeof(seq->fp32) / sizeof(seq->fp32[0])); break;
+        case 1: sofab_istream_read_array_of_fp64(ctx, seq->fp64, sizeof(seq->fp64) / sizeof(seq->fp64[0])); break;
+    }
+}
+
+static void _full_scale_example_struct_of_arrays(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    full_scale_seq_struct_of_arrays_t *seq = (full_scale_seq_struct_of_arrays_t *)usrptr;
+
+    switch (id)
+    {
+        case 0: sofab_istream_read_array_of_u8(ctx, seq->u8, sizeof(seq->u8) / sizeof(seq->u8[0])); break;
+        case 1: sofab_istream_read_array_of_i8(ctx, seq->i8, sizeof(seq->i8) / sizeof(seq->i8[0])); break;
+        case 2: sofab_istream_read_array_of_u16(ctx, seq->u16, sizeof(seq->u16) / sizeof(seq->u16[0])); break;
+        case 3: sofab_istream_read_array_of_i16(ctx, seq->i16, sizeof(seq->i16) / sizeof(seq->i16[0])); break;
+        case 4: sofab_istream_read_array_of_u32(ctx, seq->u32, sizeof(seq->u32) / sizeof(seq->u32[0])); break;
+        case 5: sofab_istream_read_array_of_i32(ctx, seq->i32, sizeof(seq->i32) / sizeof(seq->i32[0])); break;
+        case 6: sofab_istream_read_array_of_u64(ctx, seq->u64, sizeof(seq->u64) / sizeof(seq->u64[0])); break;
+        case 7: sofab_istream_read_array_of_i64(ctx, seq->i64, sizeof(seq->i64) / sizeof(seq->i64[0])); break;
+        case 10: sofab_istream_read_sequence(ctx, &_full_scale_decoder[1], _full_scale_example_struct_of_fp_arrays, &seq->nested); break;
+    }
+}
+
+static void _full_scale_example_arrays_of_strings(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    full_scale_seq_array_of_strings_t *seq = (full_scale_seq_array_of_strings_t *)usrptr;
+
+    if (id < (sizeof(seq->strings) / sizeof(seq->strings[0])))
+    {
+        sofab_istream_read_string(ctx, seq->strings[id], sizeof(seq->strings[id]));
+    }
+}
+
+static void _full_scale_example(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    full_scale_example_t *seq = (full_scale_example_t *)usrptr;
+
+    switch (id)
+    {
+        case 0: sofab_istream_read_u8(ctx, &seq->u8); break;
+        case 1: sofab_istream_read_i8(ctx, &seq->i8); break;
+        case 2: sofab_istream_read_u16(ctx, &seq->u16); break;
+        case 3: sofab_istream_read_i16(ctx, &seq->i16); break;
+        case 4: sofab_istream_read_u32(ctx, &seq->u32); break;
+        case 5: sofab_istream_read_i32(ctx, &seq->i32); break;
+        case 6: sofab_istream_read_u64(ctx, &seq->u64); break;
+        case 7: sofab_istream_read_i64(ctx, &seq->i64); break;
+        case 10: sofab_istream_read_sequence(ctx, &_full_scale_decoder[0], _full_scale_example_struct, &seq->nested); break;
+        case 100: sofab_istream_read_sequence(ctx, &_full_scale_decoder[0], _full_scale_example_struct_of_arrays, &seq->arrays); break;
+        case 200: sofab_istream_read_sequence(ctx, &_full_scale_decoder[0], _full_scale_example_arrays_of_strings, &seq->string_array); break;
+    }
+}
+
+static void test_read_full_scale_example (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x00, 0xC8, 0x01, 0x09, 0xC7, 0x01, 0x10, 0xD0, 0x86, 0x03, 0x19, 0xBF,
+        0xB8, 0x02, 0x20, 0x80, 0xBC, 0xC1, 0x96, 0x0B, 0x29, 0xFF, 0xA7, 0xD6,
+        0xB9, 0x07, 0x30, 0x80, 0xC0, 0xCA, 0xF3, 0x84, 0xA3, 0x02, 0x39, 0xFF,
+        0xBF, 0xCA, 0xF3, 0x84, 0xA3, 0x02, 0x56, 0x02, 0x20, 0xC3, 0xF5, 0x48,
+        0x40, 0x0A, 0x41, 0xF1, 0xD4, 0xC8, 0x53, 0xFB, 0x21, 0x09, 0x40, 0x12,
+        0x6A, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x57, 0x6F, 0x72, 0x6C,
+        0x64, 0x21, 0x1A, 0x23, 0xDE, 0xAD, 0xBE, 0xEF, 0x07, 0xA6, 0x06, 0x03,
+        0x05, 0x00, 0x40, 0x80, 0x01, 0xBF, 0x01, 0xFF, 0x01, 0x0C, 0x05, 0xFF,
+        0x01, 0x7F, 0x00, 0x7E, 0xFE, 0x01, 0x13, 0x05, 0x00, 0x80, 0x80, 0x01,
+        0x80, 0x80, 0x02, 0xFF, 0xFF, 0x02, 0xFF, 0xFF, 0x03, 0x1C, 0x05, 0xFF,
+        0xFF, 0x03, 0xFF, 0xFF, 0x01, 0x00, 0xFE, 0xFF, 0x01, 0xFE, 0xFF, 0x03,
+        0x23, 0x05, 0x00, 0x80, 0x80, 0x80, 0x80, 0x04, 0x80, 0x80, 0x80, 0x80,
+        0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0x0B, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x2C,
+        0x05, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x00,
+        0xFE, 0xFF, 0xFF, 0xFF, 0x07, 0xFE, 0xFF, 0xFF, 0xFF, 0x0F, 0x33, 0x05,
+        0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x40, 0x80, 0x80,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xBF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0x01, 0x3C, 0x05, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0x7F, 0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0xFE,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x56, 0x05, 0x05,
+        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x80,
+        0x7F, 0x00, 0x00, 0x80, 0xFF, 0x00, 0x00, 0xC0, 0x7F, 0x0D, 0x05, 0x41,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x7F,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xF8, 0x7F, 0x07, 0x07, 0xC6, 0x0C, 0x02, 0x6A, 0x48, 0x65,
+        0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x53, 0x6F, 0x66, 0x61, 0x62, 0x21, 0x0A,
+        0x02, 0x12, 0x52, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+        0x30, 0x1A, 0x72, 0xC3, 0xA4, 0xC3, 0xB6, 0xC3, 0xBC, 0xC3, 0x84, 0xC3,
+        0x96, 0xC3, 0x9C, 0xC3, 0x9F, 0x22, 0xBA, 0x03, 0x54, 0x68, 0x69, 0x73,
+        0x5F, 0x69, 0x73, 0x5F, 0x61, 0x5F, 0x76, 0x65, 0x72, 0x79, 0x5F, 0x6C,
+        0x6F, 0x6E, 0x67, 0x5F, 0x74, 0x65, 0x73, 0x74, 0x5F, 0x73, 0x74, 0x72,
+        0x69, 0x6E, 0x67, 0x5F, 0x77, 0x69, 0x74, 0x68, 0x5F, 0x21, 0x40, 0x23,
+        0x24, 0x25, 0x5E, 0x26, 0x2A, 0x28, 0x29, 0x5F, 0x2B, 0x2D, 0x3D, 0x5B,
+        0x5D, 0x7B, 0x7D, 0x07};
+
+    full_scale_example_t value;
+
+    sofab_istream_init(&ctx, _full_scale_example, &value);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+
+    TEST_ASSERT_EQUAL_UINT8(200, value.u8);
+    TEST_ASSERT_EQUAL_INT8(-100, value.i8);
+    TEST_ASSERT_EQUAL_UINT16(50000, value.u16);
+    TEST_ASSERT_EQUAL_INT16(-20000, value.i16);
+    TEST_ASSERT_EQUAL_UINT32(3000000000, value.u32);
+    TEST_ASSERT_EQUAL_INT32(-1000000000, value.i32);
+    TEST_ASSERT_EQUAL_UINT64(10000000000000ULL, value.u64);
+    TEST_ASSERT_EQUAL_INT64(-5000000000000LL, value.i64);
+
+    {
+        const uint8_t expected_bytes[] = {0xDE, 0xAD, 0xBE, 0xEF};
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 3.14f, value.nested.f32);
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, 3.14159265, value.nested.f64);
+        TEST_ASSERT_EQUAL_STRING("Hello, World!", value.nested.str);
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_bytes, value.nested.bytes, sizeof(expected_bytes));
+    }
+
+    {
+        const uint8_t expected_u8[] = {0, 64, 128, 191, 255};
+        const int8_t expected_i8[] = {-128, -64, 0, 63, 127};
+        const uint16_t expected_u16[] = {0, 16384, 32768, 49151, 65535};
+        const int16_t expected_i16[] = {-32768, -16384, 0, 16383, 32767};
+        const uint32_t expected_u32[] = {0, 1073741824, 2147483648, 3221225471, 4294967295};
+        const int32_t expected_i32[] = {-2147483648, -1073741824, 0, 1073741823, 2147483647};
+        const uint64_t expected_u64[] = {0, 4611686018427387904ULL, 9223372036854775808ULL, 13835058055282163711ULL, 18446744073709551615ULL};
+        const int64_t expected_i64[] = {-9223372036854775807LL, -4611686018427387904LL, 0LL, 4611686018427387903LL, 9223372036854775807LL};
+
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_u8, value.arrays.u8, sizeof(expected_u8));
+        TEST_ASSERT_EQUAL_INT8_ARRAY(expected_i8, value.arrays.i8, sizeof(expected_i8));
+        TEST_ASSERT_EQUAL_UINT16_ARRAY(expected_u16, value.arrays.u16, sizeof(expected_u16) / sizeof(expected_u16[0]));
+        TEST_ASSERT_EQUAL_INT16_ARRAY(expected_i16, value.arrays.i16, sizeof(expected_i16) / sizeof(expected_i16[0]));
+        TEST_ASSERT_EQUAL_UINT32_ARRAY(expected_u32, value.arrays.u32, sizeof(expected_u32) / sizeof(expected_u32[0]));
+        TEST_ASSERT_EQUAL_INT32_ARRAY(expected_i32, value.arrays.i32, sizeof(expected_i32) / sizeof(expected_i32[0]));
+        TEST_ASSERT_EQUAL_UINT64_ARRAY(expected_u64, value.arrays.u64, sizeof(expected_u64) / sizeof(expected_u64[0]));
+        TEST_ASSERT_EQUAL_INT64_ARRAY(expected_i64, value.arrays.i64, sizeof(expected_i64) / sizeof(expected_i64[0]));
+
+        {
+            const float expected_fp32[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
+            const double expected_fp64[] = {+0.0, -0.0, +INFINITY, -INFINITY, NAN};
+
+            TEST_ASSERT_FLOAT_ARRAY_WITHIN(0.001f, expected_fp32, value.arrays.nested.fp32, sizeof(expected_fp32) / sizeof(expected_fp32[0]));
+            TEST_ASSERT_DOUBLE_ARRAY_WITHIN(0.001, expected_fp64, value.arrays.nested.fp64, sizeof(expected_fp64) / sizeof(expected_fp64[0]));
+        }
+    }
+
+    {
+        const char *expected_strings[] = {
+            "Hello, Sofab!",
+            "",
+            "1234567890",
+            "äöüÄÖÜß",
+            "This_is_a_very_long_test_string_with_!@#$%^&*()_+-=[]{}"
+        };
+
+        for (size_t i = 0; i < (sizeof(expected_strings) / sizeof(expected_strings[0])); i++)
+        {
+            TEST_ASSERT_EQUAL_STRING(expected_strings[i], value.string_array.strings[i]);
+        }
+    }
+}
+
 int test_istream_main (void)
 {
     UNITY_BEGIN();
@@ -1873,7 +2182,9 @@ int test_istream_main (void)
     RUN_TEST(test_read_fp32);
     RUN_TEST(test_read_fp64);
     RUN_TEST(test_read_string);
+    RUN_TEST(test_read_string_empty);
     RUN_TEST(test_read_blob);
+    RUN_TEST(test_read_blob_empty);
 
     RUN_TEST(test_read_array_of_i8);
     RUN_TEST(test_read_array_of_i8_varint_count);
@@ -1891,6 +2202,8 @@ int test_istream_main (void)
     RUN_TEST(test_read_nested_sequence_skip);
     RUN_TEST(test_read_nested_sequence_skip_with_array);
     RUN_TEST(test_read_nested_sequence_skip_multilevel);
+
+    RUN_TEST(test_read_full_scale_example);
 
     return UNITY_END();
 }
