@@ -29,7 +29,7 @@ extern "C" {
 #include "sofab/istream.h"
 #include "sofab/ostream.h"
 
-/* types **********************************************************************/
+/* macros *********************************************************************/
 #define SOFAB_OBJECT_FIELDTYPE_UNSIGNED 		0x0
 #define SOFAB_OBJECT_FIELDTYPE_SIGNED   		0x1
 #define SOFAB_OBJECT_FIELDTYPE_FP32     		0x2
@@ -42,42 +42,46 @@ extern "C" {
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9
 #define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA
 
+#define SOFAB_OBJECT_FIELD(id, obj, field, type) \
+    { id, offsetof(obj, field), sizeof(((obj *)0)->field), type, (sizeof(((obj *)0)->field) & 0xF) }
+
+#define SOFAB_OBJECT_FIELD_ARRAY(id, obj, field, type) \
+    { id, offsetof(obj, field), sizeof(((obj *)0)->field), type, (sizeof(((obj *)0)->field[0]) & 0xF) }
+
+#define SOFAB_OBJECT_FIELD_DESCR(field_list, field_count, nested_list, nested_count) \
+    { field_list, nested_list, field_count, nested_count }
+
+/* types **********************************************************************/
 typedef struct
 {
 	uint16_t id;
 	uint16_t offset;
-	uint16_t field_size;
-	uint8_t field_type : 4;
-	uint8_t element_size : 4;
+	uint16_t size;
+	uint8_t type;
+	uint8_t element_size;
 } sofab_object_descr_field_t;
 
 typedef struct sofab_object_descr
 {
-	const sofab_object_descr_field_t *const fields;
-	const struct sofab_object_descr *const *nested_infos;
-	uint16_t struct_size;
+	const sofab_object_descr_field_t *const field_list;
+	const struct sofab_object_descr *const *nested_list;
 	uint16_t field_count;
-	uint16_t struct_count;
+	uint16_t nested_count;
 } sofab_object_descr_t;
 
-// typedef struct
-// {
-// 	const sofab_object_descr_t *info;
-// 	uint8_t *dst;
-// 	sofab_decoder_t decoder;
-// } sofab_object_sequence_t;
-
-typedef struct sofab_object_decoder
+typedef struct
 {
-	struct sofab_object_decoder *parent;    /*!< Pointer to parent decoder for nested levels */
 	const sofab_object_descr_t *info;
 	uint8_t info_index;
 	uint8_t *dst;
 	sofab_decoder_t decoder;
-	// sofab_object_sequence_t *sequence;
-	uint8_t sequence_depth;
-	uint8_t sequence_index;
 } sofab_object_decoder_t;
+
+// typedef struct sofab_object_ctx
+// {
+// 	sofab_object_decoder_t *decoder_list;
+// 	uint8_t decoder_list_size;
+// } sofab_object_ctx_t;
 
 /* prototypes *****************************************************************/
 

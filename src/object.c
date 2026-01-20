@@ -39,9 +39,9 @@ extern sofab_ret_t sofab_object_encode (
 
 	for (size_t i = 0; i < info->field_count && ret == SOFAB_RET_OK; i++)
     {
-		const sofab_object_descr_field_t *field = &info->fields[i];
+		const sofab_object_descr_field_t *field = &info->field_list[i];
 
-	    switch (field->field_type)
+	    switch (field->type)
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
 			{
@@ -92,12 +92,12 @@ extern sofab_ret_t sofab_object_encode (
                 break;
 
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
-                ret = sofab_ostream_write_blob(ctx, field->id, (uint8_t *)((const uint8_t *)src + field->offset), field->field_size);
+                ret = sofab_ostream_write_blob(ctx, field->id, (uint8_t *)((const uint8_t *)src + field->offset), field->size);
                 break;
 
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
             {
-                size_t element_count = field->field_size / field->element_size;
+                size_t element_count = field->size / field->element_size;
                 ret = sofab_ostream_write_array_of_unsigned(ctx, field->id,
                     (const void *)((const uint8_t *)src + field->offset), element_count, field->element_size);
                 break;
@@ -105,7 +105,7 @@ extern sofab_ret_t sofab_object_encode (
 
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
             {
-                size_t element_count = field->field_size / field->element_size;
+                size_t element_count = field->size / field->element_size;
                 ret = sofab_ostream_write_array_of_signed(ctx, field->id,
                     (const void *)((const uint8_t *)src + field->offset), element_count, field->element_size);
                 break;
@@ -113,7 +113,7 @@ extern sofab_ret_t sofab_object_encode (
 
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
             {
-                size_t element_count = field->field_size / sizeof(float);
+                size_t element_count = field->size / sizeof(float);
                 ret = sofab_ostream_write_array_of_fp32(ctx, field->id,
                     (const float *)((const uint8_t *)src + field->offset), element_count);
                 break;
@@ -121,7 +121,7 @@ extern sofab_ret_t sofab_object_encode (
 
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
             {
-                size_t element_count = field->field_size / sizeof(double);
+                size_t element_count = field->size / sizeof(double);
                 ret = sofab_ostream_write_array_of_fp64(ctx, field->id,
                     (const double *)((const uint8_t *)src + field->offset), element_count);
                 break;
@@ -130,7 +130,7 @@ extern sofab_ret_t sofab_object_encode (
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
                 ret = sofab_ostream_write_sequence_begin(ctx, field->id);
                 ret |= sofab_object_encode(ctx,
-					info->nested_infos[nested_index++],
+					info->nested_list[nested_index++],
 					(const uint8_t *)src + field->offset);
                 ret |= sofab_ostream_write_sequence_end(ctx);
                 break;
@@ -154,13 +154,13 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 
 	for (size_t i = 0; i < info->field_count; i++)
 	{
-		const sofab_object_descr_field_t *field = &info->fields[i];
+		const sofab_object_descr_field_t *field = &info->field_list[i];
 		if (field->id != id)
 		{
 			continue;
 		}
 
-		switch (field->field_type)
+		switch (field->type)
 		{
 			case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
 				sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
@@ -181,37 +181,37 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 				break;
 
 			case SOFAB_OBJECT_FIELDTYPE_STRING:
-				sofab_istream_read_string(ctx, (char *)(decoder->dst + field->offset), field->field_size);
+				sofab_istream_read_string(ctx, (char *)(decoder->dst + field->offset), field->size);
 				break;
 
 			case SOFAB_OBJECT_FIELDTYPE_BLOB:
-				sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->field_size);
+				sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
 				break;
 
 			case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
 				sofab_istream_read_array(ctx,
 					decoder->dst + field->offset,
-					field->field_size / field->element_size, field->element_size,
+					field->size / field->element_size, field->element_size,
 					SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 				break;
 
 			case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
 				sofab_istream_read_array(ctx,
 					decoder->dst + field->offset,
-					field->field_size / field->element_size, field->element_size,
+					field->size / field->element_size, field->element_size,
 					SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
 				break;
 
 			case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
 				sofab_istream_read_array_of_fp32(ctx,
 					(float *)(decoder->dst + field->offset),
-					field->field_size / sizeof(float));
+					field->size / sizeof(float));
 				break;
 
 			case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
 				sofab_istream_read_array_of_fp64(ctx,
 					(double *)(decoder->dst + field->offset),
-					field->field_size / sizeof(double));
+					field->size / sizeof(double));
 				break;
 
 			case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
@@ -219,13 +219,12 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 				sofab_object_decoder_t *child_decoder = (sofab_object_decoder_t *)malloc(sizeof(sofab_object_decoder_t));
 				memset(child_decoder, 0, sizeof(sofab_object_decoder_t));
 
-				child_decoder->parent = decoder;
-				child_decoder->info = info->nested_infos[decoder->info_index++];
+				child_decoder->info = info->nested_list[decoder->info_index++];
 				child_decoder->dst = decoder->dst + field->offset;
 				child_decoder->info_index = 0;
 
 				sofab_istream_read_sequence(ctx,
-					&child_decoder->decoder,
+					&decoder->decoder,
 					sofab_object_field_cb,
 					// sofab_object_sequence_end_cb,
 					child_decoder);
