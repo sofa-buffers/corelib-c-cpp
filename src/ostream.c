@@ -17,6 +17,9 @@
 /* macros *********************************************************************/
 
 /* types **********************************************************************/
+// compile-time checks for float and double sizes
+typedef char float_size_check[(sizeof(float) == 4) ? 1 : -1];
+typedef char double_size_check[(sizeof(double) == 8) ? 1 : -1];
 
 /* prototypes *****************************************************************/
 
