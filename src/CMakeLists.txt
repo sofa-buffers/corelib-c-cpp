@@ -1,6 +1,7 @@
 add_library(sofabuffers
     ostream.c
     istream.c
+    object.c
 )
 
 target_include_directories(sofabuffers PUBLIC include)
