@@ -48,7 +48,7 @@ extern "C" {
 #define SOFAB_OBJECT_FIELD_ARRAY(id, obj, field, type) \
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), type, (sizeof(((obj *)0)->field[0]) & 0xF) }
 
-#define SOFAB_OBJECT_FIELD_DESCR(field_list, field_count, nested_list, nested_count) \
+#define SOFAB_OBJECT_DESCR(field_list, field_count, nested_list, nested_count) \
     { field_list, nested_list, field_count, nested_count }
 
 /* types **********************************************************************/
