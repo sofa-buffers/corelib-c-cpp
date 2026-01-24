@@ -138,7 +138,7 @@ static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
     ctx->fixlen_remaining--;
 
     // if done reading all bytes in reverse order ...
-    if (ctx->fixlen_remaining == 0)
+    if (ctx->target_ptr && ctx->fixlen_remaining == 0)
     {
         // move target pointer forward
         ctx->target_ptr += ctx->target_len;
