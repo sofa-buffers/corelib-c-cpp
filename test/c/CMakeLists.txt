@@ -23,6 +23,7 @@ add_executable(sofabtest
     main.c
     test_ostream.c
     test_istream.c
+    test_object.c
 )
 
 target_compile_options(sofabtest

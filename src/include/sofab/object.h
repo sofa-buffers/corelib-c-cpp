@@ -41,7 +41,7 @@ extern "C" {
 #include "sofab/istream.h"
 #include "sofab/ostream.h"
 
-/* macros *********************************************************************/
+/* constants ******************************************************************/
 #define SOFAB_OBJECT_FIELDTYPE_UNSIGNED 		0x0
 #define SOFAB_OBJECT_FIELDTYPE_SIGNED   		0x1
 #define SOFAB_OBJECT_FIELDTYPE_FP32     		0x2
@@ -54,6 +54,7 @@ extern "C" {
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9
 #define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA
 
+/* macros *********************************************************************/
 #define SOFAB_OBJECT_FIELD(id, obj, field, type) \
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field) & 0xF) }
 
@@ -104,11 +105,26 @@ typedef struct
 
 /* prototypes *****************************************************************/
 
+/*!
+ * @brief Encodes an object with the given descriptor into the output stream.
+ *
+ * The output stream context must be initialized prior to calling this function.
+ *
+ * @param ctx       Pointer to the output stream context.
+ * @param info      Pointer to the object descriptor.
+ * @param src       Pointer to the source object to serialize.
+ */
 extern sofab_ret_t sofab_object_encode (
     sofab_ostream_t *ctx,
     const sofab_object_descr_t *info,
     const void *src);
 
+ /*!
+ * @brief Field callback invoked during object decoding.
+ *
+ * Use this function as the field callback when initializing an input stream
+ * for decoding objects with @ref sofab_istream_init.
+ */
 extern void sofab_object_field_cb (
     sofab_istream_t *ctx,
     sofab_id_t id,
