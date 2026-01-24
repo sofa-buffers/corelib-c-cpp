@@ -703,7 +703,7 @@ namespace sofab
     class IStreamMessage
     {
     private:
-        sofab_decoder_t decoder_;
+        sofab_istream_decoder_t decoder_;
 
         template <class MessageType>
         friend class IStreamObject;

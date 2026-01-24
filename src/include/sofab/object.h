@@ -14,6 +14,9 @@
  * For small embedded projects with few small messages, however,
  * it may make sense to use the corelib without this transcoder.
  *
+ * Typically, this module is used from generated code that defines
+ * the message structures and their descriptors.
+ *
  * SPDX-License-Identifier: MIT
  */
 
@@ -99,7 +102,7 @@ typedef struct
 {
     const sofab_object_descr_t *info;      /*!< Pointer to object descriptor */
     uint8_t *dst;                          /*!< Destination buffer for decoded data */
-    sofab_decoder_t decoder;               /*!< Decoder state */
+    sofab_istream_decoder_t decoder;       /*!< Decoder state */
     uint8_t depth;                         /*!< Decoder depth */
 } sofab_object_decoder_t;
 

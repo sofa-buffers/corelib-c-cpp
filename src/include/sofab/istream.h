@@ -96,30 +96,30 @@ typedef void (*sofab_istream_field_cb_t) (
  * Each sequence has its own decoder instance. Decoders form a parent-child
  * chain and inherit the decoding state related to sequence depth and skip levels.
  */
-typedef struct sofab_decoder
+typedef struct sofab_istream_decoder
 {
-    struct sofab_decoder *parent;               /*!< Pointer to parent decoder for nested levels */
+    struct sofab_istream_decoder *parent;       /*!< Pointer to parent decoder for nested levels */
     sofab_istream_field_cb_t field_callback;    /*!< User callback for handling field IDs */
     void *usrptr;                               /*!< Optional user pointer for the field callback */
     uint8_t state;                              /*!< Internal parsing state machine */
     uint8_t skip_depth;                         /*!< Counter for skipped nested fields */
-} sofab_decoder_t;
+} sofab_istream_decoder_t;
 
 /*!
  * @brief Internal state of the Sofab input stream.
  */
 struct sofab_istream
 {
-    uint64_t varint_value;              /*!< Accumulated varint value under construction */
-    sofab_decoder_t default_decoder;    /*!< Top-level decoder instance */
-    uint32_t id;                        /*!< Current field ID being processed */
-    uint32_t fixlen_remaining;          /*!< Remaining bytes to read for a fixed-length field */
-    uint32_t target_len;                /*!< Target element size or total buffer length */
-    uint32_t target_count;              /*!< Number of elements expected for array reads */
-    uint8_t *target_ptr;                /*!< Pointer to output buffer for field data */
-    sofab_decoder_t *decoder;           /*!< Currently active decoder (may be nested) */
-    uint8_t target_opt;                 /*!< Field options (used for type checks and flags) */
-    uint8_t varint_shift;               /*!< Current shift offset for varint decoding */
+    uint64_t varint_value;                      /*!< Accumulated varint value under construction */
+    sofab_istream_decoder_t default_decoder;    /*!< Top-level decoder instance */
+    uint32_t id;                                /*!< Current field ID being processed */
+    uint32_t fixlen_remaining;                  /*!< Remaining bytes to read for a fixed-length field */
+    uint32_t target_len;                        /*!< Target element size or total buffer length */
+    uint32_t target_count;                      /*!< Number of elements expected for array reads */
+    uint8_t *target_ptr;                        /*!< Pointer to output buffer for field data */
+    sofab_istream_decoder_t *decoder;           /*!< Currently active decoder (may be nested) */
+    uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */
+    uint8_t varint_shift;                       /*!< Current shift offset for varint decoding */
 };
 
 /* prototypes *****************************************************************/
@@ -524,7 +524,7 @@ static inline void sofab_istream_read_array_of_fp64 (
  * @param usrptr         Optional user pointer for the nested callback.
  */
 extern void sofab_istream_read_sequence (
-    sofab_istream_t *ctx, sofab_decoder_t *decoder,
+    sofab_istream_t *ctx, sofab_istream_decoder_t *decoder,
     sofab_istream_field_cb_t field_callback, void *usrptr);
 
 #ifdef __cplusplus

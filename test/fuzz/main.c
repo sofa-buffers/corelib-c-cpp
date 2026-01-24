@@ -73,7 +73,7 @@ typedef struct
     full_scale_seq_array_of_strings_t string_array;
 } full_scale_example_t;
 
-static sofab_decoder_t _full_scale_decoder[2];
+static sofab_istream_decoder_t _full_scale_decoder[2];
 
 static void _full_scale_example_struct(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
 {

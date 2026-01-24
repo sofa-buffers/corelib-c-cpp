@@ -135,7 +135,7 @@ extern sofab_ret_t sofab_object_encode (
                 break;
 
             default:
-                // Unsupported type
+                // Unsupported field type in descriptor
                 return SOFAB_RET_E_USAGE;
         }
     }
@@ -215,8 +215,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
             {
-                if (decoder->depth == 0)
-                    break; // Sequence depth exceeded
+                if (decoder->depth == 0) break; // Sequence depth exceeded
 
                 // pointer arithmetic to get next decoder handle in array
                 // (bounds are checked via depth above)
@@ -237,7 +236,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
             }
 
             default:
-                // Unsupported type
+                // Unsupported field type in descriptor
                 break;
         }
 

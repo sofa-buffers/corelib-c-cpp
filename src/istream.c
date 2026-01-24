@@ -678,7 +678,7 @@ extern void sofab_istream_read_array (
 }
 
 extern void sofab_istream_read_sequence (
-    sofab_istream_t *ctx, sofab_decoder_t *decoder,
+    sofab_istream_t *ctx, sofab_istream_decoder_t *decoder,
     sofab_istream_field_cb_t field_callback, void *usrptr)
 {
     assert(ctx != NULL);
