@@ -618,6 +618,30 @@ static void test_object_deserialize_invalid_nested_depth (void)
     TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
 }
 
+//
+
+static void test_object_deserialize_invalid_field_type (void)
+{
+    const uint8_t buffer[] = {0x09, 0xFE, 0x01};
+
+    invalid_field_type_t data;
+    memset(&data, 0x55, sizeof(data));
+
+    sofab_istream_t ctx;
+    sofab_object_decoder_t decoder = {
+        .info = &_info_invalid_field_type,
+        .dst = (uint8_t *)&data,
+        .depth = 0,
+    };
+
+    sofab_istream_init(&ctx, sofab_object_field_cb, (void*)&decoder);
+    sofab_ret_t ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
+}
+
+//
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
@@ -630,6 +654,7 @@ int test_object_main (void)
     RUN_TEST(test_object_serialize_invalid_field_type);
 
     RUN_TEST(test_object_deserialize_invalid_nested_depth);
+    RUN_TEST(test_object_deserialize_invalid_field_type);
 
     return UNITY_END();
 }

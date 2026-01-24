@@ -80,8 +80,8 @@ typedef struct
     const uint16_t offset;			/*!< Offset within the object structure */
     const uint16_t size;			/*!< Size of the field in bytes */
     const uint8_t nested_idx;		/*!< Index into the nested object descriptor list */
-    const uint8_t type : 4;			/*!< Field type (sofab_object_filedtype_t) */
-    const uint8_t element_size : 4;	/*!< Size of individual elements for arrays */
+    const uint8_t type : 4;			/*!< Field type (4bit for types: 0x0..0xA) */
+    const uint8_t element_size : 4;	/*!< Size of individual elements for arrays (4bit for type length: 1..8)*/
 } sofab_object_descr_field_t;
 
 /*!
