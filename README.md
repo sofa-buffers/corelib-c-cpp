@@ -58,7 +58,7 @@ The lib was always built with `-Os` and all features active.
 
 | Architecture | .text | .data | .bss
 | - | - | - | -
-| ARMv6-m |            ~1.8KB | 0.0KB | 0.0KB
-| ARMv7-m+fp.dp |      ~1.9KB | 0.0KB | 0.0KB
-| ARMv8-m.main+fp |    ~1.9KB | 0.0KB | 0.0KB
-| ARMv8.1-m.main+mve | ~1.9KB | 0.0KB | 0.0KB
+| ARMv6-m |            ~2.6KB | 0.0KB | 0.0KB
+| ARMv7-m+fp.dp |      ~2.7KB | 0.0KB | 0.0KB
+| ARMv8-m.main+fp |    ~2.7KB | 0.0KB | 0.0KB
+| ARMv8.1-m.main+mve | ~2.7KB | 0.0KB | 0.0KB
