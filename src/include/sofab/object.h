@@ -2,6 +2,18 @@
  * @file object.h
  * @brief SofaBuffers C - Object encoder and decoder.
  *
+ * This module implements a generic message encoder and decoder.
+ * Since programmatic transcoding of messages using the corelib API can
+ * generate a lot of program code under certain circumstances,
+ * this generic transcoder helps to keep the footprint small.
+ * Instead of API calls, a constant message description is used to
+ * serialize and deserialize messages.
+ * For large messages, these descriptions are smaller than the code
+ * required for API calls. Even in projects with many messages,
+ * program code can be saved by reusing the transcoder multiple times.
+ * For small embedded projects with few small messages, however,
+ * it may make sense to use the corelib without this transcoder.
+ *
  * SPDX-License-Identifier: MIT
  */
 
@@ -43,64 +55,66 @@ extern "C" {
 #define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA
 
 #define SOFAB_OBJECT_FIELD(id, obj, field, type) \
-    { id, offsetof(obj, field), sizeof(((obj *)0)->field), type, (sizeof(((obj *)0)->field) & 0xF) }
+    { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field) & 0xF) }
+
+#define SOFAB_OBJECT_FIELD_SEQUENCE(id, obj, field, type, idx) \
+    { id, offsetof(obj, field), sizeof(((obj *)0)->field), idx, type, (sizeof(((obj *)0)->field) & 0xF) }
 
 #define SOFAB_OBJECT_FIELD_ARRAY(id, obj, field, type) \
-    { id, offsetof(obj, field), sizeof(((obj *)0)->field), type, (sizeof(((obj *)0)->field[0]) & 0xF) }
+    { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field[0]) & 0xF) }
 
 #define SOFAB_OBJECT_DESCR(field_list, field_count, nested_list, nested_count) \
     { field_list, nested_list, field_count, nested_count }
 
 /* types **********************************************************************/
+/*!
+ * @brief Description of a single field within a SofaBuffer object.
+ */
 typedef struct
 {
-	uint16_t id;
-	uint16_t offset;
-	uint16_t size;
-	uint8_t type;
-	uint8_t element_size;
+    const uint16_t id;				/*!< Field ID */
+    const uint16_t offset;			/*!< Offset within the object structure */
+    const uint16_t size;			/*!< Size of the field in bytes */
+    const uint8_t nested_idx;		/*!< Index into the nested object descriptor list */
+    const uint8_t type : 4;			/*!< Field type (sofab_object_filedtype_t) */
+    const uint8_t element_size : 4;	/*!< Size of individual elements for arrays */
 } sofab_object_descr_field_t;
 
+/*!
+ * @brief Description of a SofaBuffer object structure.
+ */
 typedef struct sofab_object_descr
 {
-	const sofab_object_descr_field_t *const field_list;
-	const struct sofab_object_descr *const *nested_list;
-	uint16_t field_count;
-	uint16_t nested_count;
+    const sofab_object_descr_field_t *const field_list;     /*!< Pointer to list of field descriptors */
+    const struct sofab_object_descr *const *nested_list;    /*!< Pointer to list of nested object descriptors */
+    const uint16_t field_count;                             /*!< Number of fields in the object */
+    const uint8_t nested_count;                             /*!< Number of nested objects */
 } sofab_object_descr_t;
 
+/*!
+ * @brief Decoder state for a SofaBuffer object.
+ */
 typedef struct
 {
-	const sofab_object_descr_t *info;
-	uint8_t info_index;
-	uint8_t *dst;
-	sofab_decoder_t decoder;
+    const sofab_object_descr_t *info;      /*!< Pointer to object descriptor */
+    uint8_t *dst;                          /*!< Destination buffer for decoded data */
+    sofab_decoder_t decoder;               /*!< Decoder state */
+    uint8_t depth;                         /*!< Decoder depth */
 } sofab_object_decoder_t;
-
-// typedef struct sofab_object_ctx
-// {
-// 	sofab_object_decoder_t *decoder_list;
-// 	uint8_t decoder_list_size;
-// } sofab_object_ctx_t;
 
 /* prototypes *****************************************************************/
 
 extern sofab_ret_t sofab_object_encode (
-	sofab_ostream_t *ctx,
-	const sofab_object_descr_t *info,
-	const void *src);
+    sofab_ostream_t *ctx,
+    const sofab_object_descr_t *info,
+    const void *src);
 
 extern void sofab_object_field_cb (
-	sofab_istream_t *ctx,
-	sofab_id_t id,
-	size_t size,
-	size_t count,
-	void *usrptr);
-
-// extern sofab_ret_t sofab_object_decode (
-// 	sofab_istream_t *ctx,
-// 	const sofab_object_descr_t *info,
-// 	void *dst);
+    sofab_istream_t *ctx,
+    sofab_id_t id,
+    size_t size,
+    size_t count,
+    void *usrptr);
 
 #ifdef __cplusplus
 }

@@ -11,7 +11,6 @@
 #include "sofab/object.h"
 
 #include <assert.h>
-#include <stdio.h>
 
 /* constants ******************************************************************/
 
@@ -26,43 +25,43 @@
 /* functions ******************************************************************/
 
 extern sofab_ret_t sofab_object_encode (
-	sofab_ostream_t *ctx,
-	const sofab_object_descr_t *info,
-	const void *src)
+    sofab_ostream_t *ctx,
+    const sofab_object_descr_t *info,
+    const void *src)
 {
-	sofab_ret_t ret = SOFAB_RET_OK;
-	size_t nested_index = 0;
+    sofab_ret_t ret = SOFAB_RET_OK;
+    size_t nested_idx = 0;
 
-	assert(ctx != NULL);
-	assert(info != NULL);
-	assert(src != NULL);
+    assert(ctx != NULL);
+    assert(info != NULL);
+    assert(src != NULL);
 
-	for (size_t i = 0; i < info->field_count && ret == SOFAB_RET_OK; i++)
+    for (size_t i = 0; i < info->field_count && ret == SOFAB_RET_OK; i++)
     {
-		const sofab_object_descr_field_t *field = &info->field_list[i];
+        const sofab_object_descr_field_t *field = &info->field_list[i];
 
-	    switch (field->type)
+        switch (field->type)
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
-			{
+            {
                 sofab_unsigned_t val;
-				if (field->element_size == sizeof(uint8_t))
-					val = *((uint8_t *)((const uint8_t *)src + field->offset));
-				else if (field->element_size == sizeof(uint16_t))
-					val = *((uint16_t *)((const uint8_t *)src + field->offset));
-				else if (field->element_size == sizeof(uint32_t))
-					val = *((uint32_t *)((const uint8_t *)src + field->offset));
-				else if (field->element_size == sizeof(uint64_t))
-					val = *((uint64_t *)((const uint8_t *)src + field->offset));
-				else
-					return SOFAB_RET_E_USAGE; // Unsupported size
+                if (field->element_size == sizeof(uint8_t))
+                    val = *((uint8_t *)((const uint8_t *)src + field->offset));
+                else if (field->element_size == sizeof(uint16_t))
+                    val = *((uint16_t *)((const uint8_t *)src + field->offset));
+                else if (field->element_size == sizeof(uint32_t))
+                    val = *((uint32_t *)((const uint8_t *)src + field->offset));
+                else if (field->element_size == sizeof(uint64_t))
+                    val = *((uint64_t *)((const uint8_t *)src + field->offset));
+                else
+                    return SOFAB_RET_E_USAGE; // Unsupported size
 
                 ret = sofab_ostream_write_unsigned(ctx, field->id, val);
                 break;
-			}
+            }
 
             case SOFAB_OBJECT_FIELDTYPE_SIGNED:
-			{
+            {
                 sofab_signed_t sval;
                 if (field->element_size == sizeof(int8_t))
                     sval = *((int8_t *)((const uint8_t *)src + field->offset));
@@ -77,7 +76,7 @@ extern sofab_ret_t sofab_object_encode (
 
                 ret = sofab_ostream_write_signed(ctx, field->id, sval);
                 break;
-			}
+            }
 
             case SOFAB_OBJECT_FIELDTYPE_FP32:
                 ret = sofab_ostream_write_fp32(ctx, field->id, *((float *)((const uint8_t *)src + field->offset)));
@@ -130,8 +129,8 @@ extern sofab_ret_t sofab_object_encode (
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
                 ret = sofab_ostream_write_sequence_begin(ctx, field->id);
                 ret |= sofab_object_encode(ctx,
-					info->nested_list[nested_index++],
-					(const uint8_t *)src + field->offset);
+                    info->nested_list[nested_idx++],
+                    (const uint8_t *)src + field->offset);
                 ret |= sofab_ostream_write_sequence_end(ctx);
                 break;
 
@@ -141,109 +140,107 @@ extern sofab_ret_t sofab_object_encode (
         }
     }
 
-	return ret;
+    return ret;
 }
 
 extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
 {
-	sofab_object_decoder_t *decoder = (sofab_object_decoder_t *)usrptr;
-	const sofab_object_descr_t *info = decoder->info;
+    sofab_object_decoder_t *decoder = (sofab_object_decoder_t *)usrptr;
+    const sofab_object_descr_t *info = decoder->info;
 
-	(void)size;
-	(void)count;
+    (void)size;
+    (void)count;
 
-	for (size_t i = 0; i < info->field_count; i++)
-	{
-		const sofab_object_descr_field_t *field = &info->field_list[i];
-		if (field->id != id)
-		{
-			continue;
-		}
+    for (size_t i = 0; i < info->field_count; i++)
+    {
+        const sofab_object_descr_field_t *field = &info->field_list[i];
+        if (field->id != id)
+        {
+            continue;
+        }
 
-		switch (field->type)
-		{
-			case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
-				sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
-					SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
-				break;
+        switch (field->type)
+        {
+            case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
+                sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_SIGNED:
-				sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
-					SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_SIGNED:
+                sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_FP32:
-				sofab_istream_read_fp32(ctx, (float *)(decoder->dst + field->offset));
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_FP32:
+                sofab_istream_read_fp32(ctx, (float *)(decoder->dst + field->offset));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_FP64:
-				sofab_istream_read_fp64(ctx, (double *)(decoder->dst + field->offset));
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_FP64:
+                sofab_istream_read_fp64(ctx, (double *)(decoder->dst + field->offset));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_STRING:
-				sofab_istream_read_string(ctx, (char *)(decoder->dst + field->offset), field->size);
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_STRING:
+                sofab_istream_read_string(ctx, (char *)(decoder->dst + field->offset), field->size);
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_BLOB:
-				sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_BLOB:
+                sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
-				sofab_istream_read_array(ctx,
-					decoder->dst + field->offset,
-					field->size / field->element_size, field->element_size,
-					SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
+                sofab_istream_read_array(ctx,
+                    decoder->dst + field->offset,
+                    field->size / field->element_size, field->element_size,
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
-				sofab_istream_read_array(ctx,
-					decoder->dst + field->offset,
-					field->size / field->element_size, field->element_size,
-					SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
+                sofab_istream_read_array(ctx,
+                    decoder->dst + field->offset,
+                    field->size / field->element_size, field->element_size,
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
-				sofab_istream_read_array_of_fp32(ctx,
-					(float *)(decoder->dst + field->offset),
-					field->size / sizeof(float));
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
+                sofab_istream_read_array_of_fp32(ctx,
+                    (float *)(decoder->dst + field->offset),
+                    field->size / sizeof(float));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
-				sofab_istream_read_array_of_fp64(ctx,
-					(double *)(decoder->dst + field->offset),
-					field->size / sizeof(double));
-				break;
+            case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
+                sofab_istream_read_array_of_fp64(ctx,
+                    (double *)(decoder->dst + field->offset),
+                    field->size / sizeof(double));
+                break;
 
-			case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
-			{
-				sofab_object_decoder_t *child_decoder = (sofab_object_decoder_t *)malloc(sizeof(sofab_object_decoder_t));
-				memset(child_decoder, 0, sizeof(sofab_object_decoder_t));
+            case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
+            {
+                if (decoder->depth == 0)
+                    break; // Sequence depth exceeded
 
-				child_decoder->info = info->nested_list[decoder->info_index++];
-				child_decoder->dst = decoder->dst + field->offset;
-				child_decoder->info_index = 0;
+                // pointer arithmetic to get next decoder handle in array
+                // (bounds are checked via depth above)
+                sofab_object_decoder_t *nested = decoder + 1;
 
-				sofab_istream_read_sequence(ctx,
-					&decoder->decoder,
-					sofab_object_field_cb,
-					// sofab_object_sequence_end_cb,
-					child_decoder);
-				break;
-			}
+                // use descriptor from nested list
+                nested->info = info->nested_list[field->nested_idx];
+                // destination pointer for nested object
+                nested->dst = decoder->dst + field->offset;
+                // decrement available amount of decoder handles
+                nested->depth = decoder->depth - 1;
 
-			default:
-				// Unsupported type
-				break;
-		}
+                sofab_istream_read_sequence(ctx,
+                    &nested->decoder,
+                    sofab_object_field_cb,
+                    nested);
+                break;
+            }
 
-		break;
-	}
+            default:
+                // Unsupported type
+                break;
+        }
+
+        break;
+    }
 }
-
-// extern sofab_ret_t sofab_object_decode (
-// 	sofab_istream_t *ctx,
-// 	const sofab_object_descr_t *info,
-// 	void *dst)
-// {
-
-// }
