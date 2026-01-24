@@ -11,6 +11,10 @@
 
 [GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
 
+### Source documentation
+
+[Documentation](https://sofa-buffers.github.io/corelib-c-cpp/)
+
 ### Supported languages
 
 - <b>C99</b> or later
