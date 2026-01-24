@@ -28,3 +28,11 @@ jobs:
 
       - name: Build documentation
         run: cmake --build build --target doc
+
+      - name: Upload documentation
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/doc/html
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
