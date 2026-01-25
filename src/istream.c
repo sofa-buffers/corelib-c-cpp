@@ -13,14 +13,13 @@
 #include <assert.h>
 
 /* constants ******************************************************************/
-#define _CHECK_INT_OVERFLOW 1
 
 /* macros *********************************************************************/
 #define _OPT_FIELDTYPE(type)    ((type) & 0x07)
 #define _OPT_FIXLENTYPE(type)   (((type) >> 3) & 0x07)
 #define _OPT_STRINGTERM(type)   ((type) & 0x40)
 
-#if _CHECK_INT_OVERFLOW == 1
+#if !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK)
 # define _FITS_UNSIGNED_CHECK(val, bits) \
     if (!_fits_unsigned_n((val), (bits))) return SOFAB_RET_E_INVALID_MSG;
 
@@ -29,7 +28,7 @@
 #else
 # define _FITS_UNSIGNED_CHECK(val, bits)   do {} while (0)
 # define _FITS_SIGNED_CHECK(val, bits)     do {} while (0)
-#endif
+#endif /* !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK) */
 
 /* types **********************************************************************/
 typedef enum
@@ -78,19 +77,21 @@ static int _varint_decode (sofab_istream_t *ctx, uint8_t byte, sofab_unsigned_t 
     return (ctx->varint_shift >= bits) ? -2 : -1;
 }
 
-#if _CHECK_INT_OVERFLOW == 1
+#if !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK)
 static int _fits_unsigned_n (sofab_unsigned_t x, int n)
 {
-    if (n == sizeof(sofab_unsigned_t) * 8) return 1;
+    const int bits = sizeof(sofab_unsigned_t) * 8;
+    if (n == bits) return 1;
     return (x >> n) == 0;
 }
 
 static int _fits_signed_n (sofab_signed_t x, int n)
 {
-    if (n == sizeof(sofab_unsigned_t) * 8) return 1;
-    return (x >> (n - 1)) == (x >> 63);
+    const int bits = sizeof(sofab_signed_t) * 8;
+    if (n == bits) return 1;
+    return (x >> (n - 1)) == (x >> (bits - 1));
 }
-#endif
+#endif /* !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK) */
 
 static uint8_t _type_decode (sofab_unsigned_t *value)
 {
@@ -100,6 +101,7 @@ static uint8_t _type_decode (sofab_unsigned_t *value)
     return type;
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /* Read fixed-length data from the stream.
  * Returns 0 on success, >0 need more data.
  */
@@ -142,7 +144,8 @@ static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
 
     return ctx->fixlen_remaining;
 }
-#endif
+#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 static sofab_ret_t _call_field_callback (
     sofab_istream_t *ctx)
@@ -269,16 +272,23 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         ctx->decoder->state = _DECODER_STATE_VARINT_SIGNED;
                         break;
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
                     case SOFAB_TYPE_FIXLEN:
                         ctx->decoder->state = _DECODER_STATE_FIXLEN_LEN;
                         break;
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
                     case SOFAB_TYPE_VARINTARRAY_UNSIGNED:
                     case SOFAB_TYPE_VARINTARRAY_SIGNED:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
                     case SOFAB_TYPE_FIXLENARRAY:
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
                         ctx->decoder->state = _DECODER_STATE_ARRAY_COUNT;
                         break;
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
                     case SOFAB_TYPE_SEQUENCE_START:
                         // if not interested in sequence ...
                         if (!ctx->target_ptr)
@@ -318,6 +328,15 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                         ctx->decoder->state = _DECODER_STATE_IDLE;
                         break;
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
+#if defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || \
+    defined(SOFAB_DISABLE_ARRAY_SUPPORT) || \
+    defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+                    default:
+                        // unsupported field type
+                        return SOFAB_RET_E_INVALID_MSG;
+#endif
                 }
 
                 break;
@@ -437,6 +456,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 break;
             }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case _DECODER_STATE_FIXLEN_LEN:
             {
                 sofab_ret_t ret;
@@ -546,7 +566,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     // need more data
                     continue;
                 }
-#endif
+#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
 
                 if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
                 {
@@ -578,7 +598,9 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 ctx->decoder->state = _DECODER_STATE_IDLE;
                 break;
             }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case _DECODER_STATE_ARRAY_COUNT:
             {
                 sofab_ret_t ret;
@@ -635,11 +657,14 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     ctx->decoder->state = _DECODER_STATE_VARINT_UNSIGNED;
                 else if (type == SOFAB_TYPE_VARINTARRAY_SIGNED)
                     ctx->decoder->state = _DECODER_STATE_VARINT_SIGNED;
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
                 else if (type == SOFAB_TYPE_FIXLENARRAY)
                     ctx->decoder->state = _DECODER_STATE_FIXLEN_LEN;
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
                 break;
             }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
         }
     }
 
@@ -658,6 +683,7 @@ extern void sofab_istream_read_field (
     ctx->target_opt = opt;
 }
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 extern void sofab_istream_read_array (
     sofab_istream_t *ctx, void *var,
     size_t element_count, size_t element_size, uint8_t opt)
@@ -672,7 +698,9 @@ extern void sofab_istream_read_array (
     ctx->target_len = element_size;
     ctx->target_opt = opt;
 }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 extern void sofab_istream_read_sequence (
     sofab_istream_t *ctx, sofab_istream_decoder_t *decoder,
     sofab_istream_field_cb_t field_callback, void *usrptr)
@@ -692,3 +720,4 @@ extern void sofab_istream_read_sequence (
     ctx->target_ptr = (uint8_t *)decoder; // just to have a non-NULL value
     ctx->target_opt = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START);
 }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */

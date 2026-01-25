@@ -100,6 +100,7 @@ static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_ty
     return SOFAB_RET_OK;
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /* Write fixed-length data to buffer */
 static sofab_ret_t _write_fixlen (sofab_ostream_t *ctx, const uint8_t *data, int32_t datalen)
 {
@@ -128,7 +129,8 @@ static sofab_ret_t _write_fixlen_reverse (sofab_ostream_t *ctx, const uint8_t *d
 
     return SOFAB_RET_OK;
 }
-#endif
+#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 //
 
@@ -224,6 +226,7 @@ extern sofab_ret_t sofab_ostream_write_signed (
     return SOFAB_RET_OK;
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 extern sofab_ret_t sofab_ostream_write_fixlen (
     sofab_ostream_t *ctx, sofab_id_t id, const void *data, int32_t datalen,
     sofab_fixlentype_t type)
@@ -263,11 +266,13 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
     {
         return ret;
     }
-#endif
+#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
 
     return SOFAB_RET_OK;
 }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
     sofab_ostream_t *ctx, sofab_id_t id, const void *data,
     int32_t element_count, int32_t element_size)
@@ -370,6 +375,7 @@ extern sofab_ret_t sofab_ostream_write_array_of_signed (
     return SOFAB_RET_OK;
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
     sofab_ostream_t *ctx, sofab_id_t id, const void *data,
     int32_t element_count, int32_t element_size,
@@ -423,13 +429,16 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
         {
             return ret;
         }
-#endif
+#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
         ptr += element_size;
     }
 
     return SOFAB_RET_OK;
 }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 extern sofab_ret_t sofab_ostream_write_sequence_begin (sofab_ostream_t *ctx, sofab_id_t id)
 {
     sofab_ret_t ret;
@@ -457,3 +466,4 @@ extern sofab_ret_t sofab_ostream_write_sequence_end (sofab_ostream_t *ctx)
 
     return SOFAB_RET_OK;
 }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */

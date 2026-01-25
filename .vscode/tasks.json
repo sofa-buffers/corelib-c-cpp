@@ -8,7 +8,8 @@
             "args": [
                 "-S", "${workspaceFolder}",
                 "-B", "${workspaceFolder}/build",
-                "-DCMAKE_BUILD_TYPE=Debug"
+                "-DCMAKE_BUILD_TYPE=Debug",
+                "-DSOFAB_ENABLE_COVERAGE=ON"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"

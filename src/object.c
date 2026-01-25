@@ -30,7 +30,9 @@ extern sofab_ret_t sofab_object_encode (
     const void *src)
 {
     sofab_ret_t ret = SOFAB_RET_OK;
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     size_t nested_idx = 0;
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
     assert(ctx != NULL);
     assert(info != NULL);
@@ -78,6 +80,7 @@ extern sofab_ret_t sofab_object_encode (
                 break;
             }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_FP32:
                 ret = sofab_ostream_write_fp32(ctx, field->id, *((float *)((const uint8_t *)src + field->offset)));
                 break;
@@ -93,7 +96,9 @@ extern sofab_ret_t sofab_object_encode (
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
                 ret = sofab_ostream_write_blob(ctx, field->id, (uint8_t *)((const uint8_t *)src + field->offset), field->size);
                 break;
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
             {
                 size_t element_count = field->size / field->element_size;
@@ -110,6 +115,7 @@ extern sofab_ret_t sofab_object_encode (
                 break;
             }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
             {
                 size_t element_count = field->size / sizeof(float);
@@ -125,7 +131,10 @@ extern sofab_ret_t sofab_object_encode (
                     (const double *)((const uint8_t *)src + field->offset), element_count);
                 break;
             }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
                 ret = sofab_ostream_write_sequence_begin(ctx, field->id);
                 ret |= sofab_object_encode(ctx,
@@ -133,6 +142,7 @@ extern sofab_ret_t sofab_object_encode (
                     (const uint8_t *)src + field->offset);
                 ret |= sofab_ostream_write_sequence_end(ctx);
                 break;
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
             default:
                 // Unsupported field type in descriptor
@@ -171,6 +181,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                     SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
                 break;
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_FP32:
                 sofab_istream_read_fp32(ctx, (float *)(decoder->dst + field->offset));
                 break;
@@ -186,7 +197,9 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
                 sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
                 break;
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
                 sofab_istream_read_array(ctx,
                     decoder->dst + field->offset,
@@ -201,6 +214,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                     SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
                 break;
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
                 sofab_istream_read_array_of_fp32(ctx,
                     (float *)(decoder->dst + field->offset),
@@ -212,7 +226,10 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                     (double *)(decoder->dst + field->offset),
                     field->size / sizeof(double));
                 break;
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
             {
                 if (decoder->depth == 0) break; // Sequence depth exceeded
@@ -234,6 +251,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                     nested);
                 break;
             }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
             default:
                 // Unsupported field type in descriptor

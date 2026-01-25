@@ -93,6 +93,27 @@ typedef int64_t sofab_signed_t;
 # define SOFAB_ARRAY_MAX (INT32_MAX)
 #endif
 
+#if __SIZEOF_FLOAT__ != 4
+# define SOFAB_DISABLE_FP32_SUPPORT
+#endif
+
+#if __SIZEOF_DOUBLE__ != 8
+# define SOFAB_DISABLE_FP64_SUPPORT
+#endif
+
+/* configuration **************************************************************/
+/*! @brief Disable support for fixed-length fields (floating point types, strings, and blobs). */
+// #define SOFAB_DISABLE_FIXLEN_SUPPORT
+
+/*! @brief Disable support for array fields. */
+// #define SOFAB_DISABLE_ARRAY_SUPPORT
+
+/*! @brief Disable support for sequence fields. */
+// #define SOFAB_DISABLE_SEQUENCE_SUPPORT
+
+/*! @brief Disable integer overflow checks when reading integer values. */
+// #define SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
+
 /* exported vars **************************************************************/
 // SOFAB_EXTERN type sofab_<varname>;
 
