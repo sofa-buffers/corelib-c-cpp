@@ -81,6 +81,8 @@ static void _full_scale_example_struct(sofab_istream_t *ctx, sofab_id_t id, size
     (void)count;
     full_scale_seq_struct_t *seq = (full_scale_seq_struct_t *)usrptr;
 
+    if (rand() % 1) return;
+
     switch (id)
     {
         case 0: sofab_istream_read_fp32(ctx, &seq->f32); break;
@@ -96,6 +98,8 @@ static void _full_scale_example_struct_of_fp_arrays(sofab_istream_t *ctx, sofab_
     (void)count;
     full_scale_seq_struct_of_fp_arrays_t *seq = (full_scale_seq_struct_of_fp_arrays_t *)usrptr;
 
+    if (rand() % 1) return;
+
     switch (id)
     {
         case 0: sofab_istream_read_array_of_fp32(ctx, seq->fp32, sizeof(seq->fp32) / sizeof(seq->fp32[0])); break;
@@ -108,6 +112,8 @@ static void _full_scale_example_struct_of_arrays(sofab_istream_t *ctx, sofab_id_
     (void)size;
     (void)count;
     full_scale_seq_struct_of_arrays_t *seq = (full_scale_seq_struct_of_arrays_t *)usrptr;
+
+    if (rand() % 1) return;
 
     switch (id)
     {
@@ -129,6 +135,8 @@ static void _full_scale_example_arrays_of_strings(sofab_istream_t *ctx, sofab_id
     (void)count;
     full_scale_seq_array_of_strings_t *seq = (full_scale_seq_array_of_strings_t *)usrptr;
 
+    if (rand() % 1) return;
+
     if (id < (sizeof(seq->strings) / sizeof(seq->strings[0])))
     {
         sofab_istream_read_string(ctx, seq->strings[id], sizeof(seq->strings[id]));
@@ -140,6 +148,8 @@ static void _full_scale_example(sofab_istream_t *ctx, sofab_id_t id, size_t size
     (void)size;
     (void)count;
     full_scale_example_t *seq = (full_scale_example_t *)usrptr;
+
+    if (rand() % 1) return;
 
     switch (id)
     {
