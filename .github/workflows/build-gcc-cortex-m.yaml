@@ -65,7 +65,7 @@ jobs:
             -DCMAKE_SYSTEM_PROCESSOR=arm \
             -DARM_MARCH=${{ matrix.march }} \
             -DARM_MTUNE=${{ matrix.mtune }} \
-            -DCMAKE_TOOLCHAIN_FILE=utils/toolchain-arm-none-eabi.cmake \
+            -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF
 

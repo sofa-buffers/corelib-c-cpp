@@ -24,4 +24,4 @@ set(CMAKE_C_FLAGS   "${COMMON_FLAGS}")
 set(CMAKE_CXX_FLAGS "${COMMON_FLAGS} -fno-exceptions -fno-rtti")
 
 # Linker flags
-set(CMAKE_EXE_LINKER_FLAGS "-T${CMAKE_SOURCE_DIR}/utils/linker-rl78.ld -nostartfiles -static")
+set(CMAKE_EXE_LINKER_FLAGS "-T${CMAKE_SOURCE_DIR}/utils/rl78/linker-rl78.ld -nostartfiles -static")

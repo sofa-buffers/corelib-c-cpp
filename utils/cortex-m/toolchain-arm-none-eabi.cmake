@@ -28,4 +28,4 @@ set(CMAKE_C_FLAGS   "${COMMON_FLAGS}")
 set(CMAKE_CXX_FLAGS "${COMMON_FLAGS}")
 
 # Linker flags
-set(CMAKE_EXE_LINKER_FLAGS "-T${CMAKE_SOURCE_DIR}/utils/linker-cortex-m.ld -nostartfiles -static")
+set(CMAKE_EXE_LINKER_FLAGS "-T${CMAKE_SOURCE_DIR}/utils/cortex-m/linker-cortex-m.ld -nostartfiles -static")

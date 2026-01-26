@@ -32,9 +32,16 @@ target_compile_options(sofabtest
 
 # --- add startup code and stubs for bare metal targets ---
 if(CMAKE_SYSTEM_NAME STREQUAL "Generic")
-    target_sources(sofabtest PRIVATE ../../utils/startup.c)
-    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
-        target_sources(sofabtest PRIVATE ../../utils/newlib_stubs.c)
+    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "avr")
+        target_sources(sofabtest
+            PRIVATE
+                ../../utils/avr/startup.c)
+
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
+        target_sources(sofabtest
+            PRIVATE
+                ../../utils/cortex-m/startup.c
+                ../../utils/newlib_stubs.c)
     endif()
 endif()
 

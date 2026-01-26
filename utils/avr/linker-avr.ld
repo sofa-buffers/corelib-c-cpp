@@ -17,10 +17,10 @@ ENTRY(Reset_Handler)
 
 SECTIONS
 {
-    /* interrupt vector table */
-    .startup :
+    /* startup code */
+    .init0 :
     {
-        KEEP(*(.isr_vector))
+        KEEP(*(.init0))
     } > FLASH
 
     /* list of init functions */

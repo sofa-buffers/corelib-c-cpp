@@ -29,7 +29,7 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_SYSTEM_PROCESSOR=avr \
             -DAVR_MCU=${{ matrix.mcu }} \
-            -DCMAKE_TOOLCHAIN_FILE=utils/toolchain-avr.cmake \
+            -DCMAKE_TOOLCHAIN_FILE=utils/avr/toolchain-avr.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF
 
