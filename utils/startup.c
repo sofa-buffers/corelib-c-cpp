@@ -2,6 +2,11 @@
 
 void Reset_Handler(void);
 void Default_Handler(void);
+void NMI_Handler(void);
+void HardFault_Handler(void);
+void MemManage_Handler(void);
+void BusFault_Handler(void);
+void UsageFault_Handler(void);
 
 extern int main(void);
 extern uint32_t  __data_rom_start;	/* Start of .data in ROM */
@@ -19,6 +24,9 @@ typedef struct
     isr_t reset;
     isr_t nmi;
     isr_t hardfault;
+    isr_t memmanage;
+    isr_t busfault;
+    isr_t usagefault;
 } vector_table_t;
 
 __attribute__((section(".isr_vector")))
@@ -26,9 +34,25 @@ const vector_table_t vector_table =
 {
     (uint32_t *)&__stack_top,
     Reset_Handler,
-    Default_Handler,
-    Default_Handler
+    NMI_Handler,
+    HardFault_Handler,
+    MemManage_Handler,
+    BusFault_Handler,
+    UsageFault_Handler
 };
+
+void exit_qemu(int code)
+{
+    // Semihosting SYS_EXIT
+    register int r0 __asm__("r0") = code;
+    register int r1 __asm__("r1") = 0x18;  // SYS_EXIT
+    __asm__ volatile (
+        "bkpt 0xAB"
+        :
+        : "r"(r0), "r"(r1)
+        : "memory"
+    );
+}
 
 void Reset_Handler(void)
 {
@@ -48,11 +72,35 @@ void Reset_Handler(void)
     }
 
     // Call the application's entry point
-    main();
-    // while (1);
+    exit_qemu(main());
 }
 
 void Default_Handler(void)
+{
+    while (1);
+}
+
+void NMI_Handler(void)
+{
+    while(1);
+}
+
+void HardFault_Handler(void)
+{
+    while(1);
+}
+
+void MemManage_Handler(void)
+{
+    while (1);
+}
+
+void BusFault_Handler(void)
+{
+    while (1);
+}
+
+void UsageFault_Handler(void)
 {
     while (1);
 }

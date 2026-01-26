@@ -56,9 +56,11 @@ To be compatible with all architectures, the data from the message is copied to 
 
 ### Footprint
 
-This table shows the memory requirements of the C corelib for different architectures.
+This table shows the memory requirements of the C corelib for different bare metal architectures.
 
-The lib was always built with `-Os` and all features active.
+The lib was always built with `-Os` (optimized for minimal size).
+
+#### Full configuration
 
 | Architecture | .text | .data | .bss
 | - | - | - | -
@@ -66,3 +68,24 @@ The lib was always built with `-Os` and all features active.
 | ARMv7-m+fp.dp |      ~2.7KB | 0.0KB | 0.0KB
 | ARMv8-m.main+fp |    ~2.7KB | 0.0KB | 0.0KB
 | ARMv8.1-m.main+mve | ~2.7KB | 0.0KB | 0.0KB
+| atmega8 |            ~6.3KB | 0.0KB | 0.0KB
+
+#### Minimal configuration
+
+| Architecture | .text | .data | .bss
+| - | - | - | -
+| ARMv6-m |            ~1.0KB | 0.0KB | 0.0KB
+| ARMv7-m+fp.dp |      ~1.1KB | 0.0KB | 0.0KB
+| ARMv8-m.main+fp |    ~1.1KB | 0.0KB | 0.0KB
+| ARMv8.1-m.main+mve | ~1.1KB | 0.0KB | 0.0KB
+| atmega8 |            ~2.6KB | 0.0KB | 0.0KB
+
+corelib API without `object.c`:
+
+| Architecture | .text | .data | .bss
+| - | - | - | -
+| ARMv6-m |            ~0.8KB | 0.0KB | 0.0KB
+| ARMv7-m+fp.dp |      ~0.9KB | 0.0KB | 0.0KB
+| ARMv8-m.main+fp |    ~0.9KB | 0.0KB | 0.0KB
+| ARMv8.1-m.main+mve | ~0.9KB | 0.0KB | 0.0KB
+| atmega8 |            ~1.9KB | 0.0KB | 0.0KB

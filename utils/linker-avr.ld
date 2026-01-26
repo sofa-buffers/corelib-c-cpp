@@ -1,4 +1,4 @@
-/* Generic AVR Linker Script for bare-metal C / C++ projects */
+/* Linker Script for Atmel/Microchip AVR */
 
 OUTPUT_FORMAT("elf32-avr")
 OUTPUT_ARCH(avr)

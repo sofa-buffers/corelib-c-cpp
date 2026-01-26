@@ -1,12 +1,12 @@
-/* Generic AVR Linker Script for bare-metal C / C++ projects */
+/* Linker Script for stm32vldiscovery */
 
 OUTPUT_FORMAT("elf32-littlearm", "elf32-bigarm", "elf32-littlearm")
 OUTPUT_ARCH(arm)
 
 MEMORY
 {
-    FLASH (rx) : ORIGIN = 0x40010000, LENGTH = 512K
-    RAM   (rwx): ORIGIN = 0x40110000 , LENGTH = 64K
+    FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 128K
+    SRAM  (rwx) : ORIGIN = 0x20000000, LENGTH = 8K
 }
 
 ENTRY(Reset_Handler)
@@ -90,7 +90,7 @@ SECTIONS
 
         . = ALIGN(4);
         PROVIDE(__data_end = .);
-    } > RAM AT > FLASH
+    } > SRAM AT > FLASH
 
     /* static cleared read-write data */
     .bss (NOLOAD) : ALIGN(4)
@@ -102,7 +102,7 @@ SECTIONS
 
         . = ALIGN(4);
         PROVIDE(__bss_end = .);
-    } > RAM
+    } > SRAM
 
-    __stack_top = ORIGIN(RAM) + LENGTH(RAM) - 4;
+    __stack_top = ORIGIN(SRAM) + LENGTH(SRAM) - 4;
 }
