@@ -2,39 +2,58 @@
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x0000, LENGTH = 0x40000   /* 256 KB Flash */
-    RAM   (rw!x): ORIGIN = 0xFF00, LENGTH = 0x8000    /* 32 KB RAM */
+    FLASH (rx)  : ORIGIN = 0x00000, LENGTH = 0x40000  /* 256 KB Flash */
+    RAM   (rw!x): ORIGIN = 0xFEF00, LENGTH = 0x8000   /* 32 KB RAM */
 }
 
 ENTRY(Reset_Handler)
 
 SECTIONS
 {
-    /* Reset / Code */
-    .text :
+    /* interrupt vector table */
+    .startup :
     {
-        KEEP(*(.reset))      /* Reset Handler */
-        *(.text*)            /* alle Text-Segmente */
-        *(.rodata*)          /* read-only data / Konstanten */
+        KEEP(*(.isr_vector))
     } > FLASH
 
-    /* Initialized data */
-    .data : AT (ADDR(.text) + SIZEOF(.text))
+    /* default program text */
+    .text : ALIGN(2)
     {
-        _sdata = .;
-        *(.data*)
-        _edata = .;
-    } > RAM
+        *(.text .text.*)
 
-    /* Uninitialized data (BSS) */
-    .bss (NOLOAD) :
+        /* compiler stubs */
+        *(.gcc*)
+    } > FLASH
+
+    /* default read-only data */
+    .rodata : ALIGN(2)
     {
-        _sbss = .;
+        *(.rodata .rodata.*)
+    } > FLASH
+
+    /* initialized read-write data */
+    .data : ALIGN(2)
+    {
+        PROVIDE(__data_rom_start = LOADADDR(.data));
+        PROVIDE(__data_start = .);
+
+        *(.data*)
+
+        PROVIDE(__data_end = .);
+    } > RAM AT > FLASH
+
+    /* static cleared read-write data */
+    .bss (NOLOAD) : ALIGN(2)
+    {
+        PROVIDE(__bss_start = .);
+
         *(.bss*)
         *(COMMON)
-        _ebss = .;
+
+        PROVIDE(__bss_end = .);
+        PROVIDE(__end = .);
     } > RAM
 
     /* Stack */
-    _stack_top = ORIGIN(RAM) + LENGTH(RAM);
+    __stack_top = ORIGIN(RAM) + LENGTH(RAM);
 }

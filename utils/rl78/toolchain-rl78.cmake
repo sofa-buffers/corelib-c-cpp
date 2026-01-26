@@ -17,6 +17,7 @@ endif()
 
 # Common flags
 set(COMMON_FLAGS "-m64bit-doubles -ffreestanding")
+# set(COMMON_FLAGS "-ffreestanding")
 
 # C / ASM flags
 set(CMAKE_ASM_FLAGS "${COMMON_FLAGS}")

@@ -93,15 +93,14 @@ typedef int64_t sofab_signed_t;
 # define SOFAB_ARRAY_MAX (INT32_MAX)
 #endif
 
-#if __SIZEOF_FLOAT__ != 4
-# define SOFAB_DISABLE_FP32_SUPPORT
-#endif
-
-#if __SIZEOF_DOUBLE__ != 8
+#if defined(__SIZEOF_DOUBLE__) && __SIZEOF_DOUBLE__ != 8
 # define SOFAB_DISABLE_FP64_SUPPORT
 #endif
 
 /* configuration **************************************************************/
+/*! @brief Disable support for 64-bit floating point types (if the check above fails). */
+// #define SOFAB_DISABLE_FP64_SUPPORT
+
 /*! @brief Disable support for fixed-length fields (floating point types, strings, and blobs). */
 // #define SOFAB_DISABLE_FIXLEN_SUPPORT
 

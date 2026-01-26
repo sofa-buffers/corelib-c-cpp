@@ -37,6 +37,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Generic")
             PRIVATE
                 ../../utils/avr/startup.c)
 
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "rl78")
+        target_sources(sofabtest
+            PRIVATE
+                ../../utils/rl78/startup.c)
+
     elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         target_sources(sofabtest
             PRIVATE

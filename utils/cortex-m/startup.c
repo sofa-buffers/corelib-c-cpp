@@ -1,5 +1,14 @@
 #include <stdint.h>
 
+/* Symbols defined in the linker script */
+extern uint32_t  __data_rom_start;	/* Start of .data in ROM */
+extern uint32_t  __data_start;		/* Start of .data in RAM */
+extern uint32_t  __data_end;		/* End of .data in RAM */
+extern uint32_t  __bss_start;		/* Start of .bss */
+extern uint32_t  __bss_end;			/* End of .bss, start of heap */
+extern uint32_t  __stack_top;		/* Top of stack, end of RAM */
+
+/* Function Prototypes */
 void Reset_Handler (void);
 void Default_Handler (void);
 void NMI_Handler (void);
@@ -14,15 +23,7 @@ __attribute__((noreturn))
 extern void _exit(int status);
 extern int _write(int file, char *ptr, int len);
 
-extern uint32_t  __data_rom_start;	/* Start of .data in ROM */
-extern uint32_t  __data_start;		/* Start of .data in RAM */
-extern uint32_t  __data_end;		/* End of .data in RAM */
-extern uint32_t  __bss_start;		/* Start of .bss */
-extern uint32_t  __bss_end;			/* End of .bss, start of heap */
-extern uint32_t  __stack_top;		/* Top of stack, end of RAM - 4 */
-
 typedef void (*isr_t)(void);
-
 typedef struct
 {
     uint32_t *stack_top;
@@ -46,6 +47,9 @@ const vector_table_t vector_table =
     UsageFault_Handler
 };
 
+/**
+ * Entry point after hardware reset
+ */
 __attribute__((used, noreturn))
 void Reset_Handler (void)
 {

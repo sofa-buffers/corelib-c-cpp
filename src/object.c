@@ -85,9 +85,11 @@ extern sofab_ret_t sofab_object_encode (
                 ret = sofab_ostream_write_fp32(ctx, field->id, *((float *)((const uint8_t *)src + field->offset)));
                 break;
 
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_FP64:
                 ret = sofab_ostream_write_fp64(ctx, field->id, *((double *)((const uint8_t *)src + field->offset)));
                 break;
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 
             case SOFAB_OBJECT_FIELDTYPE_STRING:
                 ret = sofab_ostream_write_string(ctx, field->id, (char *)((const uint8_t *)src + field->offset));
@@ -124,6 +126,7 @@ extern sofab_ret_t sofab_object_encode (
                 break;
             }
 
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
             {
                 size_t element_count = field->size / sizeof(double);
@@ -131,6 +134,7 @@ extern sofab_ret_t sofab_object_encode (
                     (const double *)((const uint8_t *)src + field->offset), element_count);
                 break;
             }
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
@@ -186,9 +190,11 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 sofab_istream_read_fp32(ctx, (float *)(decoder->dst + field->offset));
                 break;
 
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_FP64:
                 sofab_istream_read_fp64(ctx, (double *)(decoder->dst + field->offset));
                 break;
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 
             case SOFAB_OBJECT_FIELDTYPE_STRING:
                 sofab_istream_read_string(ctx, (char *)(decoder->dst + field->offset), field->size);
@@ -221,11 +227,13 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                     field->size / sizeof(float));
                 break;
 
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
                 sofab_istream_read_array_of_fp64(ctx,
                     (double *)(decoder->dst + field->offset),
                     field->size / sizeof(double));
                 break;
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 

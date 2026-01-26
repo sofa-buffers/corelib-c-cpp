@@ -5,8 +5,8 @@ OUTPUT_ARCH(arm)
 
 MEMORY
 {
-    FLASH (rx) : ORIGIN = 0x08000000, LENGTH = 128K
-    SRAM  (rwx) : ORIGIN = 0x20000000, LENGTH = 8K
+    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 128K
+    SRAM  (rw!x): ORIGIN = 0x20000000, LENGTH = 8K
 }
 
 ENTRY(Reset_Handler)
@@ -104,5 +104,5 @@ SECTIONS
         PROVIDE(__bss_end = .);
     } > SRAM
 
-    __stack_top = ORIGIN(SRAM) + LENGTH(SRAM) - 4;
+    __stack_top = ORIGIN(SRAM) + LENGTH(SRAM);
 }
