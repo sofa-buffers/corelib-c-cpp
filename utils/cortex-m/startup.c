@@ -1,14 +1,19 @@
 #include <stdint.h>
 
-void Reset_Handler(void);
-void Default_Handler(void);
-void NMI_Handler(void);
-void HardFault_Handler(void);
-void MemManage_Handler(void);
-void BusFault_Handler(void);
-void UsageFault_Handler(void);
+void Reset_Handler (void);
+void Default_Handler (void);
+void NMI_Handler (void);
+void HardFault_Handler (void);
+void MemManage_Handler (void);
+void BusFault_Handler (void);
+void UsageFault_Handler (void);
 
-extern int main(void);
+extern int main (void);
+
+__attribute__((noreturn))
+extern void _exit(int status);
+extern int _write(int file, char *ptr, int len);
+
 extern uint32_t  __data_rom_start;	/* Start of .data in ROM */
 extern uint32_t  __data_start;		/* Start of .data in RAM */
 extern uint32_t  __data_end;		/* End of .data in RAM */
@@ -41,20 +46,8 @@ const vector_table_t vector_table =
     UsageFault_Handler
 };
 
-void exit_qemu(int code)
-{
-    // Semihosting SYS_EXIT
-    register int r0 __asm__("r0") = code;
-    register int r1 __asm__("r1") = 0x18;  // SYS_EXIT
-    __asm__ volatile (
-        "bkpt 0xAB"
-        :
-        : "r"(r0), "r"(r1)
-        : "memory"
-    );
-}
-
-void Reset_Handler(void)
+__attribute__((used, noreturn))
+void Reset_Handler (void)
 {
     // Zero initialize .bss section
     uint32_t *bss = &__bss_start;
@@ -72,35 +65,41 @@ void Reset_Handler(void)
     }
 
     // Call the application's entry point
-    exit_qemu(main());
+    _exit(main());
 }
 
-void Default_Handler(void)
+void Default_Handler (void)
 {
-    while (1);
+    _write(1, "Default_Handler called\n", 23);
+    _exit(1);
 }
 
-void NMI_Handler(void)
+void NMI_Handler (void)
 {
-    while(1);
+    _write(1, "NMI_Handler called\n", 19);
+    _exit(1);
 }
 
-void HardFault_Handler(void)
+void HardFault_Handler (void)
 {
-    while(1);
+    _write(1, "HardFault_Handler called\n", 25);
+    _exit(1);
 }
 
-void MemManage_Handler(void)
+void MemManage_Handler (void)
 {
-    while (1);
+    _write(1, "MemManage_Handler called\n", 25);
+    _exit(1);
 }
 
-void BusFault_Handler(void)
+void BusFault_Handler (void)
 {
-    while (1);
+    _write(1, "BusFault_Handler called\n", 24);
+    _exit(1);
 }
 
-void UsageFault_Handler(void)
+void UsageFault_Handler (void)
 {
-    while (1);
+    _write(1, "UsageFault_Handler called\n", 25);
+    _exit(1);
 }

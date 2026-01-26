@@ -41,7 +41,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Generic")
         target_sources(sofabtest
             PRIVATE
                 ../../utils/cortex-m/startup.c
-                ../../utils/newlib_stubs.c)
+                ../../utils/cortex-m/newlib_stubs.c)
     endif()
 endif()
 

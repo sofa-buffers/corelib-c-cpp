@@ -13,8 +13,9 @@ char *__env[1] = {0};
 char **environ = __env;
 
 /* Semihosting operation codes */
-#define SYS_WRITE 0x05
+#define SYS_WRITEO 0x04
 #define SYS_READ 0x06
+#define SYS_EXIT 0x18
 
 /* Symbols defined by the linker script */
 extern char __bss_end;	 /* End of .bss, start of heap */
@@ -40,13 +41,18 @@ static inline int __semihost(int cmd, void *arg)
 
 /*** System call stubs required by newlib ***/
 
+__attribute__((noreturn))
 void _exit(int status)
 {
-    (void)status;
-    while (1)
-    {
-        /* Infinite loop */
-    }
+    uint32_t reason;
+
+    if (status == 0)
+        reason = 0x20026; // ADP_Stopped_ApplicationExit
+    else
+        reason = 0x20023; // ADP_Stopped_RunTimeError
+
+    __semihost(SYS_EXIT, (void *)reason);
+    while (1);
 }
 
 int _close(int file)
@@ -206,13 +212,23 @@ int _wait(int *status)
  */
 int _write(int file, char *ptr, int len)
 {
-    struct
-    {
-        int fd;
-        const char *buf;
-        int len;
-    } args = {file, ptr, len};
+    char chunk_buf[16];
 
-    __semihost(SYS_WRITE, &args);
+    // file descriptors are ignored in this implementation
+    (void)file;
+
+    while (len)
+    {
+        size_t chunk_size = ((size_t)len < sizeof(chunk_buf) - 1) ? (size_t)len : sizeof(chunk_buf) - 1;
+        for (size_t i = 0; i < chunk_size; i++)
+        {
+            chunk_buf[i] = *ptr++;
+        }
+
+        len -= chunk_size;
+        chunk_buf[chunk_size] = '\0'; // Null-term required for SYS_WRITEO
+        __semihost(SYS_WRITEO, chunk_buf);
+    }
+
     return len;
 }
