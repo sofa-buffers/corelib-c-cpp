@@ -39,17 +39,12 @@ jobs:
         if: steps.cache-rl78.outputs.cache-hit != 'true'
         run: |
           curl -L "https://llvm-gcc-renesas.com/downloads/download.php?s=cdn&f=rl78/${{ env.LLVM_VERSION }}/llvm-${{ env.LLVM_VERSION }}-rl78-elf.tar.gz" -o /tmp/rl78-llvm.tar.gz
-          tar -xzf /tmp/rl78-llvm.tar.gz -C ${{ env.TOOLCHAIN_PATH }} --strip-components=1
-
-      - name: Add RL78 toolchain to PATH
-        run: echo "${{ env.TOOLCHAIN_PATH }}/bin" >> $GITHUB_PATH
-
-      - name: Verify installation
-        run: rl78-elf-gcc --version
+          tar -xzf /tmp/rl78-llvm.tar.gz -C ${{ env.TOOLCHAIN_PATH }} --strip-components=2
 
       - name: Configure with CMake
         run: |
           cmake -S . -B build \
+            -DLLVM_PATH=${{ env.TOOLCHAIN_PATH }}/bin \
             -DCMAKE_TOOLCHAIN_FILE=utils/rl78/toolchain-rl78.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF
