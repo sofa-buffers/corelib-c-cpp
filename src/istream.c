@@ -247,28 +247,16 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 ctx->target_len = 0;
                 ctx->target_count = 0;
 
-                if (type != SOFAB_TYPE_FIXLEN &&
-                    type != SOFAB_TYPE_VARINTARRAY_UNSIGNED &&
-                    type != SOFAB_TYPE_VARINTARRAY_SIGNED &&
-                    type != SOFAB_TYPE_FIXLENARRAY &&
-                    type != SOFAB_TYPE_SEQUENCE_END)
-                {
-                    sofab_ret_t ret;
-
-                    if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
-                    {
-                        return ret;
-                    }
-                }
-
-                // no default case, since all 3bit are handled
+                uint8_t callback = 0;
                 switch (type)
                 {
                     case SOFAB_TYPE_VARINT_UNSIGNED:
+                        callback = 1;
                         ctx->decoder->state = _DECODER_STATE_VARINT_UNSIGNED;
                         break;
 
                     case SOFAB_TYPE_VARINT_SIGNED:
+                        callback = 1;
                         ctx->decoder->state = _DECODER_STATE_VARINT_SIGNED;
                         break;
 
@@ -290,54 +278,66 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
                     case SOFAB_TYPE_SEQUENCE_START:
-                        // if not interested in sequence ...
-                        if (!ctx->target_ptr)
-                        {
-                            if (ctx->decoder->skip_depth == UINT8_MAX)
-                            {
-                                // skip depth overflow
-                                return SOFAB_RET_E_INVALID_MSG;
-                            }
-
-                            // increase skip_depth counter to skip all fields until sequence end
-                            ctx->decoder->skip_depth++;
-                        }
-
-                        ctx->decoder->state = _DECODER_STATE_IDLE;
+                        callback = 1;
                         break;
 
                     case SOFAB_TYPE_SEQUENCE_END:
-                        // if decoder is skipping fields ...
-                        if (ctx->decoder->skip_depth > 0)
-                        {
-                            // decrease skip_depth counter
-                            ctx->decoder->skip_depth--;
-                        }
-                        else
-                        {
-                            if (ctx->decoder->parent == NULL)
-                            {
-                                // no parent decoder to return to,
-                                // due to invalid sequence end
-                                return SOFAB_RET_E_INVALID_MSG;
-                            }
-
-                            // pop decoder
-                            ctx->decoder = ctx->decoder->parent;
-                        }
-
-                        ctx->decoder->state = _DECODER_STATE_IDLE;
                         break;
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
-#if defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || \
-    defined(SOFAB_DISABLE_ARRAY_SUPPORT) || \
-    defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
                     default:
                         // unsupported field type
                         return SOFAB_RET_E_INVALID_MSG;
-#endif
                 }
+
+                if (callback)
+                {
+                    sofab_ret_t ret;
+
+                    if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
+                    {
+                        return ret;
+                    }
+                }
+
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+                if (type == SOFAB_TYPE_SEQUENCE_START)
+                {
+                    // if not interested in sequence ...
+                    if (!ctx->target_ptr)
+                    {
+                        if (ctx->decoder->skip_depth == UINT8_MAX)
+                        {
+                            // skip depth overflow
+                            return SOFAB_RET_E_INVALID_MSG;
+                        }
+
+                        // increase skip_depth counter to skip all fields until sequence end
+                        ctx->decoder->skip_depth++;
+                    }
+                }
+                else if (type == SOFAB_TYPE_SEQUENCE_END)
+                {
+                    // if decoder is skipping fields ...
+                    if (ctx->decoder->skip_depth > 0)
+                    {
+                        // decrease skip_depth counter
+                        ctx->decoder->skip_depth--;
+                    }
+                    else
+                    {
+                        if (ctx->decoder->parent == NULL)
+                        {
+                            // no parent decoder to return to,
+                            // due to invalid sequence end
+                            return SOFAB_RET_E_INVALID_MSG;
+                        }
+
+                        // pop decoder
+                        ctx->decoder = ctx->decoder->parent;
+                    }
+                }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
                 break;
             }
@@ -476,10 +476,23 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                 // extract type from length
                 uint8_t fixlen_type = _type_decode(&fixlen_length);
-                if (fixlen_type > SOFAB_FIXLENTYPE_BLOB)
+                switch (fixlen_type)
                 {
-                    // invalid fixlen type
-                    return SOFAB_RET_E_INVALID_MSG;
+                    case SOFAB_FIXLENTYPE_FP32:
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+                    case SOFAB_FIXLENTYPE_FP64:
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+                        ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
+                        break;
+
+                    case SOFAB_FIXLENTYPE_STRING:
+                    case SOFAB_FIXLENTYPE_BLOB:
+                        ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
+                        break;
+
+                    default:
+                        // unsupported fixlen type
+                        return SOFAB_RET_E_INVALID_MSG;
                 }
 
                 if (fixlen_length > SOFAB_FIXLEN_MAX)
@@ -528,25 +541,11 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 {
                     // store source length to know how many bytes to consume
                     ctx->fixlen_remaining = length;
-
-                    switch (fixlen_type)
-                    {
-                        case SOFAB_FIXLENTYPE_FP32:
-                        case SOFAB_FIXLENTYPE_FP64:
-                            ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
-                            break;
-
-                        case SOFAB_FIXLENTYPE_STRING:
-                        case SOFAB_FIXLENTYPE_BLOB:
-                            ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
-                            break;
-                    }
                 }
                 else
                 {
                     // go back to idle
                     ctx->decoder->state = _DECODER_STATE_IDLE;
-                    break;
                 }
 
                 break;

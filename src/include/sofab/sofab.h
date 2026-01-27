@@ -80,19 +80,20 @@ typedef int64_t sofab_signed_t;
 #define SOFAB_SIGNED_MIN (INT64_MIN)
 
 /*! @brief Maximum fixed-length field size in bytes */
-#if SIZE_MAX == 0xFFFF
+#if SIZE_MAX == INT16_MAX
 # define SOFAB_FIXLEN_MAX (INT16_MAX)
 #else
 # define SOFAB_FIXLEN_MAX (INT32_MAX)
 #endif
 
 /*! @brief Maximum number of elements in an array */
-#if SIZE_MAX == 0xFFFF
+#if SIZE_MAX == INT16_MAX
 # define SOFAB_ARRAY_MAX (INT16_MAX)
 #else
 # define SOFAB_ARRAY_MAX (INT32_MAX)
 #endif
 
+// disable double support automatically on platforms where double is not 8 bytes
 #if defined(__SIZEOF_DOUBLE__) && __SIZEOF_DOUBLE__ != 8
 # define SOFAB_DISABLE_FP64_SUPPORT
 #endif
@@ -112,6 +113,15 @@ typedef int64_t sofab_signed_t;
 
 /*! @brief Disable integer overflow checks when reading integer values. */
 // #define SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
+
+/* sanity checks **************************************************************/
+#if !defined(__SIZEOF_DOUBLE__) && !defined(SOFAB_DISABLE_FP64_SUPPORT)
+typedef char sofab_check_size_double[(sizeof(double) == 8) ? 1 : -1];
+#endif
+
+#if !defined(__SIZEOF_FLOAT__)
+typedef char sofab_check_size_float[(sizeof(float) == 4) ? 1 : -1];
+#endif
 
 /* exported vars **************************************************************/
 // SOFAB_EXTERN type sofab_<varname>;
