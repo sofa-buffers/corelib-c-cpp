@@ -1,0 +1,59 @@
+name: GCC RL78 Build
+
+on:
+  push:
+    branches: [ main, workflow/rl78 ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      LLVM_VERSION: "17.0.1.202512"
+      TOOLCHAIN_PATH: "/opt/llvm-rl78-elf"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl cmake make
+
+      - name: Prepare Toolchain Directory
+        run: |
+          sudo mkdir -p ${{ env.TOOLCHAIN_PATH }}
+          sudo chown $USER:$USER ${{ env.TOOLCHAIN_PATH }}
+
+      - name: Cache RL78 toolchain
+        id: cache-rl78
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TOOLCHAIN_PATH }}
+          key: rl78-toolchain-${{ env.LLVM_VERSION }}
+
+      - name: Download RL78 toolchain
+        if: steps.cache-rl78.outputs.cache-hit != 'true'
+        run: |
+          curl -L "https://llvm-gcc-renesas.com/downloads/download.php?s=cdn&f=rl78/${{ env.LLVM_VERSION }}/llvm-${{ env.LLVM_VERSION }}-rl78-elf.tar.gz" -o /tmp/rl78-llvm.tar.gz
+          tar -xzf /tmp/rl78-llvm.tar.gz -C ${{ env.TOOLCHAIN_PATH }} --strip-components=2
+
+      - name: Configure with CMake
+        run: |
+          cmake -S . -B build \
+            -DLLVM_PATH=${{ env.TOOLCHAIN_PATH }}/bin \
+            -DCMAKE_TOOLCHAIN_FILE=utils/rl78/toolchain-rl78.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSOFAB_ENABLE_CPP=OFF
+
+      - name: Build project
+        run: cmake --build build
+
+      - name: Verify C binary
+        working-directory: build/test/c
+        run: |
+          file sofabtest
+          readelf -h -A sofabtest
