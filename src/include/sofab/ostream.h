@@ -210,6 +210,7 @@ extern sofab_ret_t sofab_ostream_write_unsigned (
 extern sofab_ret_t sofab_ostream_write_signed (
     sofab_ostream_t *ctx, sofab_id_t id, sofab_signed_t value);
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Write a fixed-length field.
  *
@@ -229,6 +230,7 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
     sofab_ostream_t *ctx, sofab_id_t id,
     const void *data, int32_t datalen,
     sofab_fixlentype_t type);
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 /* inline convenience functions ***********************************************/
 
@@ -249,6 +251,7 @@ static inline sofab_ret_t sofab_ostream_write_boolean (
     return sofab_ostream_write_unsigned(ctx, id, value ? 1 : 0);
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Write a 32-bit floating-point value.
  *
@@ -273,11 +276,13 @@ static inline sofab_ret_t sofab_ostream_write_fp32 (
  *
  * @return See sofab_ostream_write_fixlen().
  */
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
 static inline sofab_ret_t sofab_ostream_write_fp64 (
     sofab_ostream_t *ctx, sofab_id_t id, double value)
 {
     return sofab_ostream_write_fixlen(ctx, id, &value, sizeof(value), SOFAB_FIXLENTYPE_FP64);
 }
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 
 /*!
  * @brief Write a null-terminated string.
@@ -314,9 +319,11 @@ static inline sofab_ret_t sofab_ostream_write_blob (
 {
     return sofab_ostream_write_fixlen(ctx, id, data, size, SOFAB_FIXLENTYPE_BLOB);
 }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 /* write array functions ******************************************************/
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /*!
  * @brief Write an array of unsigned integers.
  *
@@ -355,6 +362,7 @@ extern sofab_ret_t sofab_ostream_write_array_of_signed (
     sofab_ostream_t *ctx, sofab_id_t id,
     const void *data, int32_t element_count, int32_t element_size);
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Write an array of fixed-length elements.
  *
@@ -376,9 +384,12 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
     sofab_ostream_t *ctx, sofab_id_t id,
     const void *data, int32_t element_count, int32_t element_size,
     sofab_fixlentype_t type);
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 /* inline convenience array functions *****************************************/
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /*!
  * @brief Writes an array of 8-bit signed integers.
  *
@@ -507,6 +518,7 @@ static inline sofab_ret_t sofab_ostream_write_array_of_u64 (
     return sofab_ostream_write_array_of_unsigned(ctx, id, var, element_count, sizeof(uint64_t));
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Write an array of 32-bit floating-point values.
  *
@@ -534,15 +546,20 @@ static inline sofab_ret_t sofab_ostream_write_array_of_fp32 (
  *
  * @return See sofab_ostream_write_array_of_fixlen().
  */
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
 static inline sofab_ret_t sofab_ostream_write_array_of_fp64 (
     sofab_ostream_t *ctx, sofab_id_t id, const double *data, int32_t element_count)
 {
     return sofab_ostream_write_array_of_fixlen(
         ctx, id, data, element_count, sizeof(double), SOFAB_FIXLENTYPE_FP64);
 }
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 /* nested sequence functions **************************************************/
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 /*!
  * @brief Begin encoding a nested sequence (start marker).
  *
@@ -569,6 +586,7 @@ extern sofab_ret_t sofab_ostream_write_sequence_begin (sofab_ostream_t *ctx, sof
  * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code.
  */
 extern sofab_ret_t sofab_ostream_write_sequence_end (sofab_ostream_t *ctx);
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
 #ifdef __cplusplus
 }

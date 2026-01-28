@@ -279,6 +279,7 @@ static inline void sofab_istream_read_bool (sofab_istream_t *ctx, bool *var)
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Reads a 32-bit floating-point value.
 *
@@ -292,6 +293,7 @@ static inline void sofab_istream_read_fp32 (sofab_istream_t *ctx, float *var)
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32));
 }
 
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
 /*!
  * @brief Reads a 64-bit floating-point value.
  *
@@ -304,6 +306,7 @@ static inline void sofab_istream_read_fp64 (sofab_istream_t *ctx, double *var)
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64));
 }
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 
 /*!
  * @brief Reads a string of fixed maximum size.
@@ -351,9 +354,11 @@ static inline void sofab_istream_read_blob (sofab_istream_t *ctx, void *var, siz
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB));
 }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 /* read array functions *******************************************************/
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /*!
  * @brief Reads an array of elements.
  *
@@ -365,9 +370,11 @@ static inline void sofab_istream_read_blob (sofab_istream_t *ctx, void *var, siz
  */
 extern void sofab_istream_read_array (
     sofab_istream_t *ctx, void *var, size_t element_count, size_t element_size, uint8_t opt);
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 /* inline convenience array functions *****************************************/
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /*!
  * @brief Reads an array of 8-bit signed integers.
  *
@@ -480,6 +487,7 @@ static inline void sofab_istream_read_array_of_u64 (
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Reads an array of 32-bit floating-point values.
  *
@@ -495,6 +503,7 @@ static inline void sofab_istream_read_array_of_fp32 (
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32));
 }
 
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
 /*!
  * @brief Reads an array of 64-bit floating-point values.
  *
@@ -509,9 +518,13 @@ static inline void sofab_istream_read_array_of_fp64 (
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY) |
         SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64));
 }
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 /* nested sequence functions **************************************************/
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 /*!
  * @brief Begins decoding a nested Sofab sequence.
  *
@@ -526,6 +539,7 @@ static inline void sofab_istream_read_array_of_fp64 (
 extern void sofab_istream_read_sequence (
     sofab_istream_t *ctx, sofab_istream_decoder_t *decoder,
     sofab_istream_field_cb_t field_callback, void *usrptr);
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
 #ifdef __cplusplus
 }
