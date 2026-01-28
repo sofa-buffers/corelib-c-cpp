@@ -605,6 +605,7 @@ static void test_write_fp32 (void)
 
 static void test_write_fp64 (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_ostream_t ctx;
     sofab_ret_t ret;
     uint8_t buffer[16];
@@ -619,6 +620,7 @@ static void test_write_fp64 (void)
     TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
+#endif
 }
 
 static void test_write_string (void)
@@ -943,6 +945,7 @@ static void test_write_array_of_fp32_specials (void)
 
 static void test_write_array_of_fp64 (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_ostream_t ctx;
     sofab_ret_t ret;
     uint8_t buffer[64];
@@ -962,10 +965,12 @@ static void test_write_array_of_fp64 (void)
     TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
+#endif
 }
 
 static void test_write_array_of_fp64_specials (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_ostream_t ctx;
     sofab_ret_t ret;
     uint8_t buffer[64];
@@ -997,6 +1002,7 @@ static void test_write_array_of_fp64_specials (void)
 #endif
 
     TEST_ASSERT_TRUE_MESSAGE(isnan(nan_value), "last value is not NAN");
+#endif
 }
 
 static void test_write_nested_sequence (void)
@@ -1080,6 +1086,7 @@ static void test_write_nested_sequence_multilevel (void)
 
 static void test_write_full_scale_example (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_ostream_t ctx;
     uint8_t buffer[512];
     memset(buffer, 0x55, sizeof(buffer));
@@ -1175,6 +1182,7 @@ static void test_write_full_scale_example (void)
         0x5D, 0x7B, 0x7D, 0x07};
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
+#endif
 }
 
 int test_ostream_main (void)

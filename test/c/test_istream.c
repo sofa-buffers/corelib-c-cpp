@@ -30,7 +30,9 @@ typedef enum
     FIELD_TYPE_INT64,
     FIELD_TYPE_INT64U,
     FIELD_TYPE_FP32,
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     FIELD_TYPE_FP64,
+#endif
     FIELD_TYPE_STRING,
     FIELD_TYPE_BLOB,
     FIELD_TYPE_BOOLEAN,
@@ -43,7 +45,9 @@ typedef enum
     FIELD_TYPE_ARRAY_INT64,
     FIELD_TYPE_ARRAY_INT64U,
     FIELD_TYPE_ARRAY_FP32,
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     FIELD_TYPE_ARRAY_FP64,
+#endif
     FIELD_TYPE_UNSIGNED_ERROR,
     FIELD_TYPE_SIGNED_ERROR,
     FIELD_TYPE_FP32_ERROR,
@@ -106,9 +110,11 @@ static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t s
         case FIELD_TYPE_FP32:
             sofab_istream_read_fp32(ctx, (float *)test->target_ptr);
             break;
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
         case FIELD_TYPE_FP64:
             sofab_istream_read_fp64(ctx, (double *)test->target_ptr);
             break;
+#endif
         case FIELD_TYPE_STRING:
             sofab_istream_read_string(ctx, (char *)test->target_ptr, test->target_size);
             break;
@@ -145,9 +151,11 @@ static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t s
         case FIELD_TYPE_ARRAY_FP32:
             sofab_istream_read_array_of_fp32(ctx, (float *)test->target_ptr, test->target_size);
             break;
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
         case FIELD_TYPE_ARRAY_FP64:
             sofab_istream_read_array_of_fp64(ctx, (double *)test->target_ptr, test->target_size);
             break;
+#endif
         case FIELD_TYPE_UNSIGNED_ERROR:
             sofab_istream_read_field(ctx, test->target_ptr, 5 /* invalid size */,
                 SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
@@ -1038,6 +1046,7 @@ static void test_read_fp32 (void)
 
 static void test_read_fp64 (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {0x02, 0x41, 0x00, 0x00, 0x00, 0x60, 0xFB, 0x21, 0x09, 0x40};
@@ -1060,6 +1069,7 @@ static void test_read_fp64 (void)
     TEST_ASSERT_EQUAL(sizeof(value), test.field_size);
     TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
+#endif
 }
 
 static void test_read_string (void)
@@ -1502,6 +1512,7 @@ static void test_read_array_of_fp32_specials (void)
 
 static void test_read_array_of_fp64 (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {
@@ -1530,10 +1541,12 @@ static void test_read_array_of_fp64 (void)
     TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
+#endif
 }
 
 static void test_read_array_of_fp64_specials (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {
@@ -1562,6 +1575,7 @@ static void test_read_array_of_fp64_specials (void)
     TEST_ASSERT_EQUAL(sizeof(value[0]), test.field_size);
     TEST_ASSERT_EQUAL(test.target_size, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
+#endif
 }
 
 typedef struct
@@ -1940,6 +1954,7 @@ static void test_msg_invalid_nested_sequence_depth (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
 typedef struct
 {
     float f32;
@@ -2083,9 +2098,11 @@ static void _full_scale_example(sofab_istream_t *ctx, sofab_id_t id, size_t size
         case 200: sofab_istream_read_sequence(ctx, &_full_scale_decoder[0], _full_scale_example_arrays_of_strings, &seq->string_array); break;
     }
 }
+#endif
 
 static void test_read_full_scale_example (void)
 {
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {
@@ -2192,6 +2209,7 @@ static void test_read_full_scale_example (void)
             TEST_ASSERT_EQUAL_STRING(expected_strings[i], value.string_array.strings[i]);
         }
     }
+#endif
 }
 
 int test_istream_main (void)
