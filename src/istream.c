@@ -285,9 +285,11 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         break;
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT) || !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
                     default:
                         // unsupported field type
                         return SOFAB_RET_E_INVALID_MSG;
+#endif
                 }
 
                 if (callback)
