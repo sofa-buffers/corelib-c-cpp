@@ -119,9 +119,16 @@ typedef int64_t sofab_signed_t;
 typedef char sofab_check_size_double[(sizeof(double) == 8) ? 1 : -1];
 #endif
 
-#if !defined(__SIZEOF_FLOAT__)
 typedef char sofab_check_size_float[(sizeof(float) == 4) ? 1 : -1];
-#endif
+typedef char sofab_check_size_char_t[(sizeof(char) == 1) ? 1 : -1];
+typedef char sofab_check_size_uint8_t[(sizeof(uint8_t) == 1) ? 1 : -1];
+typedef char sofab_check_size_int8_t[(sizeof(int8_t) == 1) ? 1 : -1];
+typedef char sofab_check_size_uint16_t[(sizeof(uint16_t) == 2) ? 1 : -1];
+typedef char sofab_check_size_int16_t[(sizeof(int16_t) == 2) ? 1 : -1];
+typedef char sofab_check_size_uint32_t[(sizeof(uint32_t) == 4) ? 1 : -1];
+typedef char sofab_check_size_int32_t[(sizeof(int32_t) == 4) ? 1 : -1];
+typedef char sofab_check_size_uint64_t[(sizeof(uint64_t) == 8) ? 1 : -1];
+typedef char sofab_check_size_int64_t[(sizeof(int64_t) == 8) ? 1 : -1];
 
 /* exported vars **************************************************************/
 // SOFAB_EXTERN type sofab_<varname>;

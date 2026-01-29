@@ -20,7 +20,7 @@ if(NOT DEFINED ARM_MTUNE)
 endif()
 
 # Common flags
-set(COMMON_FLAGS "-march=${ARM_MARCH} -mtune=${ARM_MTUNE} -mthumb -ffreestanding")
+set(COMMON_FLAGS "-march=${ARM_MARCH} -mtune=${ARM_MTUNE} -mthumb -mno-unaligned-access -ffreestanding")
 
 # C / ASM flags
 set(CMAKE_ASM_FLAGS "${COMMON_FLAGS}")
