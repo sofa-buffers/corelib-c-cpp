@@ -68,7 +68,10 @@ extern "C" {
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field[0]) & 0xF) }
 
 #define SOFAB_OBJECT_DESCR(field_list, field_count, nested_list, nested_count) \
-    { field_list, nested_list, field_count, nested_count }
+    { (field_list), (nested_list), NULL, (field_count), (nested_count) }
+
+#define SOFAB_OBJECT_DESCR_WITH_DEFAULTS(field_list, field_count,nested_list, nested_count, default_struct) \
+    { (field_list), (nested_list), (default_struct), (field_count), (nested_count) }
 
 /* types **********************************************************************/
 /*!
@@ -91,6 +94,7 @@ typedef struct sofab_object_descr
 {
     const sofab_object_descr_field_t *const field_list;     /*!< Pointer to list of field descriptors */
     const struct sofab_object_descr *const *nested_list;    /*!< Pointer to list of nested object descriptors */
+    const void *const default_values;                       /*!< Pointer to default values for fields (optional, may be NULL) */
     const uint16_t field_count;                             /*!< Number of fields in the object */
     const uint8_t nested_count;                             /*!< Number of nested objects */
 } sofab_object_descr_t;
@@ -107,6 +111,21 @@ typedef struct
 } sofab_object_decoder_t;
 
 /* prototypes *****************************************************************/
+
+/*!
+ * @brief Initializes an object structure with default values.
+ *
+ * This function populates the provided object structure with default values
+ * as specified in the object descriptor. If no default values are provided,
+ * the object is zero-initialized.
+ *
+ * @param info      Pointer to the object descriptor.
+ * @param obj       Pointer to the object structure to initialize.
+ * @return          SOFAB_RET_OK on success, or an error code on failure.
+ */
+extern sofab_ret_t sofab_object_init (
+    const sofab_object_descr_t *info,
+    void *obj);
 
 /*!
  * @brief Encodes an object with the given descriptor into the output stream.

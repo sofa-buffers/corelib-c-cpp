@@ -11,8 +11,9 @@
             "*.h": "cpp",
             "*.c": "cpp"
         },
-        "C_Cpp.codeAnalysis.clangTidy.enabled": true,
+        "C_Cpp.codeAnalysis.clangTidy.enabled": false,
         "C_Cpp.codeAnalysis.clangTidy.useBuildPath": true,
+        "C_Cpp.default.cStandard": "c99",
         "C_Cpp.default.cppStandard": "c++20"
     }
 }
