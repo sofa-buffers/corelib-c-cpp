@@ -47,18 +47,18 @@ namespace sofab
     using id = sofab_id_t;
 
     class OStreamMessage;
-    class OStream
+    class OStreamImpl
     {
     protected:
         sofab_ostream_t ctx_;
-        std::shared_ptr<uint8_t[]> buffer_;
+        uint8_t *buffer_;
         flushCallback flushCallback_;
 
         void onFlushCallback(size_t len) noexcept
         {
             if (flushCallback_)
             {
-                flushCallback_(std::span<const uint8_t>(data(), len));
+                flushCallback_(std::span<const uint8_t>(buffer_, len));
             }
         }
 
@@ -71,21 +71,21 @@ namespace sofab
             (void)ctx;
             (void)data;
 
-            OStream *self = static_cast<OStream*>(usrptr);
+            OStreamImpl *self = static_cast<OStreamImpl*>(usrptr);
             self->onFlushCallback(len);
         }
 
-        OStream() noexcept = default;
+        OStreamImpl() noexcept = default;
 
     public:
         class Result
         {
         private:
-            OStream &ostream_;
+            OStreamImpl &ostream_;
             Error error_ = Error::None;
 
-            friend class OStream;
-            Result(OStream &ostream, sofab_ret_t retval)
+            friend class OStreamImpl;
+            Result(OStreamImpl &ostream, sofab_ret_t retval)
                 : ostream_(ostream)
                 , error_(static_cast<Error>(retval))
             { }
@@ -189,55 +189,16 @@ namespace sofab
         };
 
         // disable copying due to pointers in ctx_
-        OStream(const OStream&) = delete;
-        OStream& operator=(const OStream&) = delete;
+        OStreamImpl(const OStreamImpl&) = delete;
+        OStreamImpl& operator=(const OStreamImpl&) = delete;
 
         // allow moving
-        OStream(OStream&&) noexcept = default;
-        OStream& operator=(OStream&&) noexcept = default;
+        OStreamImpl(OStreamImpl&&) noexcept = default;
+        OStreamImpl& operator=(OStreamImpl&&) noexcept = default;
 
-        OStream(size_t buflen, size_t offset = 0) noexcept
-        {
-            buffer_ = std::make_shared<uint8_t[]>(buflen);
-            sofab_ostream_init(&ctx_, buffer_.get(), buflen, offset, nullptr, nullptr);
-        }
-
-        OStream(
-            std::shared_ptr<uint8_t[]> buffer, size_t buflen,
-            size_t offset = 0) noexcept
-            : buffer_{buffer}
-        {
-            sofab_ostream_init(&ctx_, buffer_.get(), buflen, offset, nullptr, nullptr);
-        }
-
-        OStream(
-            flushCallback callback,
-            std::shared_ptr<uint8_t[]> buffer, size_t buflen,
-            size_t offset = 0) noexcept
-            : buffer_{buffer}
-            , flushCallback_{callback}
-        {
-            sofab_ostream_init(&ctx_, buffer_.get(), buflen, offset, static_flush_callback, this);
-        }
-
-        virtual ~OStream() noexcept
+        virtual ~OStreamImpl() noexcept
         {
             flush();
-        }
-
-        // set buffer in OStreamInline blöd!!!!
-        void setBuffer(
-            std::shared_ptr<uint8_t[]> buffer, size_t buflen,
-            size_t offset = 0) noexcept
-        {
-            buffer_ = buffer;
-            sofab_ostream_buffer_set(&ctx_, buffer.get(), buflen, offset);
-        }
-
-        // auch blöd!!!!
-        std::shared_ptr<uint8_t[]> getBuffer() noexcept
-        {
-            return buffer_;
         }
 
         size_t flush() noexcept
@@ -250,10 +211,9 @@ namespace sofab
             return sofab_ostream_bytes_used(&ctx_);
         }
 
-        virtual const uint8_t*
-        data() const noexcept
+        const uint8_t* data() const noexcept
         {
-            return buffer_.get();
+            return buffer_;
         }
 
         template <typename T>
@@ -296,7 +256,7 @@ namespace sofab
                 ret = sequenceBegin(id).rawCode();
                 if (ret == SOFAB_RET_OK)
                 {
-                    ret = value.serialize(static_cast<OStream&>(*this)).rawCode();
+                    ret = value.serialize(static_cast<OStreamImpl&>(*this)).rawCode();
                     if (ret == SOFAB_RET_OK)
                     {
                         ret = sequenceEnd().rawCode();
@@ -393,71 +353,75 @@ namespace sofab
         }
     };
 
-#if 0
-    class OStreamExternal : public OStream
+    class OStream : public OStreamImpl
     {
-    private:
-        std::shared_ptr<uint8_t[]> buffer_;
+    protected:
+        std::shared_ptr<uint8_t[]> bufferOwner_;
+
+        OStream() noexcept = default;
 
     public:
-        OStreamExternal(
-            std::shared_ptr<uint8_t[]> buffer, size_t buflen,
-            size_t offset = 0) noexcept
+        OStream(size_t buflen, size_t offset = 0) noexcept
         {
-            sofab_ostream_init(&ctx_, buffer.get(), buflen, offset, nullptr, nullptr);
+            bufferOwner_ = std::make_shared<uint8_t[]>(buflen);
+            buffer_ = bufferOwner_.get();
+            sofab_ostream_init(&ctx_, buffer_, buflen, offset, nullptr, nullptr);
         }
 
-        OStreamExternal(
+        OStream(
+            std::shared_ptr<uint8_t[]> buffer, size_t buflen,
+            size_t offset = 0) noexcept
+            : bufferOwner_{buffer}
+        {
+            buffer_ = bufferOwner_.get();
+            sofab_ostream_init(&ctx_, buffer_, buflen, offset, nullptr, nullptr);
+        }
+
+        OStream(
             flushCallback callback,
             std::shared_ptr<uint8_t[]> buffer, size_t buflen,
             size_t offset = 0) noexcept
-            : buffer_{buffer}
-            , flushCallback_{callback}
+            : bufferOwner_{buffer}
         {
-            sofab_ostream_init(&ctx_, buffer_.get(), buflen, offset, _flush_callback, this);
+            flushCallback_ = callback;
+            buffer_ = bufferOwner_.get();
+            sofab_ostream_init(&ctx_, buffer_, buflen, offset, static_flush_callback, this);
         }
 
         void setBuffer(
             std::shared_ptr<uint8_t[]> buffer, size_t buflen,
             size_t offset = 0) noexcept
         {
-            sofab_ostream_buffer_set(&ctx_, buffer.get(), buflen, offset);
+            bufferOwner_ = buffer;
+            buffer_ = bufferOwner_.get();
+            sofab_ostream_buffer_set(&ctx_, buffer_, buflen, offset);
         }
 
-        const uint8_t* data() const noexcept
+        std::shared_ptr<uint8_t[]> getBuffer() noexcept
         {
-            return buffer_.get();
+            return bufferOwner_;
         }
     };
-#endif
 
     template <size_t N, size_t Offset = 0>
-    class OStreamInline : public OStream
+    class OStreamInline : public OStreamImpl
     {
         static_assert(N > 0, "Buffer size N must be greater than zero");
         static_assert(Offset < N, "Offset must be less than buffer size N");
-        std::array<uint8_t, N> buffer_ = {};
+        std::array<uint8_t, N> bufferOwner_ = {};
 
     public:
         OStreamInline() noexcept
         {
-            sofab_ostream_init(&ctx_, buffer_.data(), buffer_.size(), Offset, nullptr, nullptr);
+            buffer_ = bufferOwner_.data();
+            sofab_ostream_init(&ctx_, buffer_, N, Offset, nullptr, nullptr);
         }
 
         OStreamInline(flushCallback callback) noexcept
         {
+            buffer_ = bufferOwner_.data();
             flushCallback_ = callback;
-            sofab_ostream_init(&ctx_, buffer_.data(), buffer_.size(), Offset, static_flush_callback, this);
-        }
-
-        const uint8_t* data() const noexcept
-        {
-            return buffer_.data();
-        }
-
-        size_t size() const noexcept
-        {
-            return buffer_.size();
+            sofab_ostream_init(&ctx_, buffer_, N, Offset, static_flush_callback, this);
         }
     };
 
@@ -474,7 +438,7 @@ namespace sofab
     {
     protected:
         virtual OStream::Result
-        _serialize(OStream &_ostream) const noexcept = 0;
+        _serialize(OStreamImpl &_ostream) const noexcept = 0;
     };
 
     template <HasConstexprMaxSize MessageType, size_t N = MessageType::_maxSize, size_t Offset = 0>
@@ -495,14 +459,13 @@ namespace sofab
 
         OStream::Result serialize() noexcept
         {
-            auto result =  message_._serialize(static_cast<OStream&>(*this));
-            OStream::flush();
+            auto result =  message_._serialize(static_cast<OStreamImpl&>(*this));
+            OStreamImpl::flush();
 
             return result;
         }
     };
 
-    /// ist das clever ???s
     template <HasConstexprMaxSize MessageType, size_t Offset = 0>
     class OStreamObjectOffset : public OStreamObject<MessageType, MessageType::_maxSize, Offset>
     {
@@ -510,12 +473,12 @@ namespace sofab
 
     /* IStream */
 
-    class IStream
+    class IStreamImpl
     {
     protected:
         sofab_istream_t ctx_;
 
-        IStream() noexcept = default;
+        IStreamImpl() noexcept = default;
 
     public:
         class Result
@@ -523,7 +486,7 @@ namespace sofab
         private:
             Error error_ = Error::None;
 
-            friend class IStream;
+            friend class IStreamImpl;
             Result(sofab_ret_t retval)
                 : error_(static_cast<Error>(retval))
             { }
@@ -561,16 +524,16 @@ namespace sofab
         };
 
         // disable copying due to pointers in ctx_
-        IStream(const IStream&) = delete;
-        IStream& operator=(const IStream&) = delete;
+        IStreamImpl(const IStreamImpl&) = delete;
+        IStreamImpl& operator=(const IStreamImpl&) = delete;
 
         // allow moving
-        IStream(IStream&&) noexcept = default;
-        IStream& operator=(IStream&&) noexcept = default;
+        IStreamImpl(IStreamImpl&&) noexcept = default;
+        IStreamImpl& operator=(IStreamImpl&&) noexcept = default;
 
         Result feed(const uint8_t *buffer, size_t buflen) noexcept
         {
-            return Result(sofab_istream_feed(&ctx_, buffer, buflen));
+            return Result{sofab_istream_feed(&ctx_, buffer, buflen)};
         }
 
         template <typename T>
@@ -675,9 +638,9 @@ namespace sofab
         }
     };
 
-    class IStreamInline : public IStream
+    class IStreamInline : public IStreamImpl
     {
-        using fieldCallback = std::function<void(IStream& _istream, sofab::id _id, size_t _size)>;
+        using fieldCallback = std::function<void(sofab::id _id, size_t _size)>;
 
     private:
         fieldCallback callback_;
@@ -689,7 +652,7 @@ namespace sofab
             (void)count;
 
             auto *self = static_cast<IStreamInline*>(usrptr);
-            self->callback_(*self, id, size);
+            self->callback_(id, size);
         }
 
     public:
@@ -710,7 +673,7 @@ namespace sofab
 
         struct Context
         {
-            IStream &istream;
+            IStreamImpl &istream;
             IStreamMessage &message;
         };
 
@@ -724,11 +687,11 @@ namespace sofab
         }
 
     public:
-        virtual void _onFieldCallback(sofab::IStream &_istream, sofab::id _id, size_t _size) noexcept = 0;
+        virtual void _onFieldCallback(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size) noexcept = 0;
     };
 
     template <class MessageType>
-    class IStreamObject : public IStream
+    class IStreamObject : public IStreamImpl
     {
         MessageType data_;
         IStreamMessage::Context context_;

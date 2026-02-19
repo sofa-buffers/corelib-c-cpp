@@ -53,7 +53,7 @@ public:
     uint32_t id = 0;
     float value = 0;
 
-    void _onFieldCallback(sofab::IStream &_istream, sofab::id _id, size_t _size) noexcept override
+    void _onFieldCallback(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size) noexcept override
     {
         (void)_size;
 
@@ -74,7 +74,7 @@ class DynArrayOfUnsigned : public sofab::IStreamMessage
 public:
     std::vector<uint32_t> values;
 
-    void _onFieldCallback(sofab::IStream &_istream, sofab::id _id, size_t _size) noexcept override
+    void _onFieldCallback(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size) noexcept override
     {
         (void)_id;
         (void)_size;
@@ -89,7 +89,7 @@ class DynArrayOfStrings : public sofab::IStreamMessage
 public:
     std::vector<std::string> values;
 
-    void _onFieldCallback(sofab::IStream &_istream, sofab::id _id, size_t _size) noexcept override
+    void _onFieldCallback(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size) noexcept override
     {
         (void)_id;
         (void)_size;
@@ -115,7 +115,7 @@ public:
     double	    fp64 = 0.0;
     std::string	str;
 
-    std::array<int8_t, 5> i8Array{};
+    std::vector<int8_t> i8Array{};
     std::array<uint8_t, 5> u8Array{};
     std::array<int16_t, 5> i16Array{};
     std::array<uint16_t, 5> u16Array{};
@@ -127,7 +127,7 @@ public:
     std::array<float, 5> fp32Array{};
     std::array<double, 5> fp64Array{};
 
-    void _onFieldCallback(sofab::IStream &_istream, sofab::id _id, size_t _size) noexcept override
+    void _onFieldCallback(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size) noexcept override
     {
         (void)_size;
 
@@ -145,11 +145,15 @@ public:
             case 10: _istream.read(fp32); break;
             case 11: _istream.read(fp64); break;
             case 12:
-                str.resize(_size);
+                str.resize(std::min(_size, static_cast<size_t>(32)));
                 _istream.read(str);
                 break;
 
-            case 13: _istream.read(i8Array); break;
+            case 13:
+                i8Array.resize(std::min(_size, static_cast<size_t>(32)));
+                _istream.read(i8Array);
+                break;
+
             case 14: _istream.read(u8Array); break;
             case 15: _istream.read(i16Array); break;
             case 16: _istream.read(u16Array); break;
@@ -175,13 +179,13 @@ TEST_CASE("IStream: inline feed buffer")
     uint8_t value = 0x55;
 
     sofab::IStreamInline istream{
-        [&](sofab::IStream& _istream, sofab::id _id, size_t _size) noexcept
+        [&](sofab::id _id, size_t _size) noexcept
         {
             (void)_size;
 
             if (_id == 0)
             {
-                _istream.read(value);
+                istream.read(value);
             }
         }
     };
@@ -197,12 +201,12 @@ TEST_CASE("IStream: inline feed buffer stream")
     std::string value;
 
     sofab::IStreamInline istream{
-        [&](sofab::IStream& _istream, sofab::id _id, size_t _size) noexcept
+        [&](sofab::id _id, size_t _size) noexcept
         {
             if (_id == 0)
             {
                 value.resize(_size);
-                _istream.read(value);
+                istream.read(value);
             }
         }
     };

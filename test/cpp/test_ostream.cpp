@@ -55,8 +55,8 @@ public:
 
     static constexpr size_t _maxSize = 12;
 
-    sofab::OStream::Result
-    _serialize(sofab::OStream &_ostream) const noexcept override
+    sofab::OStreamImpl::Result
+    _serialize(sofab::OStreamImpl &_ostream) const noexcept override
     {
         return _ostream
             .writeIf(1, id, id != 0)

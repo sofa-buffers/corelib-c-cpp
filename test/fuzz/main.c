@@ -5,9 +5,12 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "sofab/istream.h"
-
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#include "sofab/istream.h"
 
 /*****************************************************************************/
 /* tests */
@@ -208,7 +211,7 @@ const uint8_t buffer[] = {
 
 static void mutate(uint8_t *buf, size_t len)
 {
-    int mutations = 1 + rand() % 6;
+    int mutations = 1 + (rand() % 6);
 
     for (int i = 0; i < mutations; i++)
     {
