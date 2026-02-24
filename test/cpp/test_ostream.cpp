@@ -50,17 +50,30 @@ static void hexdump(const void *data, size_t size)
 class SimpleObject : public sofab::OStreamMessage
 {
 public:
-    uint32_t id = 0;
-    float value = 0;
+    struct Data
+    {
+        uint32_t id = 0;
+        float value = 0;
+    } data_;
 
     static constexpr size_t _maxSize = 12;
 
+    Data* operator ->() noexcept
+    {
+        return &data_;
+    }
+
+    const Data* operator ->() const noexcept
+    {
+        return &data_;
+    }
+
     sofab::OStreamImpl::Result
-    _serialize(sofab::OStreamImpl &_ostream) const noexcept override
+    serialize(sofab::OStreamImpl &_ostream) const noexcept override
     {
         return _ostream
-            .writeIf(1, id, id != 0)
-            .writeIf(2, value, value != 0.0f)
+            .writeIf(1, data_.id, data_.id != 0)
+            .writeIf(2, data_.value, data_.value != 0.0f)
         ;
     }
 };

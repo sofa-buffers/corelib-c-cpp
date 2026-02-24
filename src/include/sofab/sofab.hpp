@@ -42,13 +42,19 @@ namespace sofab
         InvalidMessage = SOFAB_RET_E_INVALID_MSG
     };
 
-    using flushCallback = std::function<void(std::span<const uint8_t>)>;
 
     using id = sofab_id_t;
+
+    /***************/
+    /*** OStream ***/
+    /***************/
 
     class OStreamMessage;
     class OStreamImpl
     {
+    public:
+        using flushCallback = std::function<void(std::span<const uint8_t>)>;
+
     protected:
         sofab_ostream_t ctx_;
         uint8_t *buffer_;
@@ -427,7 +433,7 @@ namespace sofab
 
     class OStreamMessage;
     template <class T>
-    concept HasConstexprMaxSize =
+    concept OutputMessage =
         std::derived_from<T, OStreamMessage> &&
         requires {
             { T::_maxSize } -> std::convertible_to<std::size_t>;
@@ -438,40 +444,43 @@ namespace sofab
     {
     protected:
         virtual OStream::Result
-        _serialize(OStreamImpl &_ostream) const noexcept = 0;
+        serialize(OStreamImpl &_ostream) const noexcept = 0;
     };
 
-    template <HasConstexprMaxSize MessageType, size_t N = MessageType::_maxSize, size_t Offset = 0>
+    template <OutputMessage MessageType, size_t N = MessageType::_maxSize, size_t Offset = 0>
     class OStreamObject : public OStreamInline<N + Offset, Offset>
     {
         MessageType message_;
 
     public:
         OStreamObject() noexcept = default;
-        OStreamObject(flushCallback callback) noexcept
+        OStreamObject(typename OStream::flushCallback callback) noexcept
             : OStreamInline<N + Offset, Offset>{callback}
         { };
 
-        MessageType* operator->() noexcept
+        MessageType& operator->() noexcept
         {
-            return &message_;
+            return message_;
         }
 
         OStream::Result serialize() noexcept
         {
-            auto result =  message_._serialize(static_cast<OStreamImpl&>(*this));
+            auto result =  message_.serialize(static_cast<OStreamImpl&>(*this));
             OStreamImpl::flush();
 
             return result;
         }
     };
 
-    template <HasConstexprMaxSize MessageType, size_t Offset = 0>
+    template <OutputMessage MessageType, size_t Offset = 0>
     class OStreamObjectOffset : public OStreamObject<MessageType, MessageType::_maxSize, Offset>
     {
     };
 
-    /* IStream */
+
+    /***************/
+    /*** IStream ***/
+    /***************/
 
     class IStreamImpl
     {
@@ -640,35 +649,39 @@ namespace sofab
 
     class IStreamInline : public IStreamImpl
     {
-        using fieldCallback = std::function<void(sofab::id _id, size_t _size)>;
+    public:
+        using fieldCallback = std::function<void(sofab::id _id, size_t _size, size_t _count)>;
 
     private:
         fieldCallback callback_;
 
-        static void _field_callback(
+        static void field_callback_(
             sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
         {
             (void)ctx;
-            (void)count;
 
             auto *self = static_cast<IStreamInline*>(usrptr);
-            self->callback_(id, size);
+            self->callback_(id, size, count);
         }
 
     public:
         IStreamInline(fieldCallback callback) noexcept
             : callback_{callback}
         {
-            sofab_istream_init(&ctx_, _field_callback, this);
+            sofab_istream_init(&ctx_, field_callback_, this);
         }
     };
+
+    class IStreamMessage;
+    template <typename T>
+    concept InputMessage = std::derived_from<T, IStreamMessage>;
 
     class IStreamMessage
     {
     private:
         sofab_istream_decoder_t decoder_;
 
-        template <class MessageType>
+        template <InputMessage MessageType>
         friend class IStreamObject;
 
         struct Context
@@ -677,20 +690,20 @@ namespace sofab
             IStreamMessage &message;
         };
 
-        static void _field_callback(
-            sofab_istream_t *ctx, sofab_id_t id, size_t size, void *usrptr)
+        static void field_callback_(
+            sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
         {
             (void)ctx;
 
             auto context = static_cast<Context*>(usrptr);
-            context->message._onFieldCallback(context->istream, id, size);
+            context->message.deserialize(context->istream, id, size, count);
         }
 
     public:
-        virtual void _onFieldCallback(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size) noexcept = 0;
+        virtual void deserialize(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size, size_t _count) noexcept = 0;
     };
 
-    template <class MessageType>
+    template <InputMessage MessageType>
     class IStreamObject : public IStreamImpl
     {
         MessageType data_;
@@ -700,12 +713,27 @@ namespace sofab
         IStreamObject() noexcept
             : context_{*this, data_}
         {
-            sofab_istream_init(&ctx_, MessageType::_field_callback, &context_);
+            sofab_istream_init(&ctx_, MessageType::field_callback_, &context_);
         }
 
-        MessageType* operator->() noexcept
+        MessageType& operator->() noexcept
         {
-            return &data_;
+            return data_;
+        }
+
+        const MessageType& operator->() const noexcept
+        {
+            return data_;
+        }
+
+        MessageType& operator*() noexcept
+        {
+            return data_;
+        }
+
+        const MessageType& operator*() const noexcept
+        {
+            return data_;
         }
     };
 };
