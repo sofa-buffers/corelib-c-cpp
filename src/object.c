@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#define _SOFAB_OBJECT_C
+#define SOFAB_OBJECT_C
 
 /* includes *******************************************************************/
 #include "sofab/object.h"

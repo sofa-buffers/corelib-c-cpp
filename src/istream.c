@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#define _SOFAB_C
+#define SOFAB_C
 
 /* includes *******************************************************************/
 #include "sofab/istream.h"

@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef _SOFAB_H
-#define _SOFAB_H
+#ifndef SOFAB_H
+#define SOFAB_H
 
 /**
  * @defgroup c_api C API
@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#ifndef _SOFAB_C
+#ifndef SOFAB_C
 # define SOFAB_EXTERN extern
 #else
 # define SOFAB_EXTERN
@@ -141,4 +141,4 @@ typedef char sofab_check_size_int64_t[(sizeof(int64_t) == 8) ? 1 : -1];
 
 /** @} */ // end of defgroup
 
-#endif /* _SOFAB_H */
+#endif /* SOFAB_H */

@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#define _SOFAB_OSTREAM_C
+#define SOFAB_OSTREAM_C
 
 /* includes *******************************************************************/
 #include "sofab/ostream.h"
@@ -102,11 +102,13 @@ static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_ty
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /* Write fixed-length data to buffer */
-static sofab_ret_t _write_fixlen (sofab_ostream_t *ctx, const uint8_t *data, int32_t datalen)
+static sofab_ret_t _write_fixlen (sofab_ostream_t *ctx, const void *data, int32_t datalen)
 {
+    const uint8_t *bytes = (const uint8_t *)data;
+
     for (int32_t i = 0; i < datalen; i++)
     {
-        if (_push_byte(ctx, data[i]) != 0)
+        if (_push_byte(ctx, bytes[i]) != 0)
         {
             return SOFAB_RET_E_BUFFER_FULL;
         }

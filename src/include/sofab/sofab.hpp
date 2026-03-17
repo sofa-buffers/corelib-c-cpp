@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef _SOFAB_HPP
-#define _SOFAB_HPP
+#ifndef SOFAB_HPP
+#define SOFAB_HPP
 
 /**
  * @defgroup cpp_api C++ API
@@ -740,4 +740,4 @@ namespace sofab
 
 /** @} */ // end of defgroup
 
-#endif // _SOFAB_HPP
+#endif // SOFAB_HPP

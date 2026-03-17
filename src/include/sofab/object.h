@@ -20,8 +20,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef _SOFAB_OBJECT_H
-#define _SOFAB_OBJECT_H
+#ifndef SOFAB_OBJECT_H
+#define SOFAB_OBJECT_H
 
 /**
  * @defgroup c_api C API
@@ -32,7 +32,7 @@
 extern "C" {
 #endif
 
-#ifndef _SOFAB_OBJECT_C
+#ifndef SOFAB_OBJECT_C
 # define SOFAB_OBJECT_EXTERN extern
 #else
 # define SOFAB_OBJECT_EXTERN
@@ -160,4 +160,4 @@ extern void sofab_object_field_cb (
 
 /** @} */ // end of defgroup
 
-#endif /* _SOFAB_OBJECT_H */
+#endif /* SOFAB_OBJECT_H */

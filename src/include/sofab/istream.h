@@ -20,8 +20,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef _SOFAB_ISTREAM_H
-#define _SOFAB_ISTREAM_H
+#ifndef SOFAB_ISTREAM_H
+#define SOFAB_ISTREAM_H
 
 /**
  * @defgroup c_api C API
@@ -32,7 +32,7 @@
 extern "C" {
 #endif
 
-#ifndef _SOFAB_ISTREAM_C
+#ifndef SOFAB_ISTREAM_C
 # define SOFAB_ISTREAM_EXTERN extern
 #else
 # define SOFAB_ISTREAM_EXTERN
@@ -547,4 +547,4 @@ extern void sofab_istream_read_sequence (
 
 /** @} */ // end of defgroup
 
-#endif /* _SOFAB_ISTREAM_H */
+#endif /* SOFAB_ISTREAM_H */

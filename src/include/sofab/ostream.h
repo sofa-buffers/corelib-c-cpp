@@ -29,8 +29,8 @@
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef _SOFAB_OSTREAM_H
-#define _SOFAB_OSTREAM_H
+#ifndef SOFAB_OSTREAM_H
+#define SOFAB_OSTREAM_H
 
 /**
  * @defgroup c_api C API
@@ -41,7 +41,7 @@
 extern "C" {
 #endif
 
-#ifndef _SOFAB_OSTREAM_C
+#ifndef SOFAB_OSTREAM_C
 # define SOFAB_OSTREAM_EXTERN extern
 #else
 # define SOFAB_OSTREAM_EXTERN
@@ -594,4 +594,4 @@ extern sofab_ret_t sofab_ostream_write_sequence_end (sofab_ostream_t *ctx);
 
 /** @} */ // end of defgroup
 
-#endif /* _SOFAB_OSTREAM_H */
+#endif /* SOFAB_OSTREAM_H */
