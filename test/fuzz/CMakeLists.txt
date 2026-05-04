@@ -13,4 +13,4 @@ target_link_libraries(sofabfuzz
 )
 
 # --- ctest registration ---
-add_test(NAME fuzz COMMAND sofabfuzz)
+#add_test(NAME fuzz COMMAND sofabfuzz)

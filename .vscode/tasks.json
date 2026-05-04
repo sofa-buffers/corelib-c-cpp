@@ -40,6 +40,20 @@
             "dependsOn": "CMake: configure (Debug)",
             "dependsOrder": "sequence",
             "detail": "Build with CMake"
+        },
+        {
+            "label": "CMake: test",
+            "type": "shell",
+            "command": "ctest",
+            "args": [
+                "--output-on-failure"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/build"
+            },
+            "group": "test",
+            "dependsOn": "CMake: build (Debug)",
+            "dependsOrder": "sequence"
         }
     ]
 }
