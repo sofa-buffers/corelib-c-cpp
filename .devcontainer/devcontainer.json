@@ -1,6 +1,7 @@
 {
   "name": "C/C++ Dev",
   "build": { "dockerfile": "Dockerfile" },
+  "runArgs": ["--env-file", "${localWorkspaceFolder}/.devcontainer/.env"],
   "customizations": {
     "vscode": {
       "extensions": [
