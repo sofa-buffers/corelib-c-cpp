@@ -71,6 +71,12 @@ if(SOFAB_ENABLE_CPP)
     add_subdirectory(test/cpp)
 endif()
 
+# --- build throughput benchmarks ---
+option(SOFAB_ENABLE_BENCH "Build the throughput benchmarks (bench_c / bench_cpp)" ON)
+if(SOFAB_ENABLE_BENCH)
+    add_subdirectory(bench)
+endif()
+
 # --- build fuzz tests ---
 if(SOFAB_ENABLE_FUZZ)
     add_subdirectory(test/fuzz)

@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     ca-certificates \
     curl \
+    valgrind \
+    linux-tools-generic \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js (LTS) für Claude Code
