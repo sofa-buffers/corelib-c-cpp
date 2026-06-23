@@ -49,6 +49,19 @@ jobs:
             march: armv8.1-m.main+mve
             mtune: cortex-m85
 
+          - name: minimal
+            march: armv6-m
+            mtune: cortex-m0
+            minimal: true
+            build_target: sofabuffers
+            cflags_release: >-
+              -Os -DNDEBUG
+              -DSOFAB_DISABLE_FIXLEN_SUPPORT
+              -DSOFAB_DISABLE_ARRAY_SUPPORT
+              -DSOFAB_DISABLE_SEQUENCE_SUPPORT
+              -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
+              -DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -68,13 +81,21 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF
+            -DSOFAB_ENABLE_BENCH=OFF \
+            -DCMAKE_C_FLAGS_RELEASE="${{ matrix.cflags_release || '-O3 -DNDEBUG' }}"
 
       - name: Build project
-        run: cmake --build build
+        run: cmake --build build --target ${{ matrix.build_target || 'all' }}
 
       - name: Verify C binary (${{ matrix.name }})
+        if: ${{ !matrix.minimal }}
         working-directory: build/test/c
         run: |
           file sofabtest
           readelf -h -A sofabtest
+
+      - name: Library size (${{ matrix.name }})
+        if: ${{ matrix.minimal }}
+        run: |
+          file build/src/libsofabuffers.a
+          size build/src/libsofabuffers.a
