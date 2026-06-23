@@ -1,6 +1,13 @@
 # ----------------------------------------
 # Catch2 via FetchContent
 # ----------------------------------------
+
+# Catch2 requires C++ exceptions. The core library is built with
+# -fno-exceptions for non-coverage (embedded) builds, so re-enable them for the
+# whole C++ test build — both Catch2 and the test executable — to override that
+# inherited flag.
+add_compile_options(-fexceptions)
+
 include(FetchContent)
 
 FetchContent_Declare(
