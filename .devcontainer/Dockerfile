@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     valgrind \
     linux-tools-generic \
+    gcovr \
     && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI (gh)
