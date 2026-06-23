@@ -25,8 +25,7 @@ jobs:
           cmake -S . -B build \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DSOFAB_ENABLE_COVERAGE=ON
+            -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build project
         run: cmake --build build
@@ -45,35 +44,4 @@ jobs:
 
       - name: Run tests
         working-directory: build
-        env:
-          LLVM_PROFILE_FILE: "sofabtest.profraw"
         run: ctest --output-on-failure --verbose
-
-      - name: Test coverage report
-        working-directory: build/test/c
-        run: |
-          llvm-profdata merge -sparse sofabtest.profraw -o sofabtest.profdata
-          llvm-cov report ./sofabtest -instr-profile=sofabtest.profdata -format=text \
-            -ignore-filename-regex="test/" -ignore-filename-regex="_deps/"
-
-      - name: Test coverage badge JSON
-        working-directory: build/test/c
-        run: |
-          llvm-cov export ./sofabtest -instr-profile=sofabtest.profdata -format=text \
-            -ignore-filename-regex="test/" -ignore-filename-regex="_deps/" > coverage.json
-          jq '
-            .data[0].totals.lines |
-            (if .count == 0 then 0 else (.covered / .count * 100) end) as $pct |
-            {
-              schemaVersion: 1,
-              label: "llvm-cov",
-              message: (($pct * 10 | round / 10) | tostring + "%"),
-              color: (if $pct >= 90 then "brightgreen" elif $pct >= 75 then "yellow" else "red" end)
-            }
-          ' coverage.json > badge.json
-          echo "$(<badge.json)"
-
-#      - name: Upload artifact for GitHub Pages
-#        uses: actions/upload-pages-artifact@v3
-#        with:
-#          path: badge.json
