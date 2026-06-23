@@ -79,9 +79,9 @@ extern "C" {
  */
 typedef struct
 {
-    const uint16_t id;				/*!< Field ID */
-    const uint16_t offset;			/*!< Offset within the object structure */
-    const uint16_t size;			/*!< Size of the field in bytes */
+    const sofab_object_descr_id_t id;		/*!< Field ID (width per SOFAB_OBJECT_DESCR_PROFILE) */
+    const sofab_object_descr_offset_t offset;	/*!< Offset within the object structure (width per profile) */
+    const sofab_object_descr_size_t size;		/*!< Size of the field in bytes (width per profile) */
     const uint8_t nested_idx;		/*!< Index into the nested object descriptor list */
     const uint8_t type : 4;			/*!< Field type (4bit for types: 0x0..0xA) */
     const uint8_t element_size : 4;	/*!< Size of individual elements for arrays (4bit for type length: 1..8)*/

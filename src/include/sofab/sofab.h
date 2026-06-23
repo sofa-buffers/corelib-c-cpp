@@ -114,6 +114,67 @@ typedef int64_t sofab_signed_t;
 /*! @brief Disable integer overflow checks when reading integer values. */
 // #define SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
 
+/* object descriptor configuration ********************************************/
+/*!
+ * @brief Object descriptor size profiles.
+ *
+ * The integer widths used for the @ref sofab_object_descr_field_t members
+ * @c id, @c offset and @c size are selectable so the descriptor footprint can
+ * be tuned to the messages actually in use. Smaller profiles shrink every
+ * descriptor table at the cost of a lower addressable range.
+ *
+ * @c offset and @c size both index into the described object structure, so
+ * they always share the same width; @c id is bounded by the highest field ID
+ * in use. All three follow the selected profile.
+ *
+ * Profiles are ordered ascending by capacity so generated code can verify at
+ * compile time that the corelib is configured wide enough, e.g.
+ * @code
+ *   // require at least 16-bit descriptors
+ *   #if SOFAB_OBJECT_DESCR_PROFILE < SOFAB_OBJECT_DESCR_MEDIUM
+ *   # error "generated descriptors require at least the MEDIUM profile"
+ *   #endif
+ *
+ *   // or check concrete limits
+ *   #if MY_MESSAGE_MAX_FIELD_ID > SOFAB_OBJECT_DESCR_ID_MAX
+ *   # error "field IDs exceed the configured descriptor id width"
+ *   #endif
+ * @endcode
+ */
+#define SOFAB_OBJECT_DESCR_SMALL  1  /*!< uint8_t  id/offset/size (max 255) */
+#define SOFAB_OBJECT_DESCR_MEDIUM 2  /*!< uint16_t id/offset/size (max 65535) */
+#define SOFAB_OBJECT_DESCR_BIG    3  /*!< uint32_t id/offset/size (max 4294967295) */
+
+/*! @brief Selected object descriptor profile (default: MEDIUM). */
+#ifndef SOFAB_OBJECT_DESCR_PROFILE
+# define SOFAB_OBJECT_DESCR_PROFILE SOFAB_OBJECT_DESCR_MEDIUM
+#endif
+
+#if SOFAB_OBJECT_DESCR_PROFILE == SOFAB_OBJECT_DESCR_SMALL
+typedef uint8_t  sofab_object_descr_id_t;
+typedef uint8_t  sofab_object_descr_offset_t;
+typedef uint8_t  sofab_object_descr_size_t;
+# define SOFAB_OBJECT_DESCR_ID_MAX     (UINT8_MAX)
+# define SOFAB_OBJECT_DESCR_OFFSET_MAX (UINT8_MAX)
+# define SOFAB_OBJECT_DESCR_SIZE_MAX   (UINT8_MAX)
+#elif SOFAB_OBJECT_DESCR_PROFILE == SOFAB_OBJECT_DESCR_MEDIUM
+typedef uint16_t sofab_object_descr_id_t;
+typedef uint16_t sofab_object_descr_offset_t;
+typedef uint16_t sofab_object_descr_size_t;
+# define SOFAB_OBJECT_DESCR_ID_MAX     (UINT16_MAX)
+# define SOFAB_OBJECT_DESCR_OFFSET_MAX (UINT16_MAX)
+# define SOFAB_OBJECT_DESCR_SIZE_MAX   (UINT16_MAX)
+#elif SOFAB_OBJECT_DESCR_PROFILE == SOFAB_OBJECT_DESCR_BIG
+typedef uint32_t sofab_object_descr_id_t;
+typedef uint32_t sofab_object_descr_offset_t;
+typedef uint32_t sofab_object_descr_size_t;
+# define SOFAB_OBJECT_DESCR_ID_MAX     (UINT32_MAX)
+# define SOFAB_OBJECT_DESCR_OFFSET_MAX (UINT32_MAX)
+# define SOFAB_OBJECT_DESCR_SIZE_MAX   (UINT32_MAX)
+#else
+# error "SOFAB_OBJECT_DESCR_PROFILE must be SOFAB_OBJECT_DESCR_SMALL, _MEDIUM or _BIG"
+#endif
+
 /* sanity checks **************************************************************/
 #if !defined(__SIZEOF_DOUBLE__) && !defined(SOFAB_DISABLE_FP64_SUPPORT)
 typedef char sofab_check_size_double[(sizeof(double) == 8) ? 1 : -1];
