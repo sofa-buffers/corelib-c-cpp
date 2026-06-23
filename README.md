@@ -31,6 +31,42 @@
 | GCC RISCV-V 64 (little endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml) |
 
 
+### Build and test
+
+The library is built with [CMake](https://cmake.org/) (version 3.10 or later) and a C99 / C++20 capable toolchain such as GCC or Clang.
+
+#### Build
+
+```sh
+cmake -S . -B build
+cmake --build build --parallel
+```
+
+#### Test
+
+Tests are registered with CTest and cover both the C and C++ core libraries:
+
+```sh
+ctest --test-dir build --output-on-failure
+```
+
+#### Useful CMake options
+
+| Option | Default | Description |
+| - | - | - |
+| `SOFAB_ENABLE_CPP` | `ON` | Build the C++ tests |
+| `SOFAB_ENABLE_BENCH` | `ON` | Build the throughput benchmarks (`bench_c` / `bench_cpp`) |
+| `SOFAB_ENABLE_COVERAGE` | `OFF` | Enable code coverage instrumentation (`-O0 -g --coverage`) |
+| `SOFAB_ENABLE_FUZZ` | `OFF` | Enable fuzzing instrumentation (sanitizers) |
+
+For example, to configure a debug build with coverage enabled:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_COVERAGE=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
 ### Who is this suitable for?
 
 The C core library is very much aimed at small embedded devices, where C is simply essential. The focus here was therefore on minimal resource consumption.
