@@ -14,6 +14,8 @@
 #include <valarray>
 #include <vector>
 #include <span>
+#include <cstdint>
+#include <limits>
 
 //
 
@@ -281,4 +283,193 @@ TEST_CASE("IStream: object feed buffer")
     REQUIRE(result.code() == sofab::Error::None);
     REQUIRE(istream->id == 42);
     REQUIRE(istream->value == 3.1415f);
+}
+
+//
+// Round-trip tests: serialize with the OStream API, feed the produced bytes
+// back through the IStream API and verify the decoded values. These exercise
+// the input/deserialization paths (signed varint / zigzag decode, fp64, bool,
+// arrays of every type) that the byte-literal tests above leave untouched.
+//
+
+TEST_CASE("IStream: round-trip all scalar types into object")
+{
+    sofab::OStream ostream{256};
+
+    ostream
+        .write(1,  static_cast<int8_t>(-5))
+        .write(2,  static_cast<uint8_t>(200))
+        .write(3,  static_cast<int16_t>(-12345))
+        .write(4,  static_cast<uint16_t>(60000))
+        .write(5,  std::numeric_limits<int32_t>::min())
+        .write(6,  std::numeric_limits<uint32_t>::max())
+        .write(7,  std::numeric_limits<int64_t>::min())
+        .write(8,  std::numeric_limits<uint64_t>::max())
+        .write(9,  true)
+        .write(10, 3.1415f)
+        .write(11, 2.718281828459045)
+        .write(12, std::string_view{"sofa"});
+
+    const auto used = ostream.bytesUsed();
+
+    sofab::IStreamObject<FullObject> istream;
+    auto result = istream.feed(ostream.data(), used);
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(result);                                // IStream::Result::operator bool
+
+    const auto &d = (*istream).data_;
+    REQUIRE(d.i8  == static_cast<int8_t>(-5));
+    REQUIRE(d.u8  == static_cast<uint8_t>(200));
+    REQUIRE(d.i16 == static_cast<int16_t>(-12345));
+    REQUIRE(d.u16 == static_cast<uint16_t>(60000));
+    REQUIRE(d.i32 == std::numeric_limits<int32_t>::min());
+    REQUIRE(d.u32 == std::numeric_limits<uint32_t>::max());
+    REQUIRE(d.i64 == std::numeric_limits<int64_t>::min());
+    REQUIRE(d.u64 == std::numeric_limits<uint64_t>::max());
+    REQUIRE(d.boolean == true);
+    REQUIRE(d.fp32 == 3.1415f);
+    REQUIRE(d.fp64 == 2.718281828459045);
+    REQUIRE(d.str == "sofa");
+}
+
+TEST_CASE("IStream: round-trip arrays of every type into object")
+{
+    sofab::OStream ostream{512};
+
+    const std::array<uint8_t,  5> u8a  = {1, 2, 3, 4, 5};
+    const std::array<int16_t,  5> i16a = {-1, -2, -3, -4, -5};
+    const std::array<uint16_t, 5> u16a = {10, 20, 30, 40, 50};
+    const std::array<int32_t,  5> i32a = {-100, -200, -300,
+        std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max()};
+    const std::array<uint32_t, 5> u32a = {1, 2, 3, 0x80000000u,
+        std::numeric_limits<uint32_t>::max()};
+    const std::array<int64_t,  5> i64a = {-1, -2, -3,
+        std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max()};
+    const std::array<uint64_t, 5> u64a = {1, 2, 3, 4,
+        std::numeric_limits<uint64_t>::max()};
+    const std::array<float,    5> f32a = {1.0f, 2.0f, 3.0f, -4.5f, 5.5f};
+    const std::array<double,   5> f64a = {1.0, 2.0, 3.0, -4.5, 5.5};
+
+    ostream
+        .write(14, u8a)
+        .write(15, i16a)
+        .write(16, u16a)
+        .write(17, i32a)
+        .write(18, u32a)
+        .write(19, i64a)
+        .write(20, u64a)
+        .write(22, f32a)
+        .write(23, f64a);
+
+    const auto used = ostream.bytesUsed();
+
+    sofab::IStreamObject<FullObject> istream;
+    auto result = istream.feed(ostream.data(), used);
+
+    REQUIRE(result.code() == sofab::Error::None);
+
+    const auto &d = (*istream).data_;
+    REQUIRE(d.u8Array   == u8a);
+    REQUIRE(d.i16Array  == i16a);
+    REQUIRE(d.u16Array  == u16a);
+    REQUIRE(d.i32Array  == i32a);
+    REQUIRE(d.u32Array  == u32a);
+    REQUIRE(d.i64Array  == i64a);
+    REQUIRE(d.u64Array  == u64a);
+    REQUIRE(d.fp32Array == f32a);
+    REQUIRE(d.fp64Array == f64a);
+}
+
+TEST_CASE("IStream: round-trip repeated fields into dynamic vector")
+{
+    sofab::OStream ostream{64};
+
+    ostream
+        .write(0, 11u)
+        .write(0, 22u)
+        .write(0, 33u);
+
+    const auto used = ostream.bytesUsed();
+
+    sofab::IStreamObject<DynArrayOfUnsigned> istream;
+    auto result = istream.feed(ostream.data(), used);
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(istream->values == std::vector<uint32_t>{11, 22, 33});
+}
+
+TEST_CASE("IStream: fields without a matching read are skipped")
+{
+    sofab::OStream ostream{64};
+
+    ostream
+        .write(0, 42u)
+        .write(1, 99u)
+        .write(2, 7u);
+
+    const auto used = ostream.bytesUsed();
+
+    uint32_t got = 0;
+    int calls = 0;
+
+    sofab::IStreamInline istream{
+        [&](sofab::id id, size_t, size_t) noexcept
+        {
+            calls++;
+
+            // bind only field 1; fields 0 and 2 must be skipped cleanly
+            if (id == 1)
+            {
+                istream.read(got);
+            }
+        }
+    };
+
+    auto result = istream.feed(ostream.data(), used);
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(calls == 3);
+    REQUIRE(got == 99);
+}
+
+TEST_CASE("IStream: malformed input is rejected")
+{
+    SECTION("field id varint overflow")
+    {
+        const uint8_t buffer[] = {0xF8, 0xFF, 0xFF, 0xFF, 0x7F, 0x00};
+
+        int calls = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { calls++; }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        REQUIRE(result != sofab::Error::None);      // IStream::Result::operator!=
+        REQUIRE_FALSE(result);                      // IStream::Result::operator bool
+        REQUIRE(calls == 0);                        // id never completed, no callback
+    }
+
+    SECTION("unsigned varint value overflow")
+    {
+        const uint8_t buffer[] = {
+            0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
+
+        uint64_t value = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t, size_t) noexcept
+            {
+                if (id == 0)
+                {
+                    istream.read(value);
+                }
+            }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+    }
 }
