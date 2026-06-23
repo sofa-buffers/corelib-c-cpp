@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [ main ]
 
-permissions:
-  contents: write
-
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -21,13 +18,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake gcovr jq
+            build-essential cmake
 
       - name: Configure with CMake
         run: |
           cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DSOFAB_ENABLE_COVERAGE=ON
+            -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build project
         run: cmake --build build
@@ -47,47 +43,3 @@ jobs:
       - name: Run tests
         working-directory: build
         run: ctest --output-on-failure --verbose
-
-      - name: Test coverage report
-        run: |
-          gcovr \
-            --root . \
-            --filter '^src/.*\.(c|h)$' \
-            --exclude-directories '.*/_deps/.*' \
-            --object-directory build \
-            --print-summary
-
-      - name: Test coverage badge JSON
-        run: |
-          gcovr \
-            --root . \
-            --filter '^src/.*\.(c|h)$' \
-            --exclude-directories '.*/_deps/.*' \
-            --object-directory build \
-            --json-summary coverage.json
-          jq -n --argjson cov "$(<coverage.json)" '
-            ($cov.line_covered / $cov.line_total * 100) as $pct |
-            {
-              schemaVersion: 1,
-              label: "gcovr",
-              message: ($pct | tostring[0:4] + "%"),
-              color: (if $pct >= 90 then "brightgreen" elif $pct >= 75 then "yellow" else "red" end)
-            }
-          ' > badge.json
-          echo "$(<badge.json)"
-
-      - name: Publish coverage badge
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir badge-out
-          cp badge.json badge-out/coverage-c.json
-          cd badge-out
-          git init -q
-          git checkout -q -b badges
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add coverage-c.json
-          git commit -q -m "ci: update C coverage badge"
-          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
