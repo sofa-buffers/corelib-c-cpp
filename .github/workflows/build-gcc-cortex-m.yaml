@@ -54,6 +54,7 @@ jobs:
             mtune: cortex-m0
             minimal: true
             build_target: sofabuffers
+            cmake_extra: -DSOFAB_ENABLE_OBJECT=OFF
             cflags_release: >-
               -Os -DNDEBUG
               -DSOFAB_DISABLE_FIXLEN_SUPPORT
@@ -82,7 +83,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF \
             -DSOFAB_ENABLE_BENCH=OFF \
-            -DCMAKE_C_FLAGS_RELEASE="${{ matrix.cflags_release || '-O3 -DNDEBUG' }}"
+            -DCMAKE_C_FLAGS_RELEASE="${{ matrix.cflags_release || '-O3 -DNDEBUG' }}" \
+            ${{ matrix.cmake_extra }}
 
       - name: Build project
         run: cmake --build build --target ${{ matrix.build_target || 'all' }}
