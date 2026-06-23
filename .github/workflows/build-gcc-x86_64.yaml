@@ -51,7 +51,18 @@ jobs:
             --root . \
             --filter '^src/.*\.(c|h)$' \
             --exclude-directories '.*/_deps/.*' \
-            --object-directory build
+            --object-directory build \
+            --cobertura coverage.xml \
+            --print-summary
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: c
+          name: gcc-x86_64-c
+          fail_ci_if_error: false
 
       - name: Test coverage badge JSON
         run: |
