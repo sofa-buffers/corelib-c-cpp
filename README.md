@@ -11,7 +11,7 @@
 
 [GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
 
-[![C coverage](https://codecov.io/gh/sofa-buffers/corelib-c-cpp/branch/main/graph/badge.svg?flag=c)](https://codecov.io/gh/sofa-buffers/corelib-c-cpp?flags%5B0%5D=c)
+[![C coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/badges/coverage-c.json)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml)
 
 ### Source documentation
 

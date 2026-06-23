@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -52,17 +55,7 @@ jobs:
             --filter '^src/.*\.(c|h)$' \
             --exclude-directories '.*/_deps/.*' \
             --object-directory build \
-            --cobertura coverage.xml \
             --print-summary
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage.xml
-          flags: c
-          name: gcc-x86_64-c
-          fail_ci_if_error: false
 
       - name: Test coverage badge JSON
         run: |
@@ -83,7 +76,18 @@ jobs:
           ' > badge.json
           echo "$(<badge.json)"
 
-#      - name: Upload artifact for GitHub Pages
-#        uses: actions/upload-pages-artifact@v3
-#        with:
-#          path: badge.json
+      - name: Publish coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir badge-out
+          cp badge.json badge-out/coverage-c.json
+          cd badge-out
+          git init -q
+          git checkout -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage-c.json
+          git commit -q -m "ci: update C coverage badge"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
