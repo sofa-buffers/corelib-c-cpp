@@ -54,7 +54,7 @@ jobs:
             mtune: cortex-m0
             minimal: true
             build_target: sofabuffers
-            cmake_extra: -DSOFAB_ENABLE_OBJECT=OFF
+            cmake_extra: -DSOFAB_DISABLE_OBJECT_API=ON
             cflags_release: >-
               -Os -DNDEBUG
               -DSOFAB_DISABLE_FIXLEN_SUPPORT
