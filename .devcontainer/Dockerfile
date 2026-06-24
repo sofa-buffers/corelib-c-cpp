@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     valgrind \
     linux-tools-generic \
     gcovr \
+    jq \
+    doxygen \
+    graphviz \
     && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI (gh)
