@@ -9,9 +9,29 @@
 
 ## SofaBuffers C/C++ library
 
+A dependency-free, **heap-free**, **streaming** C99 / C++20 implementation of the
+SofaBuffers (*Sofab*) serialization format. It packs structured fields into a
+caller-owned buffer and decodes them through a small callback-driven decoder — no
+allocator, no code generator, and no third-party dependencies — so the same wire
+format runs from deeply embedded MCUs up to IoT-class devices.
+
 [GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
 
 [![C coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/badges/coverage-c.json)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml)
+
+### Why this design
+
+| Goal | How |
+|------|-----|
+| No allocator | All state lives in caller-provided buffers and structs; nothing is ever heap-allocated, avoiding heap fragmentation. |
+| No dependencies | The corelib pulls in no third-party libraries, so it drops cleanly into any toolchain. |
+| Streaming **out** | `sofab_ostream` writes into a small caller buffer and invokes a flush callback whenever it fills, so a message can exceed available RAM. |
+| Streaming **in** | `sofab_istream` is a callback-driven decoder fed arbitrary byte chunks; large string/blob payloads are delivered in pieces. |
+| Reserve-offset | `sofab_ostream_init` takes a start offset that leaves room at the front of the buffer for a lower-layer protocol header (saves a copy). |
+| No code generator | The field-level API is explicit enough to use by hand, while the descriptor-driven `object` API stays optional. |
+| C++ without surprises | The C++ wrapper reports the first error through a `Result` instead of throwing and avoids `std::iostream`, for toolchains that forbid exceptions or lack heavy stdlib facilities. |
+| Portable | Plain C99 / C++20 with explicit endianness handling, so the same wire format works across little- and big-endian architectures. |
+| Small footprint | CMake options drop whole code paths (e.g. `SOFAB_ENABLE_OBJECT`); release builds target size with `-Os`, down to ~1&nbsp;KB of `.text`. |
 
 ### Source documentation
 
