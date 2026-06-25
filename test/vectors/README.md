@@ -1,14 +1,18 @@
 # SofaBuffers test vectors
 
-`test_vectors.json` is a language-agnostic conformance suite for the SofaBuffers
-wire format. Each vector pairs a **message structure + values** with the **exact
-serialized bytes** the C encoder produces, so any other implementation (e.g.
-[`corelib-rs`](https://github.com/sofa-buffers/corelib-rs)) can re-encode each
-message and assert it matches — or decode the bytes and assert it recovers the
-values.
+**The artifact in this directory is [`test_vectors.json`](test_vectors.json)** — a
+language-agnostic conformance suite for the SofaBuffers wire format. Each vector
+pairs a **message structure + values** with the **exact serialized bytes**.
 
-The vectors are derived from the happy-path encoder tests in
-[`test/c/test_ostream.c`](../c/test_ostream.c).
+Another implementation (e.g. [`corelib-rs`](https://github.com/sofa-buffers/corelib-rs))
+can load this file and, for every vector, either:
+
+- re-encode the message from `fields` and assert the output equals `serialized.hex`, or
+- decode `serialized.hex` and assert it recovers the values in `fields`.
+
+That's all most consumers need — just read the JSON. The `gen_vectors.c` program
+next to it is **only a helper** used to produce the JSON (see
+[Regenerating](#regenerating)).
 
 ## File format
 
@@ -58,14 +62,19 @@ The vectors are derived from the happy-path encoder tests in
 
 ## Regenerating
 
-`test_vectors.json` is produced by `gen_vectors.c`, which replays each message
-through the real C encoder — the structure and the bytes therefore can never
-drift apart. To regenerate after changing the encoder or the vector set:
+You only need this if you change the encoder or the set of vectors.
+
+`gen_vectors.c` is a developer helper tool, not a unit test. It describes each
+message as a list of encode operations and **replays it through the real
+SofaBuffers C encoder** — so the `fields` it prints and the `serialized.hex` it
+prints come from the same run and cannot disagree. The vectors mirror the
+happy-path cases in [`test/c/test_ostream.c`](../c/test_ostream.c).
 
 ```sh
 cmake -S . -B build -DSOFAB_ENABLE_VECTORS=ON
-cmake --build build --target generate-vectors
+cmake --build build --target generate-vectors   # rewrites test_vectors.json
+git diff test/vectors/test_vectors.json         # review, then commit
 ```
 
-CTest case `test_vectors_up_to_date` fails if the committed JSON no longer
-matches the generator output.
+The tool is gated behind `-DSOFAB_ENABLE_VECTORS=ON` (default off) so it never
+affects the normal library, test, or cross-compile builds.
