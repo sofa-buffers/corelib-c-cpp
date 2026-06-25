@@ -16,9 +16,10 @@ allocator and no third-party dependencies — with an API simple enough to use
 without a code generator, so the same wire format runs from deeply embedded MCUs
 up to IoT-class devices.
 
-[GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
-
 [![C coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/badges/coverage-c.json)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://sofa-buffers.github.io/corelib-c-cpp/)
+
+[GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
 
 ### Why this design
 
@@ -33,10 +34,6 @@ up to IoT-class devices.
 | C++ without surprises | The C++ wrapper reports the first error through a `Result` instead of throwing and avoids `std::iostream`, for toolchains that forbid exceptions or lack heavy stdlib facilities. |
 | Portable | Plain C99 / C++20 with explicit endianness handling, so the same wire format works across little- and big-endian architectures. |
 | Small footprint | CMake options drop whole code paths (e.g. `SOFAB_ENABLE_OBJECT`); release builds target size with `-Os`, down to ~1&nbsp;KB of `.text`. |
-
-### Source documentation
-
-[Documentation](https://sofa-buffers.github.io/corelib-c-cpp/)
 
 ### Supported languages
 
