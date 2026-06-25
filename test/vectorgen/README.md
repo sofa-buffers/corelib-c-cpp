@@ -1,8 +1,8 @@
 # SofaBuffers test vectors
 
-**The artifact in this directory is [`test_vectors.json`](test_vectors.json)** — a
-language-agnostic conformance suite for the SofaBuffers wire format. Each vector
-pairs a **message structure + values** with the **exact serialized bytes**.
+**The artifact this tool produces is [`assets/test_vectors.json`](../../assets/test_vectors.json)**
+— a language-agnostic conformance suite for the SofaBuffers wire format. Each
+vector pairs a **message structure + values** with the **exact serialized bytes**.
 
 Another implementation (e.g. [`corelib-rs`](https://github.com/sofa-buffers/corelib-rs))
 can load this file and, for every vector, either:
@@ -72,8 +72,8 @@ happy-path cases in [`test/c/test_ostream.c`](../c/test_ostream.c).
 
 ```sh
 cmake -S . -B build -DSOFAB_ENABLE_VECTORGEN=ON
-cmake --build build --target generate-vectors      # rewrites test_vectors.json
-git diff test/vectorgen/test_vectors.json          # review, then commit
+cmake --build build --target generate-vectors      # rewrites assets/test_vectors.json
+git diff assets/test_vectors.json                  # review, then commit
 ```
 
 The tool is gated behind `-DSOFAB_ENABLE_VECTORGEN=ON` (default off) so it never

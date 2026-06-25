@@ -15,7 +15,7 @@
  *
  * The op-lists mirror the happy-path cases in test/c/test_ostream.c.
  *
- * Usage:  sofab_gen_vectors > test_vectors.json
+ * Usage:  sofab_gen_vectors > assets/test_vectors.json
  *
  * SPDX-License-Identifier: MIT
  */
