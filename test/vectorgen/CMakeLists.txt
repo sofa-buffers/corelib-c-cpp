@@ -6,7 +6,7 @@
 # only exists to (re)produce it from the real encoder.
 #
 # Regenerate the committed JSON after changing the encoder or the vector set:
-#   cmake -S . -B build -DSOFAB_ENABLE_VECTORS=ON
+#   cmake -S . -B build -DSOFAB_ENABLE_VECTORGEN=ON
 #   cmake --build build --target generate-vectors
 
 add_executable(sofab_gen_vectors gen_vectors.c)
@@ -21,6 +21,6 @@ target_link_libraries(sofab_gen_vectors sofabuffers)
 add_custom_target(generate-vectors
     COMMAND $<TARGET_FILE:sofab_gen_vectors> > ${CMAKE_CURRENT_SOURCE_DIR}/test_vectors.json
     DEPENDS sofab_gen_vectors
-    COMMENT "Generating test/vectors/test_vectors.json"
+    COMMENT "Generating test/vectorgen/test_vectors.json"
     VERBATIM
 )

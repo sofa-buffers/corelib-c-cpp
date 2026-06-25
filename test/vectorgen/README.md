@@ -71,10 +71,10 @@ prints come from the same run and cannot disagree. The vectors mirror the
 happy-path cases in [`test/c/test_ostream.c`](../c/test_ostream.c).
 
 ```sh
-cmake -S . -B build -DSOFAB_ENABLE_VECTORS=ON
-cmake --build build --target generate-vectors   # rewrites test_vectors.json
-git diff test/vectors/test_vectors.json         # review, then commit
+cmake -S . -B build -DSOFAB_ENABLE_VECTORGEN=ON
+cmake --build build --target generate-vectors      # rewrites test_vectors.json
+git diff test/vectorgen/test_vectors.json          # review, then commit
 ```
 
-The tool is gated behind `-DSOFAB_ENABLE_VECTORS=ON` (default off) so it never
+The tool is gated behind `-DSOFAB_ENABLE_VECTORGEN=ON` (default off) so it never
 affects the normal library, test, or cross-compile builds.
