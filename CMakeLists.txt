@@ -82,6 +82,12 @@ if(SOFAB_ENABLE_FUZZ)
     add_subdirectory(test/fuzz)
 endif()
 
+# --- test-vector generator (host only) ---
+option(SOFAB_ENABLE_VECTORS "Build the JSON test-vector generator" OFF)
+if(SOFAB_ENABLE_VECTORS)
+    add_subdirectory(test/vectors)
+endif()
+
 # --- doxygen target ---
 option(SOFAB_ENABLE_DOXYGEN "Enable Doxygen documentation generation" OFF)
 if(SOFAB_ENABLE_DOXYGEN)

@@ -1,0 +1,531 @@
+/*!
+ * @file gen_vectors.c
+ * @brief Generator for the SofaBuffers cross-implementation test vectors.
+ *
+ * This program describes a set of messages as a list of high-level encode
+ * operations (the "structure" + the "values"), replays each one through the
+ * real SofaBuffers C encoder, and writes a JSON document that pairs every
+ * message with the exact bytes the encoder produced (the "serialized binary").
+ *
+ * Because the declared structure and the serialized bytes both come from the
+ * same op-list, they can never drift apart: the JSON is, by construction, a
+ * faithful description of what the library encodes. Any other SofaBuffers
+ * implementation (e.g. corelib-rs) can load the JSON, re-encode each message
+ * from the structure/values, and assert it matches `serialized.hex`.
+ *
+ * The op-lists mirror the happy-path cases in test/c/test_ostream.c.
+ *
+ * Usage:  sofab_gen_vectors > test_vectors.json
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "sofab/ostream.h"
+
+#include <float.h>
+#include <inttypes.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+/* op model *******************************************************************/
+
+typedef enum
+{
+    K_UNSIGNED,
+    K_SIGNED,
+    K_BOOLEAN,
+    K_FP32,
+    K_FP64,
+    K_STRING,
+    K_BLOB,
+    K_ARR_U8,  K_ARR_U16, K_ARR_U32, K_ARR_U64,
+    K_ARR_I8,  K_ARR_I16, K_ARR_I32, K_ARR_I64,
+    K_ARR_FP32, K_ARR_FP64,
+    K_SEQ_BEGIN,
+    K_SEQ_END,
+} kind_t;
+
+typedef struct
+{
+    kind_t      kind;
+    uint32_t    id;
+    uint64_t    u;     /* unsigned / boolean scalar          */
+    int64_t     s;     /* signed scalar                      */
+    double      f;     /* floating-point scalar              */
+    const char *str;   /* string payload                     */
+    const void *arr;   /* array / blob payload (typed below) */
+    int32_t     count; /* array element count / blob length  */
+} op_t;
+
+typedef struct
+{
+    op_t   ops[512];
+    size_t n;
+} oplist_t;
+
+static void push(oplist_t *l, op_t op) { l->ops[l->n++] = op; }
+
+/* builder helpers ************************************************************/
+
+static void op_u    (oplist_t *l, uint32_t id, uint64_t v) { push(l, (op_t){.kind = K_UNSIGNED, .id = id, .u = v}); }
+static void op_i    (oplist_t *l, uint32_t id, int64_t v)  { push(l, (op_t){.kind = K_SIGNED,   .id = id, .s = v}); }
+static void op_bool (oplist_t *l, uint32_t id, int v)      { push(l, (op_t){.kind = K_BOOLEAN,  .id = id, .u = v ? 1u : 0u}); }
+static void op_f32  (oplist_t *l, uint32_t id, float v)    { push(l, (op_t){.kind = K_FP32,     .id = id, .f = (double)v}); }
+static void op_f64  (oplist_t *l, uint32_t id, double v)   { push(l, (op_t){.kind = K_FP64,     .id = id, .f = v}); }
+static void op_str  (oplist_t *l, uint32_t id, const char *v) { push(l, (op_t){.kind = K_STRING, .id = id, .str = v}); }
+static void op_blob (oplist_t *l, uint32_t id, const void *v, int32_t n) { push(l, (op_t){.kind = K_BLOB, .id = id, .arr = v, .count = n}); }
+static void op_arr  (oplist_t *l, kind_t k, uint32_t id, const void *v, int32_t n) { push(l, (op_t){.kind = k, .id = id, .arr = v, .count = n}); }
+static void op_seqb (oplist_t *l, uint32_t id) { push(l, (op_t){.kind = K_SEQ_BEGIN, .id = id}); }
+static void op_seqe (oplist_t *l)              { push(l, (op_t){.kind = K_SEQ_END}); }
+
+/* replay through the real encoder *******************************************/
+
+static sofab_ret_t replay(sofab_ostream_t *os, const op_t *op)
+{
+    switch (op->kind)
+    {
+        case K_UNSIGNED:  return sofab_ostream_write_unsigned(os, op->id, op->u);
+        case K_SIGNED:    return sofab_ostream_write_signed(os, op->id, op->s);
+        case K_BOOLEAN:   return sofab_ostream_write_boolean(os, op->id, op->u != 0);
+        case K_FP32:      return sofab_ostream_write_fp32(os, op->id, (float)op->f);
+        case K_FP64:      return sofab_ostream_write_fp64(os, op->id, op->f);
+        case K_STRING:    return sofab_ostream_write_string(os, op->id, op->str);
+        case K_BLOB:      return sofab_ostream_write_blob(os, op->id, op->arr, (size_t)op->count);
+        case K_ARR_U8:    return sofab_ostream_write_array_of_u8(os, op->id, op->arr, op->count);
+        case K_ARR_U16:   return sofab_ostream_write_array_of_u16(os, op->id, op->arr, op->count);
+        case K_ARR_U32:   return sofab_ostream_write_array_of_u32(os, op->id, op->arr, op->count);
+        case K_ARR_U64:   return sofab_ostream_write_array_of_u64(os, op->id, op->arr, op->count);
+        case K_ARR_I8:    return sofab_ostream_write_array_of_i8(os, op->id, op->arr, op->count);
+        case K_ARR_I16:   return sofab_ostream_write_array_of_i16(os, op->id, op->arr, op->count);
+        case K_ARR_I32:   return sofab_ostream_write_array_of_i32(os, op->id, op->arr, op->count);
+        case K_ARR_I64:   return sofab_ostream_write_array_of_i64(os, op->id, op->arr, op->count);
+        case K_ARR_FP32:  return sofab_ostream_write_array_of_fp32(os, op->id, op->arr, op->count);
+        case K_ARR_FP64:  return sofab_ostream_write_array_of_fp64(os, op->id, op->arr, op->count);
+        case K_SEQ_BEGIN: return sofab_ostream_write_sequence_begin(os, op->id);
+        case K_SEQ_END:   return sofab_ostream_write_sequence_end(os);
+    }
+    return SOFAB_RET_E_USAGE;
+}
+
+/* JSON emission *************************************************************/
+
+static void json_string(FILE *o, const char *s)
+{
+    fputc('"', o);
+    for (const unsigned char *p = (const unsigned char *)s; *p; ++p)
+    {
+        switch (*p)
+        {
+            case '"':  fputs("\\\"", o); break;
+            case '\\': fputs("\\\\", o); break;
+            case '\b': fputs("\\b", o);  break;
+            case '\f': fputs("\\f", o);  break;
+            case '\n': fputs("\\n", o);  break;
+            case '\r': fputs("\\r", o);  break;
+            case '\t': fputs("\\t", o);  break;
+            default:
+                if (*p < 0x20)
+                    fprintf(o, "\\u%04x", *p);
+                else
+                    fputc(*p, o); /* raw UTF-8 byte */
+        }
+    }
+    fputc('"', o);
+}
+
+/* floats: finite values as JSON numbers (round-trippable), the only
+ * non-finite values present in the vectors (+/-inf) as string tokens. */
+static void json_float(FILE *o, double v, int is32)
+{
+    if (isinf(v)) { fputs(v < 0 ? "\"-inf\"" : "\"inf\"", o); return; }
+    if (is32) fprintf(o, "%.9g", (double)(float)v);
+    else      fprintf(o, "%.17g", v);
+}
+
+static void json_hex(FILE *o, const uint8_t *data, size_t len)
+{
+    fputc('"', o);
+    for (size_t i = 0; i < len; ++i)
+        fprintf(o, "%02x", data[i]);
+    fputc('"', o);
+}
+
+static const char *array_element_type(kind_t k)
+{
+    switch (k)
+    {
+        case K_ARR_U8:   return "u8";
+        case K_ARR_U16:  return "u16";
+        case K_ARR_U32:  return "u32";
+        case K_ARR_U64:  return "u64";
+        case K_ARR_I8:   return "i8";
+        case K_ARR_I16:  return "i16";
+        case K_ARR_I32:  return "i32";
+        case K_ARR_I64:  return "i64";
+        case K_ARR_FP32: return "fp32";
+        case K_ARR_FP64: return "fp64";
+        default:         return "";
+    }
+}
+
+static void json_array_values(FILE *o, const op_t *op)
+{
+    fputc('[', o);
+    for (int32_t i = 0; i < op->count; ++i)
+    {
+        if (i) fputs(", ", o);
+        switch (op->kind)
+        {
+            case K_ARR_U8:   fprintf(o, "%" PRIu64, (uint64_t)((const uint8_t  *)op->arr)[i]); break;
+            case K_ARR_U16:  fprintf(o, "%" PRIu64, (uint64_t)((const uint16_t *)op->arr)[i]); break;
+            case K_ARR_U32:  fprintf(o, "%" PRIu64, (uint64_t)((const uint32_t *)op->arr)[i]); break;
+            case K_ARR_U64:  fprintf(o, "%" PRIu64, ((const uint64_t *)op->arr)[i]); break;
+            case K_ARR_I8:   fprintf(o, "%" PRId64, (int64_t)((const int8_t  *)op->arr)[i]); break;
+            case K_ARR_I16:  fprintf(o, "%" PRId64, (int64_t)((const int16_t *)op->arr)[i]); break;
+            case K_ARR_I32:  fprintf(o, "%" PRId64, (int64_t)((const int32_t *)op->arr)[i]); break;
+            case K_ARR_I64:  fprintf(o, "%" PRId64, ((const int64_t *)op->arr)[i]); break;
+            case K_ARR_FP32: json_float(o, (double)((const float  *)op->arr)[i], 1); break;
+            case K_ARR_FP64: json_float(o, ((const double *)op->arr)[i], 0); break;
+            default: break;
+        }
+    }
+    fputc(']', o);
+}
+
+static void json_field(FILE *o, const char *indent, const op_t *op)
+{
+    fprintf(o, "%s{ ", indent);
+    switch (op->kind)
+    {
+        case K_UNSIGNED:  fprintf(o, "\"op\": \"unsigned\", \"id\": %" PRIu32 ", \"value\": %" PRIu64, op->id, op->u); break;
+        case K_SIGNED:    fprintf(o, "\"op\": \"signed\", \"id\": %" PRIu32 ", \"value\": %" PRId64, op->id, op->s); break;
+        case K_BOOLEAN:   fprintf(o, "\"op\": \"boolean\", \"id\": %" PRIu32 ", \"value\": %s", op->id, op->u ? "true" : "false"); break;
+        case K_FP32:      fprintf(o, "\"op\": \"fp32\", \"id\": %" PRIu32 ", \"value\": ", op->id); json_float(o, op->f, 1); break;
+        case K_FP64:      fprintf(o, "\"op\": \"fp64\", \"id\": %" PRIu32 ", \"value\": ", op->id); json_float(o, op->f, 0); break;
+        case K_STRING:    fprintf(o, "\"op\": \"string\", \"id\": %" PRIu32 ", \"value\": ", op->id); json_string(o, op->str); break;
+        case K_BLOB:      fprintf(o, "\"op\": \"blob\", \"id\": %" PRIu32 ", \"value_hex\": ", op->id); json_hex(o, op->arr, (size_t)op->count); break;
+        case K_SEQ_BEGIN: fprintf(o, "\"op\": \"sequence_begin\", \"id\": %" PRIu32, op->id); break;
+        case K_SEQ_END:   fprintf(o, "\"op\": \"sequence_end\""); break;
+        default:
+            fprintf(o, "\"op\": \"array\", \"id\": %" PRIu32 ", \"element_type\": \"%s\", \"values\": ",
+                    op->id, array_element_type(op->kind));
+            json_array_values(o, op);
+            break;
+    }
+    fputs(" }", o);
+}
+
+/* emit one full vector (replay + structure + bytes) *************************/
+
+static int g_first_vector = 1;
+
+static void emit_vector(FILE *o, const char *name, const char *group,
+                        const char *desc, const oplist_t *l)
+{
+    uint8_t buffer[1024];
+    sofab_ostream_t os;
+    sofab_ostream_init(&os, buffer, sizeof(buffer), 0, NULL, NULL);
+
+    for (size_t i = 0; i < l->n; ++i)
+    {
+        if (replay(&os, &l->ops[i]) != SOFAB_RET_OK)
+        {
+            fprintf(stderr, "encode failed in vector '%s' at op %zu\n", name, i);
+            return;
+        }
+    }
+    size_t used = sofab_ostream_flush(&os);
+
+    if (!g_first_vector) fputs(",\n", o);
+    g_first_vector = 0;
+
+    fprintf(o, "    {\n");
+    fprintf(o, "      \"name\": ");        json_string(o, name);  fputs(",\n", o);
+    fprintf(o, "      \"group\": ");       json_string(o, group); fputs(",\n", o);
+    fprintf(o, "      \"description\": "); json_string(o, desc);  fputs(",\n", o);
+    fprintf(o, "      \"offset\": 0,\n");
+    fprintf(o, "      \"fields\": [\n");
+    for (size_t i = 0; i < l->n; ++i)
+    {
+        json_field(o, "        ", &l->ops[i]);
+        fputs(i + 1 < l->n ? ",\n" : "\n", o);
+    }
+    fprintf(o, "      ],\n");
+    fprintf(o, "      \"serialized\": { \"length\": %zu, \"hex\": ", used);
+    json_hex(o, buffer, used);
+    fprintf(o, " }\n");
+    fprintf(o, "    }");
+}
+
+/* helper to run a single-call builder **************************************
+ *
+ * `call` must be a single function-call expression (its commas are protected
+ * by parentheses); multi-statement messages are built with explicit blocks. */
+
+#define EMIT(o, name, group, desc, call)        \
+    do {                                        \
+        oplist_t l = {0};                       \
+        call;                                   \
+        emit_vector(o, name, group, desc, &l);  \
+    } while (0)
+
+/* the vectors ***************************************************************/
+
+static void emit_all(FILE *o)
+{
+    /* --- unsigned varint ladder (test_write_unsigned_*) --- */
+    static const struct { const char *name; uint64_t value; } ladder[] = {
+        {"unsigned_0",                  UINT64_C(0x0)},
+        {"unsigned_0x7F",               UINT64_C(0x7F)},
+        {"unsigned_0x80",               UINT64_C(0x80)},
+        {"unsigned_0x3FFF",             UINT64_C(0x3FFF)},
+        {"unsigned_0x4000",             UINT64_C(0x4000)},
+        {"unsigned_0x1FFFFF",           UINT64_C(0x1FFFFF)},
+        {"unsigned_0x200000",           UINT64_C(0x200000)},
+        {"unsigned_0xFFFFFFF",          UINT64_C(0xFFFFFFF)},
+        {"unsigned_0x10000000",         UINT64_C(0x10000000)},
+        {"unsigned_0x7FFFFFFFF",        UINT64_C(0x7FFFFFFFF)},
+        {"unsigned_0x800000000",        UINT64_C(0x800000000)},
+        {"unsigned_0x3FFFFFFFFFF",      UINT64_C(0x3FFFFFFFFFF)},
+        {"unsigned_0x40000000000",      UINT64_C(0x40000000000)},
+        {"unsigned_0x1FFFFFFFFFFFF",    UINT64_C(0x1FFFFFFFFFFFF)},
+        {"unsigned_0x2000000000000",    UINT64_C(0x2000000000000)},
+        {"unsigned_0xFFFFFFFFFFFFFF",   UINT64_C(0xFFFFFFFFFFFFFF)},
+        {"unsigned_0x100000000000000",  UINT64_C(0x100000000000000)},
+        {"unsigned_0x7FFFFFFFFFFFFFFF", UINT64_C(0x7FFFFFFFFFFFFFFF)},
+        {"unsigned_0x8000000000000000", UINT64_C(0x8000000000000000)},
+        {"unsigned_0xFFFFFFFFFFFFFFFF", UINT64_C(0xFFFFFFFFFFFFFFFF)},
+    };
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(ladder[0]); ++i)
+        EMIT(o, ladder[i].name, "scalar/unsigned",
+             "Unsigned varint at field id 0 covering a varint length boundary.",
+             op_u(&l, 0, ladder[i].value));
+
+    /* --- field id encoding (test_id_min / test_id_max) --- */
+    EMIT(o, "id_min", "scalar/id", "Smallest field id (0) with value 0.",
+         op_u(&l, 0, 0));
+    EMIT(o, "id_max", "scalar/id", "Largest field id (SOFAB_ID_MAX = INT32_MAX) with value 0.",
+         op_u(&l, 2147483647u, 0));
+
+    /* --- signed (test_write_signed_min / _max) --- */
+    EMIT(o, "signed_min", "scalar/signed", "INT64_MIN as a zigzag signed varint.",
+         op_i(&l, 0, INT64_MIN));
+    EMIT(o, "signed_max", "scalar/signed", "INT64_MAX as a zigzag signed varint.",
+         op_i(&l, 0, INT64_MAX));
+
+    /* --- boolean (test_write_boolean) --- */
+    EMIT(o, "boolean_true", "scalar/boolean", "Boolean true encoded as unsigned 1.",
+         op_bool(&l, 0, 1));
+
+    /* --- floating point scalars (test_write_fp32 / _fp64) --- */
+    EMIT(o, "fp32", "scalar/float", "32-bit float 3.1415f as a little-endian fixed-length field.",
+         op_f32(&l, 0, 3.1415f));
+    EMIT(o, "fp64", "scalar/float", "64-bit float (double)3.14159265f as a little-endian fixed-length field.",
+         op_f64(&l, 0, (double)3.14159265f));
+
+    /* --- strings (test_write_string / _empty) --- */
+    EMIT(o, "string", "scalar/string", "UTF-8 string field.",
+         op_str(&l, 0, "Hello Couch!"));
+    EMIT(o, "string_empty", "scalar/string", "Empty string field.",
+         op_str(&l, 0, ""));
+
+    /* --- blobs (test_write_blob / _empty) --- */
+    {
+        static const uint8_t blob[] = {0x01, 0x02, 0x03, 0x04, 0x05};
+        EMIT(o, "blob", "scalar/blob", "Binary blob field.",
+             op_blob(&l, 0, blob, (int32_t)sizeof(blob)));
+    }
+    EMIT(o, "blob_empty", "scalar/blob", "Empty blob field.",
+         op_blob(&l, 0, NULL, 0));
+
+    /* --- integer arrays (test_write_array_of_*) --- */
+    {
+        static const uint32_t a[] = {1, 2, 3, 0x80000000u, UINT32_MAX};
+        EMIT(o, "array_unsigned_u32", "array/integer", "Array of unsigned values (u32 input).",
+             op_arr(&l, K_ARR_U32, 0, a, 5));
+    }
+    {
+        static const int32_t a[] = {-1, -2, -3, INT32_MIN, INT32_MAX};
+        EMIT(o, "array_signed_i32", "array/integer", "Array of signed values (i32 input).",
+             op_arr(&l, K_ARR_I32, 0, a, 5));
+    }
+    {
+        static const int8_t a[] = {-1, -2, -3, INT8_MIN, INT8_MAX};
+        EMIT(o, "array_i8", "array/integer", "Array of i8.", op_arr(&l, K_ARR_I8, 0, a, 5));
+    }
+    {
+        static const uint8_t a[] = {1, 2, 3, 0, UINT8_MAX};
+        EMIT(o, "array_u8", "array/integer", "Array of u8.", op_arr(&l, K_ARR_U8, 0, a, 5));
+    }
+    {
+        static const int16_t a[] = {-1, -2, -3, INT16_MIN, INT16_MAX};
+        EMIT(o, "array_i16", "array/integer", "Array of i16.", op_arr(&l, K_ARR_I16, 0, a, 5));
+    }
+    {
+        static const uint16_t a[] = {1, 2, 3, 0, UINT16_MAX};
+        EMIT(o, "array_u16", "array/integer", "Array of u16.", op_arr(&l, K_ARR_U16, 0, a, 5));
+    }
+    {
+        static const uint64_t a[] = {1, 2, 3, 0, UINT64_MAX};
+        EMIT(o, "array_u64", "array/integer", "Array of u64.", op_arr(&l, K_ARR_U64, 0, a, 5));
+    }
+    {
+        static const int64_t a[] = {-1, -2, -3, INT64_MIN, INT64_MAX};
+        EMIT(o, "array_i64", "array/integer", "Array of i64.", op_arr(&l, K_ARR_I64, 0, a, 5));
+    }
+
+    /* --- float arrays (test_write_array_of_fp32 / _fp64) --- */
+    {
+        static const float a[] = {1.0f, 2.0f, 3.0f, -FLT_MAX, FLT_MAX};
+        EMIT(o, "array_fp32", "array/float", "Array of fp32.", op_arr(&l, K_ARR_FP32, 0, a, 5));
+    }
+    {
+        static const double a[] = {1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX};
+        EMIT(o, "array_fp64", "array/float", "Array of fp64.", op_arr(&l, K_ARR_FP64, 0, a, 5));
+    }
+    /* NaN is intentionally excluded: its bit pattern is not portable across
+     * architectures (the C test checks NaN separately for the same reason). */
+    {
+        static const float a[] = {0.0f, -0.0f, INFINITY, -INFINITY};
+        EMIT(o, "array_fp32_specials", "array/float",
+             "Array of fp32 special values: +0, -0, +inf, -inf (NaN excluded).",
+             op_arr(&l, K_ARR_FP32, 0, a, 4));
+    }
+    {
+        static const double a[] = {0.0, -0.0, INFINITY, -INFINITY};
+        EMIT(o, "array_fp64_specials", "array/float",
+             "Array of fp64 special values: +0, -0, +inf, -inf (NaN excluded).",
+             op_arr(&l, K_ARR_FP64, 0, a, 4));
+    }
+
+    /* --- nested sequences (test_write_nested_sequence*) --- */
+    {
+        oplist_t l = {0};
+        op_u(&l, 0, 42);
+        op_seqb(&l, 1);
+            op_u(&l, 0, 42);
+            op_i(&l, 2, -42);
+        op_seqe(&l);
+        op_i(&l, 2, -42);
+        emit_vector(o, "nested_sequence", "sequence",
+                    "A scalar, a nested sequence, then a scalar.", &l);
+    }
+
+    {
+        static const int32_t a[] = {-42, -43, -44};
+        oplist_t l = {0};
+        op_u(&l, 0, 42);
+        op_seqb(&l, 3);
+            op_u(&l, 0, 42);
+            op_arr(&l, K_ARR_I32, 3, a, 3);
+        op_seqe(&l);
+        op_i(&l, 2, -42);
+        emit_vector(o, "nested_sequence_with_array", "sequence",
+                    "A nested sequence containing a signed array.", &l);
+    }
+
+    {
+        oplist_t l = {0};
+        op_u(&l, 0, 42);
+        for (int i = 0; i < 10; ++i)
+        {
+            op_seqb(&l, 1);
+            op_u(&l, 0, 42);
+            op_i(&l, 2, -42);
+        }
+        for (int i = 0; i < 10; ++i)
+            op_seqe(&l);
+        op_i(&l, 2, -42);
+        emit_vector(o, "nested_sequence_multilevel", "sequence",
+                    "Ten levels of nested sequences.", &l);
+    }
+
+    /* --- full scale composite message (test_write_full_scale_example) --- */
+    {
+        static const uint8_t  blob[]  = {0xDE, 0xAD, 0xBE, 0xEF};
+        static const uint8_t  au8[]   = {0, 64, 128, 191, 255};
+        static const int8_t   ai8[]   = {-128, -64, 0, 63, 127};
+        static const uint16_t au16[]  = {0, 16384, 32768, 49151, 65535};
+        static const int16_t  ai16[]  = {-32768, -16384, 0, 16383, 32767};
+        static const uint32_t au32[]  = {0u, 1073741824u, 2147483648u, 3221225471u, 4294967295u};
+        static const int32_t  ai32[]  = {-2147483647 - 1, -1073741824, 0, 1073741823, 2147483647};
+        static const uint64_t au64[]  = {0ull, 4611686018427387904ull, 9223372036854775808ull, 13835058055282163711ull, 18446744073709551615ull};
+        static const int64_t  ai64[]  = {-9223372036854775807ll, -4611686018427387904ll, 0ll, 4611686018427387903ll, 9223372036854775807ll};
+        static const float    af32[]  = {1.0f, 2.0f, 3.0f, -FLT_MAX, FLT_MAX};
+        static const double   af64[]  = {1.0, 2.0, 3.0, -DBL_MAX, DBL_MAX};
+
+        oplist_t l = {0};
+
+        op_u(&l, 0, 200);
+        op_i(&l, 1, -100);
+        op_u(&l, 2, 50000);
+        op_i(&l, 3, -20000);
+        op_u(&l, 4, 3000000000ull);
+        op_i(&l, 5, -1000000000ll);
+        op_u(&l, 6, 10000000000000ull);
+        op_i(&l, 7, -5000000000000ll);
+
+        op_seqb(&l, 10);
+            op_f32(&l, 0, 3.14f);
+            op_f64(&l, 1, 3.14159265);
+            op_str(&l, 2, "Hello, World!");
+            op_blob(&l, 3, blob, (int32_t)sizeof(blob));
+        op_seqe(&l);
+
+        op_seqb(&l, 100);
+            op_arr(&l, K_ARR_U8,  0, au8,  5);
+            op_arr(&l, K_ARR_I8,  1, ai8,  5);
+            op_arr(&l, K_ARR_U16, 2, au16, 5);
+            op_arr(&l, K_ARR_I16, 3, ai16, 5);
+            op_arr(&l, K_ARR_U32, 4, au32, 5);
+            op_arr(&l, K_ARR_I32, 5, ai32, 5);
+            op_arr(&l, K_ARR_U64, 6, au64, 5);
+            op_arr(&l, K_ARR_I64, 7, ai64, 5);
+            op_seqb(&l, 10);
+                op_arr(&l, K_ARR_FP32, 0, af32, 5);
+                op_arr(&l, K_ARR_FP64, 1, af64, 5);
+            op_seqe(&l);
+        op_seqe(&l);
+
+        op_seqb(&l, 200);
+            op_str(&l, 0, "Hello, Sofab!");
+            op_str(&l, 1, "");
+            op_str(&l, 2, "1234567890");
+            op_str(&l, 3, "\xC3\xA4\xC3\xB6\xC3\xBC\xC3\x84\xC3\x96\xC3\x9C\xC3\x9F"); /* äöüÄÖÜß */
+            op_str(&l, 4, "This_is_a_very_long_test_string_with_!@#$%^&*()_+-=[]{}");
+        op_seqe(&l);
+
+        emit_vector(o, "full_scale_example", "composite",
+                    "Large message mixing scalars, nested sequences, "
+                    "integer/float arrays and strings.", &l);
+    }
+}
+
+int main(void)
+{
+    FILE *o = stdout;
+
+    fprintf(o, "{\n");
+    fprintf(o, "  \"format\": \"sofabuffers-test-vectors\",\n");
+    fprintf(o, "  \"version\": 1,\n");
+    fprintf(o, "  \"description\": \"SofaBuffers wire-format test vectors generated from the C encoder. "
+               "Each vector lists the message structure (ordered encode operations and their values) "
+               "and the exact bytes the encoder produced.\",\n");
+    fprintf(o, "  \"notes\": {\n");
+    fprintf(o, "    \"byte_order\": \"little-endian\",\n");
+    fprintf(o, "    \"serialized.hex\": \"lowercase hex of the full message; authoritative ground truth\",\n");
+    fprintf(o, "    \"integers\": \"decimal JSON number literals (full u64/i64 range)\",\n");
+    fprintf(o, "    \"floats\": \"finite values as JSON numbers; +/-infinity as the strings 'inf'/'-inf'\",\n");
+    fprintf(o, "    \"blob.value_hex\": \"lowercase hex of the blob payload\",\n");
+    fprintf(o, "    \"array.element_type\": \"input element width/type fed to the encoder (u8..u64, i8..i64, fp32, fp64)\"\n");
+    fprintf(o, "  },\n");
+    fprintf(o, "  \"vectors\": [\n");
+
+    emit_all(o);
+
+    fprintf(o, "\n  ]\n");
+    fprintf(o, "}\n");
+    return 0;
+}
