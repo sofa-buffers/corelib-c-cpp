@@ -9,17 +9,17 @@
 
 ## SofaBuffers C/C++ library
 
+[![C coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/badges/coverage-c.json)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://sofa-buffers.github.io/corelib-c-cpp/)
+
+[GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
+
 A dependency-free, **heap-free**, **streaming** C99 / C++20 implementation of the
 SofaBuffers (*Sofab*) serialization format. It packs structured fields into a
 caller-owned buffer and decodes them through a small callback-driven decoder — no
 allocator and no third-party dependencies — with an API simple enough to use
 without a code generator, so the same wire format runs from deeply embedded MCUs
 up to IoT-class devices.
-
-[![C coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/badges/coverage-c.json)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml)
-[![Docs](https://img.shields.io/badge/docs-online-blue)](https://sofa-buffers.github.io/corelib-c-cpp/)
-
-[GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
 
 ### Why this design
 
