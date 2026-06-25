@@ -81,6 +81,9 @@ ctest --test-dir build --output-on-failure
 | `SOFAB_ENABLE_BENCH` | `ON` | Build the throughput benchmarks (`bench_c` / `bench_cpp`) |
 | `SOFAB_ENABLE_COVERAGE` | `OFF` | Enable code coverage instrumentation (`-O0 -g --coverage`) |
 | `SOFAB_ENABLE_FUZZ` | `OFF` | Enable fuzzing instrumentation (sanitizers) |
+| `SOFAB_ENABLE_DOXYGEN` | `OFF` | Build the `doc` target (API documentation) |
+| `SOFAB_ENABLE_VECTORGEN` | `OFF` | Build the test-vector generator (see `test/vectorgen`) |
+| `SOFAB_DISABLE_OBJECT_API` | `OFF` | Exclude the descriptor-driven object API (`object.c`) |
 
 For example, to configure a debug build with coverage enabled:
 
@@ -89,6 +92,23 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_COVERAGE=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
+
+#### Feature flags
+
+The corelib can be trimmed at compile time by defining these macros (e.g. via
+`-DSOFAB_DISABLE_ARRAY_SUPPORT`). Disabling unused features removes their code
+paths and shrinks the footprint (see [Footprint](#footprint)).
+
+| Macro | Effect |
+| - | - |
+| `SOFAB_DISABLE_FIXLEN_SUPPORT` | Drop fixed-length fields: floats, strings, and blobs |
+| `SOFAB_DISABLE_ARRAY_SUPPORT` | Drop array fields (scalar arrays and fixed-length arrays) |
+| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | Drop nested sequence framing |
+| `SOFAB_DISABLE_FP64_SUPPORT` | Drop 64-bit float (`fp64`) support; auto-defined where `double` is not 8 bytes |
+| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | Skip overflow checks when decoding integers (smaller/faster, less safe) |
+
+The descriptor-driven object API is excluded with the `SOFAB_DISABLE_OBJECT_API`
+CMake option above (it drops `object.c` entirely).
 
 ### Usage
 
@@ -256,6 +276,39 @@ sensor.feed(msg.data(), msg.size()); // msg from the encoding example above
 // sensor->id and sensor->value now hold the decoded values
 ```
 
+### API summary
+
+The full reference is generated from the headers (see
+[Documentation](https://sofa-buffers.github.io/corelib-c-cpp/)); this is the
+high-level surface.
+
+#### C (`sofab/ostream.h`, `sofab/istream.h`)
+
+| Encoder (`sofab_ostream_*`) | Purpose |
+| - | - |
+| `init` / `buffer_set` / `flush` / `bytes_used` | set up the stream (with optional start offset + flush callback), swap the buffer mid-stream, flush, query size |
+| `write_unsigned` / `write_signed` / `write_boolean` | scalar integers and booleans |
+| `write_fp32` / `write_fp64` / `write_string` / `write_blob` | fixed-length values |
+| `write_array_of_*` (`u8`..`u64`, `i8`..`i64`, `fp32`, `fp64`) | arrays |
+| `write_sequence_begin` / `write_sequence_end` | nested sequence framing |
+
+| Decoder (`sofab_istream_*`) | Purpose |
+| - | - |
+| `init` / `feed` | register a field callback, then feed bytes in arbitrarily small chunks |
+| `read_u8`..`read_u64` / `read_i8`..`read_i64` / `read_bool` | bind a scalar destination inside the callback |
+| `read_fp32` / `read_fp64` / `read_string` / `read_blob` | bind a fixed-length destination |
+| `read_array_of_*` | bind an array destination |
+| `read_sequence` | descend into a nested sequence with a child callback |
+| *(read nothing)* | the field — and any sub-sequence — is skipped automatically |
+
+#### C++ (`sofab/sofab.hpp`)
+
+A thin, type-deducing wrapper over the C API: `sofab::OStream` /
+`sofab::OStreamInline<N>` with a chainable `write(id, value)`, and
+`sofab::IStreamMessage` / `sofab::IStreamObject<T>` whose `deserialize()` /
+`read()` bind fields. Errors are reported via a `Result` rather than exceptions,
+and no `std::iostream` is used.
+
 ### Who is this suitable for?
 
 The C core library is very much aimed at small embedded devices, where C is simply essential. The focus here was therefore on minimal resource consumption.
@@ -278,6 +331,30 @@ Since the focus was on embedded devices, special attention was paid to the follo
 No. SofaBuffers focuses on generating as little protocol overhead as possible, which is why the words in the payload of a message are not always aligned.
 To be compatible with all architectures, the data from the message is copied to user-provided memory.
 
+
+### Benchmarks
+
+Two complementary benchmark tools are built for both C and C++ (enabled by
+`SOFAB_ENABLE_BENCH`, on by default):
+
+| Tool | Measures | Use it for |
+| - | - | - |
+| `perf` | intrinsic cost in **instructions/operation** (machine-independent, deterministic) | comparing algorithmic cost across changes or languages without hardware noise |
+| `bench` | practical **throughput in MB/s** on the current hardware | seeing real-world speed on a concrete target |
+
+Convenience CMake targets run them:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+cmake --build build --target run_bench            # throughput (MB/s), C and C++
+cmake --build build --target run_perf             # per-op cost, C and C++
+cmake --build build --target run_bench_callgrind  # instructions/op under Callgrind (needs valgrind)
+```
+
+The instruction-count report (`bench/run_callgrind.sh`) is machine-independent,
+so its numbers are directly comparable across machines and language
+implementations.
 
 ### Footprint
 
