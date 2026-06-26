@@ -34,8 +34,16 @@ target_compile_options(test_vectors PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(test_vectors PRIVATE sofab_cpp20)
 add_test(NAME test_vectors COMMAND test_vectors)
 
-# Throughput benchmark — always built at -O3 (this library targets speed).
+# Benchmarks — always built at -O3 (this library targets speed). Mirror the C /
+# C++ benches (same workloads) so figures are directly comparable; the bench
+# binary doubles as the Callgrind single-shot driver (run_<workload> symbols).
 add_executable(bench bench/bench.cpp)
-target_compile_options(bench PRIVATE -O3 -Wall -Wextra -Werror)
+target_compile_options(bench PRIVATE -O3 -g -DNDEBUG -Wall -Wextra)
 target_link_libraries(bench PRIVATE sofab_cpp20)
+
+add_executable(perf bench/perf.cpp)
+target_compile_options(perf PRIVATE -O3 -g -DNDEBUG -Wall -Wextra)
+target_link_libraries(perf PRIVATE sofab_cpp20)
+
 add_custom_target(run_bench COMMAND bench DEPENDS bench USES_TERMINAL)
+add_custom_target(run_perf COMMAND perf DEPENDS perf USES_TERMINAL)

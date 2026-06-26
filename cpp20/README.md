@@ -34,9 +34,34 @@ hot paths are built around bulk, allocation-free operations:
   reading a field as `std::string_view` yields a **zero-copy view into the
   buffer** instead of allocating a `std::string`.
 
-Indicative numbers for a ~112-byte mixed message (`cpp20/bench`, `-O3`, x86-64):
-encode ≈ 1.3–1.5 GB/s, decode ≈ 0.8 GB/s. Run them with
-`cmake --build cpp20/build --target run_bench`.
+### Benchmark tools
+
+Two tools (built at `-O3`), mirroring the C / C++ benches with the same
+workloads so figures are directly comparable:
+
+- **`bench`** — sustained throughput (MB/s); also the Callgrind single-shot
+  driver. Run: `cmake --build cpp20/build --target run_bench`.
+- **`perf`** — per-operation cost (hardware cycles/op + MB/s). Run:
+  `cmake --build cpp20/build --target run_perf`.
+
+### Instructions/op vs the C corelib and C++ wrapper
+
+Machine-independent instruction counts (Callgrind, lower is better) for the
+shared bench workloads — the pure-C++20 core is the fastest across the board:
+
+| Workload | C (`-Os` lib) | C++ wrapper | **pure C++20** |
+|---|--:|--:|--:|
+| encode: u64 array (1000) | 137458 | 137488 | **106963** (−22%) |
+| encode: typical message |    796 |    826 | **233** (−71%) |
+| decode: u64 array (1000) | 250917 | 250918 | **169002** (−33%) |
+| decode: typical message |   1771 |   1773 | **1432** (−19%) |
+
+The gap is largest on encode-heavy paths — combined header+value writes and
+bulk `memcpy` replace the C corelib's per-byte pushes. (Numbers from x86-64,
+GCC 13; reproduce with `bench/run_callgrind.sh` plus the `cpp20` bench.)
+
+Sustained throughput for a ~112-byte mixed message (`-O3`, x86-64):
+encode ≈ 1.3–1.5 GB/s, decode ≈ 0.8 GB/s.
 
 ## Design
 
