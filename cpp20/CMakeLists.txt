@@ -6,7 +6,7 @@
 # its own: cmake -S cpp20 -B cpp20/build && cmake --build cpp20/build && ctest --test-dir cpp20/build
 
 cmake_minimum_required(VERSION 3.10)
-project(sofabuffers_cpp20 LANGUAGES CXX)
+project(sofabuffers_cpp20 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,5 +20,16 @@ enable_testing()
 add_executable(test_roundtrip test/test_roundtrip.cpp)
 target_compile_options(test_roundtrip PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(test_roundtrip PRIVATE sofab_cpp20)
-
 add_test(NAME test_roundtrip COMMAND test_roundtrip)
+
+# Full conformance against the shared vectors (reuses the vendored JSON reader).
+add_executable(test_vectors
+    test/test_vectors.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../test/shared/sofab_test_json.c
+)
+target_include_directories(test_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../test/shared)
+target_compile_definitions(test_vectors PRIVATE
+    SOFAB_TEST_VECTORS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../assets/test_vectors.json")
+target_compile_options(test_vectors PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(test_vectors PRIVATE sofab_cpp20)
+add_test(NAME test_vectors COMMAND test_vectors)

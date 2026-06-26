@@ -7,10 +7,9 @@ C-wrapping [`src/include/sofab/sofab.hpp`](../src/include/sofab/sofab.hpp)
 drop-in alternative — put `cpp20/include` on the include path instead of
 `src/include` and the `#include "sofab/sofab.hpp"` is unchanged.
 
-> Status: working first cut. All eight wire types encode/decode and round-trip;
-> validated against known byte sequences from the shared conformance vectors
-> (`assets/test_vectors.json`). Full vector-suite validation is a planned
-> follow-up.
+> Status: validated against the **full shared conformance suite** — all 47
+> vectors in `assets/test_vectors.json` pass encode / decode / roundtrip /
+> chunked (329 checks), the same coverage the C library runs.
 
 ## Why a second implementation
 
@@ -53,10 +52,16 @@ streaming encode via flush callback and streaming decode via `feed`, and the
 Header-only — just add `cpp20/include` to your include path. To run the checks:
 
 ```sh
-g++ -std=c++20 -Wall -Wextra -I cpp20/include cpp20/test/test_roundtrip.cpp -o /tmp/t && /tmp/t
-# or:
 cmake -S cpp20 -B cpp20/build && cmake --build cpp20/build && ctest --test-dir cpp20/build
 ```
+
+Two test binaries run:
+
+- **`test_roundtrip`** — focused encode/decode/nested/chunked/skip checks with
+  inline expectations.
+- **`test_vectors`** — drives the C++20 encoder/decoder over the full
+  `assets/test_vectors.json` suite (47 vectors, 329 checks: encode, decode,
+  roundtrip, chunked encode/decode), reusing the repo's vendored JSON reader.
 
 ## Example
 
