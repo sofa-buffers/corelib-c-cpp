@@ -33,3 +33,9 @@ target_compile_definitions(test_vectors PRIVATE
 target_compile_options(test_vectors PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(test_vectors PRIVATE sofab_cpp20)
 add_test(NAME test_vectors COMMAND test_vectors)
+
+# Throughput benchmark — always built at -O3 (this library targets speed).
+add_executable(bench bench/bench.cpp)
+target_compile_options(bench PRIVATE -O3 -Wall -Wextra -Werror)
+target_link_libraries(bench PRIVATE sofab_cpp20)
+add_custom_target(run_bench COMMAND bench DEPENDS bench USES_TERMINAL)

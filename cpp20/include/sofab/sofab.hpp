@@ -127,6 +127,19 @@ namespace sofab
             end_ = buffer + buflen;
         }
 
+        /* Encode a varint into a caller stack buffer; returns bytes written. */
+        static size_t encodeVarint(uint8_t *out, uint64_t v) noexcept
+        {
+            size_t n = 0;
+            do {
+                uint8_t b = static_cast<uint8_t>(v & 0x7f);
+                v >>= 7;
+                if (v) b |= 0x80;
+                out[n++] = b;
+            } while (v);
+            return n;
+        }
+
         [[nodiscard]] Error pushByte(uint8_t b) noexcept
         {
             if (cursor_ == end_)
@@ -139,8 +152,16 @@ namespace sofab
             return Error::None;
         }
 
+        /* Bulk write: a single memcpy when the payload fits the current buffer
+         * (the common case); only crosses flush boundaries byte-by-byte. */
         [[nodiscard]] Error pushBytes(const uint8_t *data, size_t len) noexcept
         {
+            if (static_cast<size_t>(end_ - cursor_) >= len) [[likely]]
+            {
+                std::memcpy(cursor_, data, len);
+                cursor_ += len;
+                return Error::None;
+            }
             for (size_t i = 0; i < len; ++i)
                 if (Error e = pushByte(data[i]); e != Error::None) return e;
             return Error::None;
@@ -148,13 +169,8 @@ namespace sofab
 
         [[nodiscard]] Error putVarint(uint64_t v) noexcept
         {
-            do {
-                uint8_t b = static_cast<uint8_t>(v & 0x7f);
-                v >>= 7;
-                if (v) b |= 0x80;
-                if (Error e = pushByte(b); e != Error::None) return e;
-            } while (v);
-            return Error::None;
+            uint8_t tmp[10];
+            return pushBytes(tmp, encodeVarint(tmp, v));
         }
 
         [[nodiscard]] Error putHeader(sofab::id fieldId, detail::Wire type) noexcept
@@ -163,18 +179,23 @@ namespace sofab
             return putVarint((static_cast<uint64_t>(fieldId) << 3) | static_cast<uint64_t>(type));
         }
 
-        template <std::unsigned_integral U>
-        [[nodiscard]] Error putFloatBits(U bits) noexcept
+        /* header varint + one value varint emitted as a single bulk write */
+        [[nodiscard]] Error writeScalar(sofab::id fieldId, detail::Wire type, uint64_t value) noexcept
         {
-            for (size_t i = 0; i < sizeof(U); ++i)
-                if (Error e = pushByte(static_cast<uint8_t>((bits >> (8 * i)) & 0xff)); e != Error::None) return e;
-            return Error::None;
+            if (fieldId > detail::kIdMax) return Error::InvalidArgument;
+            uint8_t tmp[20];
+            size_t n = encodeVarint(tmp, (static_cast<uint64_t>(fieldId) << 3) | static_cast<uint64_t>(type));
+            n += encodeVarint(tmp + n, value);
+            return pushBytes(tmp, n);
         }
 
         [[nodiscard]] Error writeFixlen(sofab::id fieldId, detail::Fix ft, const uint8_t *data, size_t len) noexcept
         {
-            if (Error e = putHeader(fieldId, detail::Wire::Fixlen); e != Error::None) return e;
-            if (Error e = putVarint((static_cast<uint64_t>(len) << 3) | static_cast<uint64_t>(ft)); e != Error::None) return e;
+            if (fieldId > detail::kIdMax) return Error::InvalidArgument;
+            uint8_t tmp[20];
+            size_t n = encodeVarint(tmp, (static_cast<uint64_t>(fieldId) << 3) | static_cast<uint64_t>(detail::Wire::Fixlen));
+            n += encodeVarint(tmp + n, (static_cast<uint64_t>(len) << 3) | static_cast<uint64_t>(ft));
+            if (Error e = pushBytes(tmp, n); e != Error::None) return e;
             return pushBytes(data, len);
         }
 
@@ -182,28 +203,31 @@ namespace sofab
         [[nodiscard]] Error writeFloatScalar(sofab::id fieldId, F value) noexcept
         {
             constexpr detail::Fix ft = (sizeof(F) == 4) ? detail::Fix::Fp32 : detail::Fix::Fp64;
-            if (Error e = putHeader(fieldId, detail::Wire::Fixlen); e != Error::None) return e;
-            if (Error e = putVarint((static_cast<uint64_t>(sizeof(F)) << 3) | static_cast<uint64_t>(ft)); e != Error::None) return e;
-            return putFloatBits(detail::floatBits(value));
+            if (fieldId > detail::kIdMax) return Error::InvalidArgument;
+            auto bits = detail::floatBits(value);
+            uint8_t tmp[20];
+            size_t n = encodeVarint(tmp, (static_cast<uint64_t>(fieldId) << 3) | static_cast<uint64_t>(detail::Wire::Fixlen));
+            n += encodeVarint(tmp + n, (static_cast<uint64_t>(sizeof(F)) << 3) | static_cast<uint64_t>(ft));
+            for (size_t i = 0; i < sizeof(F); ++i) tmp[n++] = static_cast<uint8_t>((bits >> (8 * i)) & 0xff);
+            return pushBytes(tmp, n);
         }
 
         template <std::integral E>
         [[nodiscard]] Error writeIntArray(sofab::id fieldId, std::span<const E> elems) noexcept
         {
             constexpr bool isSigned = std::is_signed_v<E>;
-            if (Error e = putHeader(fieldId, isSigned ? detail::Wire::ArraySigned : detail::Wire::ArrayUnsigned);
-                e != Error::None) return e;
-            if (Error e = putVarint(elems.size()); e != Error::None) return e;
+            if (fieldId > detail::kIdMax) return Error::InvalidArgument;
+            uint8_t hdr[20];
+            size_t hn = encodeVarint(hdr, (static_cast<uint64_t>(fieldId) << 3) |
+                        static_cast<uint64_t>(isSigned ? detail::Wire::ArraySigned : detail::Wire::ArrayUnsigned));
+            hn += encodeVarint(hdr + hn, elems.size());
+            if (Error e = pushBytes(hdr, hn); e != Error::None) return e;
             for (E v : elems)
             {
-                if constexpr (isSigned)
-                {
-                    if (Error e = putVarint(detail::zigzagEncode(static_cast<int64_t>(v))); e != Error::None) return e;
-                }
-                else
-                {
-                    if (Error e = putVarint(static_cast<uint64_t>(v)); e != Error::None) return e;
-                }
+                uint8_t tmp[10];
+                size_t n = isSigned ? encodeVarint(tmp, detail::zigzagEncode(static_cast<int64_t>(v)))
+                                    : encodeVarint(tmp, static_cast<uint64_t>(v));
+                if (Error e = pushBytes(tmp, n); e != Error::None) return e;
             }
             return Error::None;
         }
@@ -212,12 +236,29 @@ namespace sofab
         [[nodiscard]] Error writeFloatArray(sofab::id fieldId, std::span<const F> elems) noexcept
         {
             constexpr detail::Fix ft = (sizeof(F) == 4) ? detail::Fix::Fp32 : detail::Fix::Fp64;
-            if (Error e = putHeader(fieldId, detail::Wire::ArrayFixlen); e != Error::None) return e;
-            if (Error e = putVarint(elems.size()); e != Error::None) return e;
-            if (Error e = putVarint((static_cast<uint64_t>(sizeof(F)) << 3) | static_cast<uint64_t>(ft)); e != Error::None) return e;
-            for (F v : elems)
-                if (Error e = putFloatBits(detail::floatBits(v)); e != Error::None) return e;
-            return Error::None;
+            if (fieldId > detail::kIdMax) return Error::InvalidArgument;
+            uint8_t hdr[20];
+            size_t hn = encodeVarint(hdr, (static_cast<uint64_t>(fieldId) << 3) | static_cast<uint64_t>(detail::Wire::ArrayFixlen));
+            hn += encodeVarint(hdr + hn, elems.size());
+            hn += encodeVarint(hdr + hn, (static_cast<uint64_t>(sizeof(F)) << 3) | static_cast<uint64_t>(ft));
+            if (Error e = pushBytes(hdr, hn); e != Error::None) return e;
+
+            if constexpr (std::endian::native == std::endian::little)
+            {
+                /* wire bytes == native bytes: copy the whole payload at once */
+                return pushBytes(reinterpret_cast<const uint8_t *>(elems.data()), elems.size() * sizeof(F));
+            }
+            else
+            {
+                for (F v : elems)
+                {
+                    auto bits = detail::floatBits(v);
+                    uint8_t tmp[sizeof(F)];
+                    for (size_t i = 0; i < sizeof(F); ++i) tmp[i] = static_cast<uint8_t>((bits >> (8 * i)) & 0xff);
+                    if (Error e = pushBytes(tmp, sizeof(F)); e != Error::None) return e;
+                }
+                return Error::None;
+            }
         }
 
     public:
@@ -285,20 +326,13 @@ namespace sofab
             if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
             {
                 if constexpr (std::is_unsigned_v<T>)
-                {
-                    err = putHeader(fieldId, detail::Wire::Unsigned);
-                    if (err == Error::None) err = putVarint(static_cast<uint64_t>(value));
-                }
+                    err = writeScalar(fieldId, detail::Wire::Unsigned, static_cast<uint64_t>(value));
                 else
-                {
-                    err = putHeader(fieldId, detail::Wire::Signed);
-                    if (err == Error::None) err = putVarint(detail::zigzagEncode(static_cast<int64_t>(value)));
-                }
+                    err = writeScalar(fieldId, detail::Wire::Signed, detail::zigzagEncode(static_cast<int64_t>(value)));
             }
             else if constexpr (std::is_same_v<T, bool>)
             {
-                err = putHeader(fieldId, detail::Wire::Unsigned);
-                if (err == Error::None) err = putVarint(value ? 1u : 0u);
+                err = writeScalar(fieldId, detail::Wire::Unsigned, value ? 1u : 0u);
             }
             else if constexpr (std::is_same_v<T, float>)  { err = writeFloatScalar(fieldId, value); }
             else if constexpr (std::is_same_v<T, double>) { err = writeFloatScalar(fieldId, value); }
@@ -498,6 +532,22 @@ namespace sofab
             while (p < end) if (!(*p++ & 0x80)) return true;
             return false;
         }
+
+        /* Append n bytes to a byte vector. The pragma silences a GCC-13
+         * -Wstringop-overflow false positive on vector growth from a pointer. */
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
+        static void appendBytes(std::vector<uint8_t> &v, const uint8_t *p, size_t n)
+        {
+            size_t old = v.size();
+            v.resize(old + n);
+            if (n) std::memcpy(v.data() + old, p, n);
+        }
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic pop
+#endif
         template <std::floating_point F>
         static F loadFloat(const uint8_t *p) noexcept
         {
@@ -662,26 +712,50 @@ namespace sofab
 
         Result feed(const uint8_t *buffer, size_t buflen) noexcept
         {
-            acc_.insert(acc_.end(), buffer, buffer + buflen);
-
-            for (;;)
+            /* Fast path: nothing buffered. Parse straight over the caller's
+             * memory — no copy, no allocation. This is the common case (a whole
+             * message handed in at once). Only an incomplete trailing field is
+             * copied into the accumulator for the next feed(). */
+            if (acc_.empty()) [[likely]]
             {
-                const uint8_t *base = acc_.data();
-                const uint8_t *probe = base + topPos_;
-                const uint8_t *aend = base + acc_.size();
-                if (probe >= aend) break;
-                if (!measureField(probe, aend)) break; /* incomplete top-level field */
-
-                /* one complete top-level field available: deliver it */
-                p_ = base + topPos_;
-                end_ = aend;
                 error_ = false;
-                dispatchOne(topCallback_);
+                const uint8_t *stop = parseTopLevel(buffer, buffer + buflen);
                 if (error_) return Result{Error::InvalidMessage};
-                topPos_ = static_cast<size_t>(p_ - base);
+                if (stop != buffer + buflen)
+                    appendBytes(acc_, stop, static_cast<size_t>(buffer + buflen - stop));
+                return Result{Error::None};
             }
+
+            /* Continuation path: append and resume from the buffered tail. */
+            appendBytes(acc_, buffer, buflen);
+            error_ = false;
+            const uint8_t *base = acc_.data();
+            const uint8_t *stop = parseTopLevel(base + topPos_, base + acc_.size());
+            if (error_) return Result{Error::InvalidMessage};
+            topPos_ = static_cast<size_t>(stop - base);
+            if (topPos_ == acc_.size()) { acc_.clear(); topPos_ = 0; } /* fully drained */
             return Result{Error::None};
         }
+
+    protected:
+        /* Deliver every complete top-level field in [p, end); return the start
+         * of the first incomplete field (== end when all were consumed). */
+        const uint8_t *parseTopLevel(const uint8_t *p, const uint8_t *end) noexcept
+        {
+            while (p < end)
+            {
+                const uint8_t *probe = p;
+                if (!measureField(probe, end)) break; /* need more bytes */
+                p_ = p;
+                end_ = end;
+                dispatchOne(topCallback_);
+                if (error_) return p;
+                p = p_;
+            }
+            return p;
+        }
+
+    public:
 
         /* Read the current field's value into `value` (call inside a callback). */
         template <typename T>
@@ -707,6 +781,15 @@ namespace sofab
                 if (static_cast<size_t>(end_ - p_) < sizeof(T)) { error_ = true; return; }
                 value = loadFloat<T>(p_);
                 p_ += sizeof(T);
+                consumed_ = true;
+            }
+            else if constexpr (std::is_same_v<T, std::string_view>)
+            {
+                /* zero-copy: the view points into the source buffer, valid as
+                 * long as that buffer (or this stream's accumulator) lives. */
+                if (static_cast<size_t>(end_ - p_) < fixLen_) { error_ = true; return; }
+                value = std::string_view(reinterpret_cast<const char *>(p_), fixLen_);
+                p_ += fixLen_;
                 consumed_ = true;
             }
             else if constexpr (std::is_same_v<T, std::string>)
@@ -748,7 +831,10 @@ namespace sofab
                 {
                     size_t bytes = count_ * sizeof(Elem);
                     if (static_cast<size_t>(end_ - p_) < bytes) { error_ = true; return; }
-                    for (size_t i = 0; i < n; ++i) sp[i] = loadFloat<Elem>(p_ + i * sizeof(Elem));
+                    if constexpr (std::endian::native == std::endian::little)
+                        std::memcpy(sp.data(), p_, n * sizeof(Elem)); /* wire == native */
+                    else
+                        for (size_t i = 0; i < n; ++i) sp[i] = loadFloat<Elem>(p_ + i * sizeof(Elem));
                     p_ += bytes;
                     consumed_ = true;
                 }
