@@ -324,7 +324,8 @@ There are two layers:
   full-feature ("max") build, which exercises every wire type at 64-bit width.
 - **Conformance-vector suite** (`test_vectors_c`) — a language-agnostic set of
   vectors in [`assets/test_vectors.json`](assets/test_vectors.json), each pairing
-  a message with its exact serialized bytes (see
+  a message with its exact serialized bytes (format documented in
+  [`assets/README.md`](assets/README.md); generator in
   [`test/vectorgen`](test/vectorgen)). The shared engine encodes, decodes,
   round-trips and chunk-feeds every vector.
 
