@@ -60,6 +60,24 @@ static sofab_signed_t _zigzag_decode (sofab_unsigned_t u)
  */
 static int _varint_decode (sofab_istream_t *ctx, uint8_t byte, sofab_unsigned_t *out_value)
 {
+    const int bits = sizeof(sofab_unsigned_t) * 8;
+
+    // already consumed a full value type's worth of bits => value too wide
+    if (ctx->varint_shift >= bits)
+    {
+        return -2;
+    }
+
+    // bits still available before this 7-bit chunk; if the chunk carries bits
+    // beyond the value width, the value does not fit. Checking here (rather than
+    // after the shift) avoids silently dropping the high bits, which matters at
+    // the type boundary — e.g. a 33-bit value reaching a 32-bit build.
+    const int room = bits - ctx->varint_shift;
+    if (room < 7 && ((byte & 0x7F) >> room) != 0)
+    {
+        return -2;
+    }
+
     ctx->varint_value |= ((sofab_unsigned_t)(byte & 0x7F)) << ctx->varint_shift;
     ctx->varint_shift += 7;
 
@@ -72,23 +90,25 @@ static int _varint_decode (sofab_istream_t *ctx, uint8_t byte, sofab_unsigned_t 
         return 0;
     }
 
-    // overflow or need more data
-    const int bits = sizeof(sofab_unsigned_t) * 8;
-    return (ctx->varint_shift >= bits) ? -2 : -1;
+    // need more data
+    return -1;
 }
 
 #if !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK)
 static int _fits_unsigned_n (sofab_unsigned_t x, int n)
 {
     const int bits = sizeof(sofab_unsigned_t) * 8;
-    if (n == bits) return 1;
+    /* A target wider than the value type always fits; using >= (not ==) also
+     * avoids an undefined x >> n shift when the value is narrower than the
+     * target (e.g. a 32-bit value read into a 64-bit slot). */
+    if (n >= bits) return 1;
     return (x >> n) == 0;
 }
 
 static int _fits_signed_n (sofab_signed_t x, int n)
 {
     const int bits = sizeof(sofab_signed_t) * 8;
-    if (n == bits) return 1;
+    if (n >= bits) return 1;
     return (x >> (n - 1)) == (x >> (bits - 1));
 }
 #endif /* !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK) */

@@ -307,11 +307,13 @@ extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
             value = *(uint16_t *)ptr;
         else if (element_size == 4)
             value = *(uint32_t *)ptr;
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
         else if (element_size == 8)
             value = *(uint64_t *)ptr;
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
         else
         {
-            // unsupported element size
+            // unsupported element size (8 requires 64-bit value support)
             return SOFAB_RET_E_ARGUMENT;
         }
 
@@ -358,11 +360,13 @@ extern sofab_ret_t sofab_ostream_write_array_of_signed (
             value = *(int16_t *)ptr;
         else if (element_size == 4)
             value = *(int32_t *)ptr;
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
         else if (element_size == 8)
             value = *(int64_t *)ptr;
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
         else
         {
-            // unsupported element size
+            // unsupported element size (8 requires 64-bit value support)
             return SOFAB_RET_E_ARGUMENT;
         }
 

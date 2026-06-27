@@ -121,10 +121,12 @@ extern sofab_ret_t sofab_object_encode (
                     val = *CAST_TO(uint16_t *, src, field->offset);
                 else if (field->element_size == sizeof(uint32_t))
                     val = *CAST_TO(uint32_t *, src, field->offset);
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
                 else if (field->element_size == sizeof(uint64_t))
                     val = *CAST_TO(uint64_t *, src, field->offset);
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
                 else
-                    return SOFAB_RET_E_USAGE; // Unsupported size
+                    return SOFAB_RET_E_USAGE; // Unsupported size (8 requires 64-bit values)
 
                 ret = sofab_ostream_write_unsigned(ctx, field->id, val);
                 break;
@@ -139,10 +141,12 @@ extern sofab_ret_t sofab_object_encode (
                     sval = *CAST_TO(int16_t *, src, field->offset);
                 else if (field->element_size == sizeof(int32_t))
                     sval = *CAST_TO(int32_t *, src, field->offset);
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
                 else if (field->element_size == sizeof(int64_t))
                     sval = *CAST_TO(int64_t *, src, field->offset);
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
                 else
-                    return SOFAB_RET_E_USAGE; // Unsupported size
+                    return SOFAB_RET_E_USAGE; // Unsupported size (8 requires 64-bit values)
 
                 ret = sofab_ostream_write_signed(ctx, field->id, sval);
                 break;

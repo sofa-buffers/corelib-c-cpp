@@ -23,6 +23,52 @@
 #define MAXDEPTH  16
 #define ENCBUF    4096
 
+/* capability tags ***********************************************************
+ *
+ * Each vector may declare a "requires" list naming the optional library
+ * features it needs. A build compiled without a feature (SOFAB_DISABLE_*) skips
+ * the vectors that require it, so the same vector file drives every build
+ * configuration. The generator derives these tags from each vector's content.
+ */
+#define CAP_FIXLEN   (1u << 0)
+#define CAP_ARRAY    (1u << 1)
+#define CAP_SEQUENCE (1u << 2)
+#define CAP_FP64     (1u << 3)
+#define CAP_INT64    (1u << 4)
+
+/* Capabilities this build actually provides, from the compile-time flags. */
+static uint32_t build_caps(void)
+{
+    uint32_t c = 0;
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    c |= CAP_FIXLEN;
+#endif
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    c |= CAP_ARRAY;
+#endif
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    c |= CAP_SEQUENCE;
+#endif
+    /* fp64 helpers live inside the fixlen block, so they need both. */
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT) && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    c |= CAP_FP64;
+#endif
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+    c |= CAP_INT64;
+#endif
+    return c;
+}
+
+static uint32_t cap_from_name(const char *s, size_t len)
+{
+    if (len == 6 && !memcmp(s, "fixlen", 6))   return CAP_FIXLEN;
+    if (len == 5 && !memcmp(s, "array", 5))    return CAP_ARRAY;
+    if (len == 8 && !memcmp(s, "sequence", 8)) return CAP_SEQUENCE;
+    if (len == 4 && !memcmp(s, "fp64", 4))     return CAP_FP64;
+    if (len == 5 && !memcmp(s, "int64", 5))    return CAP_INT64;
+    return 0; /* unknown tag: ignore (forward-compatible) */
+}
+
 /* op model ******************************************************************/
 
 typedef enum
@@ -65,6 +111,7 @@ typedef struct
     size_t   nbytes;
     uint32_t skip_ids[MAXSKIP]; /* optional: field ids a receiver skips */
     size_t   nskip;
+    uint32_t req;               /* capability mask from the "requires" tags */
 } vector_t;
 
 /* per-op decode destination (persists across the whole feed) */
@@ -72,8 +119,8 @@ typedef struct
 {
     int     fired;
     int     skipped; /* the decoder was asked to skip this field (skip_ids) */
-    uint64_t u;
-    int64_t  s;
+    sofab_unsigned_t u; /* value-type width: read directly into it (endian-safe) */
+    sofab_signed_t   s;
     bool     b;
     float    f32;
     double   f64;
@@ -272,6 +319,16 @@ static int load_vector(const sofab_json_t *vj, vector_t *out)
     for (size_t i = 0; i < ns; i++)
         out->skip_ids[i] = (uint32_t)sofab_json_u64(sofab_json_array_at(skip, i));
 
+    /* optional: capability tags this vector needs (drives feature skipping) */
+    const sofab_json_t *req = sofab_json_get(vj, "requires");
+    size_t nr = sofab_json_array_size(req);
+    out->req = 0;
+    for (size_t i = 0; i < nr; i++)
+    {
+        size_t tl; const char *tn = sofab_json_string(sofab_json_array_at(req, i), &tl);
+        if (tn) out->req |= cap_from_name(tn, tl);
+    }
+
     return 0;
 }
 
@@ -297,6 +354,11 @@ static void enc_flush_cb(sofab_ostream_t *os, const uint8_t *data, size_t len, v
     sofab_ostream_buffer_set(os, a->tiny, a->tiny_size, 0);
 }
 
+/* Encode one op. Feature-specific case BODIES are #if-guarded so the harness
+ * compiles in reduced builds; vectors needing a disabled feature are skipped
+ * before they ever reach here (see the capability filter in run_all), so a
+ * guarded-out body is unreachable at run time and just falls through to the
+ * E_USAGE return. All case labels are kept so -Wswitch stays satisfied. */
 static sofab_ret_t replay_op(sofab_ostream_t *os, const op_t *op)
 {
     switch (op->kind)
@@ -304,13 +366,44 @@ static sofab_ret_t replay_op(sofab_ostream_t *os, const op_t *op)
         case OP_UNSIGNED: return sofab_ostream_write_unsigned(os, op->id, op->u);
         case OP_SIGNED:   return sofab_ostream_write_signed(os, op->id, op->s);
         case OP_BOOLEAN:  return sofab_ostream_write_boolean(os, op->id, op->u != 0);
-        case OP_FP32:     return sofab_ostream_write_fp32(os, op->id, (float)op->f);
-        case OP_FP64:     return sofab_ostream_write_fp64(os, op->id, op->f);
-        case OP_STRING:   return sofab_ostream_write_string(os, op->id, op->str);
-        case OP_BLOB:     return sofab_ostream_write_blob(os, op->id, op->blob, op->blen);
-        case OP_SEQ_BEGIN:return sofab_ostream_write_sequence_begin(os, op->id);
-        case OP_SEQ_END:  return sofab_ostream_write_sequence_end(os);
+        case OP_FP32:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+            return sofab_ostream_write_fp32(os, op->id, (float)op->f);
+#else
+            break;
+#endif
+        case OP_FP64:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_FP64_SUPPORT)
+            return sofab_ostream_write_fp64(os, op->id, op->f);
+#else
+            break;
+#endif
+        case OP_STRING:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+            return sofab_ostream_write_string(os, op->id, op->str);
+#else
+            break;
+#endif
+        case OP_BLOB:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+            return sofab_ostream_write_blob(os, op->id, op->blob, op->blen);
+#else
+            break;
+#endif
+        case OP_SEQ_BEGIN:
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+            return sofab_ostream_write_sequence_begin(os, op->id);
+#else
+            break;
+#endif
+        case OP_SEQ_END:
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+            return sofab_ostream_write_sequence_end(os);
+#else
+            break;
+#endif
         case OP_ARRAY:
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
         {
             size_t n = op->count;
             switch (op->elem)
@@ -318,16 +411,31 @@ static sofab_ret_t replay_op(sofab_ostream_t *os, const op_t *op)
                 case EL_U8:  { uint8_t  t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(uint8_t) op->au[k];  return sofab_ostream_write_array_of_u8 (os, op->id, t, (int32_t)n); }
                 case EL_U16: { uint16_t t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(uint16_t)op->au[k];  return sofab_ostream_write_array_of_u16(os, op->id, t, (int32_t)n); }
                 case EL_U32: { uint32_t t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(uint32_t)op->au[k];  return sofab_ostream_write_array_of_u32(os, op->id, t, (int32_t)n); }
-                case EL_U64: { uint64_t t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=          op->au[k];  return sofab_ostream_write_array_of_u64(os, op->id, t, (int32_t)n); }
                 case EL_I8:  { int8_t   t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(int8_t)  op->ai[k];  return sofab_ostream_write_array_of_i8 (os, op->id, t, (int32_t)n); }
                 case EL_I16: { int16_t  t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(int16_t) op->ai[k];  return sofab_ostream_write_array_of_i16(os, op->id, t, (int32_t)n); }
                 case EL_I32: { int32_t  t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(int32_t) op->ai[k];  return sofab_ostream_write_array_of_i32(os, op->id, t, (int32_t)n); }
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+                case EL_U64: { uint64_t t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=          op->au[k];  return sofab_ostream_write_array_of_u64(os, op->id, t, (int32_t)n); }
                 case EL_I64: { int64_t  t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=          op->ai[k];  return sofab_ostream_write_array_of_i64(os, op->id, t, (int32_t)n); }
-                case EL_FP32:{ float    t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(float)   op->af[k];  return sofab_ostream_write_array_of_fp32(os, op->id, t, (int32_t)n); }
+#else
+                case EL_U64: case EL_I64: break;
+#endif
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_FP64_SUPPORT)
                 case EL_FP64:{ double   t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=          op->af[k];  return sofab_ostream_write_array_of_fp64(os, op->id, t, (int32_t)n); }
+#else
+                case EL_FP64: break;
+#endif
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+                case EL_FP32:{ float    t[MAXELEM]; for (size_t k=0;k<n;k++) t[k]=(float)   op->af[k];  return sofab_ostream_write_array_of_fp32(os, op->id, t, (int32_t)n); }
+#else
+                case EL_FP32: break;
+#endif
             }
             return SOFAB_RET_E_USAGE;
         }
+#else
+            break;
+#endif /* !SOFAB_DISABLE_ARRAY_SUPPORT */
     }
     return SOFAB_RET_E_USAGE;
 }
@@ -420,35 +528,82 @@ static void vec_field_cb(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_
 
     s->fired = 1;
 
+    /* As in replay_op, feature-specific case bodies are #if-guarded; vectors
+     * needing a disabled feature never reach here (they are skipped). */
     switch (op->kind)
     {
-        case OP_UNSIGNED: sofab_istream_read_u64(ctx, &s->u); break;
-        case OP_SIGNED:   sofab_istream_read_i64(ctx, &s->s); break;
+        case OP_UNSIGNED:
+            /* s->u has the value-type width, so read straight into it. */
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+            sofab_istream_read_u64(ctx, &s->u);
+#else
+            sofab_istream_read_u32(ctx, &s->u);
+#endif
+            break;
+        case OP_SIGNED:
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+            sofab_istream_read_i64(ctx, &s->s);
+#else
+            sofab_istream_read_i32(ctx, &s->s);
+#endif
+            break;
         case OP_BOOLEAN:  sofab_istream_read_bool(ctx, &s->b); break;
-        case OP_FP32:     sofab_istream_read_fp32(ctx, &s->f32); break;
-        case OP_FP64:     sofab_istream_read_fp64(ctx, &s->f64); break;
-        case OP_STRING:   sofab_istream_read_string(ctx, s->str, sizeof(s->str)); break;
-        case OP_BLOB:     if (op->blen) sofab_istream_read_blob(ctx, s->blob, sizeof(s->blob)); break;
+        case OP_FP32:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+            sofab_istream_read_fp32(ctx, &s->f32);
+#endif
+            break;
+        case OP_FP64:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_FP64_SUPPORT)
+            sofab_istream_read_fp64(ctx, &s->f64);
+#endif
+            break;
+        case OP_STRING:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+            sofab_istream_read_string(ctx, s->str, sizeof(s->str));
+#endif
+            break;
+        case OP_BLOB:
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+            if (op->blen) sofab_istream_read_blob(ctx, s->blob, sizeof(s->blob));
+#endif
+            break;
         case OP_ARRAY:
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             switch (op->elem)
             {
                 case EL_U8:  sofab_istream_read_array_of_u8 (ctx, s->arr.u8,  op->count); break;
                 case EL_U16: sofab_istream_read_array_of_u16(ctx, s->arr.u16, op->count); break;
                 case EL_U32: sofab_istream_read_array_of_u32(ctx, s->arr.u32, op->count); break;
-                case EL_U64: sofab_istream_read_array_of_u64(ctx, s->arr.u64, op->count); break;
                 case EL_I8:  sofab_istream_read_array_of_i8 (ctx, s->arr.i8,  op->count); break;
                 case EL_I16: sofab_istream_read_array_of_i16(ctx, s->arr.i16, op->count); break;
                 case EL_I32: sofab_istream_read_array_of_i32(ctx, s->arr.i32, op->count); break;
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+                case EL_U64: sofab_istream_read_array_of_u64(ctx, s->arr.u64, op->count); break;
                 case EL_I64: sofab_istream_read_array_of_i64(ctx, s->arr.i64, op->count); break;
+#else
+                case EL_U64: case EL_I64: break;
+#endif
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
                 case EL_FP32:sofab_istream_read_array_of_fp32(ctx, s->arr.f32a, op->count); break;
+#else
+                case EL_FP32: break;
+#endif
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_FP64_SUPPORT)
                 case EL_FP64:sofab_istream_read_array_of_fp64(ctx, s->arr.f64a, op->count); break;
+#else
+                case EL_FP64: break;
+#endif
             }
+#endif /* !SOFAB_DISABLE_ARRAY_SUPPORT */
             break;
         case OP_SEQ_BEGIN:
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
             if (c->depth < MAXDEPTH)
                 sofab_istream_read_sequence(ctx, &c->decoders[c->depth++], vec_field_cb, c);
             else
                 c->overflow = 1;
+#endif
             break;
         case OP_SEQ_END: break; /* unreachable */
     }
@@ -618,6 +773,8 @@ int sofab_test_vectors_run_all(const char *path, sofab_test_vectors_result_t *ou
 
     static const size_t tiny_sizes[] = { 1, 3, 7 };
 
+    const uint32_t caps = build_caps();
+
     for (size_t i = 0; i < nv; i++)
     {
         vector_t vec;
@@ -626,6 +783,14 @@ int sofab_test_vectors_run_all(const char *path, sofab_test_vectors_result_t *ou
             out->failures++;
             if (out->first_error[0] == '\0')
                 snprintf(out->first_error, sizeof(out->first_error), "vector %zu: failed to load", i);
+            continue;
+        }
+
+        /* skip vectors needing a feature this build was compiled without */
+        if (vec.req & ~caps)
+        {
+            out->skipped++;
+            free_vector(&vec);
             continue;
         }
 

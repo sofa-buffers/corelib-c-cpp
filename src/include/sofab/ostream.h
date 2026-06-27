@@ -496,6 +496,7 @@ static inline sofab_ret_t sofab_ostream_write_array_of_u32 (
  *
  * @return See sofab_ostream_write_array_of_signed().
  */
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
 static inline sofab_ret_t sofab_ostream_write_array_of_i64 (
     sofab_ostream_t *ctx, sofab_id_t id, const int64_t *var, int32_t element_count)
 {
@@ -517,6 +518,7 @@ static inline sofab_ret_t sofab_ostream_write_array_of_u64 (
 {
     return sofab_ostream_write_array_of_unsigned(ctx, id, var, element_count, sizeof(uint64_t));
 }
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!

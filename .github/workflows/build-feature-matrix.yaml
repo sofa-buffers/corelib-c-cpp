@@ -1,0 +1,68 @@
+name: Feature-Flag Matrix (vector suite)
+
+# Builds the standalone conformance-vector runner under each feature
+# configuration and runs it. The runner skips vectors that need a capability the
+# build was compiled without (each vector declares its "requires" tags), so the
+# union of these jobs exercises the encoder/decoder across every SOFAB_DISABLE_*
+# combination. The hand-written unit tests run separately, only in the full
+# (max) build — see build-gcc-x86_64 / build-clang-x86_64.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  vectors:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: max
+            flags: ""
+          - name: no-fp64
+            flags: "-DSOFAB_DISABLE_FP64_SUPPORT"
+          - name: no-int64
+            flags: "-DSOFAB_DISABLE_INT64_SUPPORT"
+          - name: no-array
+            flags: "-DSOFAB_DISABLE_ARRAY_SUPPORT"
+          - name: no-sequence
+            flags: "-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
+          - name: no-fixlen
+            flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT"
+          - name: no-overflow-check
+            flags: "-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          - name: minimal
+            flags: >-
+              -DSOFAB_DISABLE_FIXLEN_SUPPORT
+              -DSOFAB_DISABLE_ARRAY_SUPPORT
+              -DSOFAB_DISABLE_SEQUENCE_SUPPORT
+              -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Configure (${{ matrix.name }})
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_CPP=OFF \
+            -DSOFAB_ENABLE_BENCH=OFF \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }}"
+
+      # Build only the flag-tolerant vector runner: the hand-written unit tests
+      # are intentionally max-only and would not compile in reduced configs.
+      - name: Build vector runner (${{ matrix.name }})
+        run: cmake --build build --target sofab_vectortest
+
+      - name: Run vector suite (${{ matrix.name }})
+        run: ./build/test/c/sofab_vectortest

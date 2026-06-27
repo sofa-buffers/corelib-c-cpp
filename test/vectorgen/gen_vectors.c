@@ -221,11 +221,85 @@ static void json_field(FILE *o, const char *indent, const op_t *op)
 
 static int g_first_vector = 1;
 
+/* Capability tags: the optional library features a vector needs to encode/decode.
+ * A build compiled without a feature skips vectors that require it. Mirrors the
+ * SOFAB_DISABLE_* flags. */
+#define REQ_FIXLEN   (1u << 0) /* fp32/fp64/string/blob (and fixlen arrays) */
+#define REQ_ARRAY    (1u << 1) /* any array field */
+#define REQ_SEQUENCE (1u << 2) /* nested sequences */
+#define REQ_FP64     (1u << 3) /* 64-bit float (implies REQ_FIXLEN) */
+#define REQ_INT64    (1u << 4) /* a value/id outside the 32-bit value range */
+
+/* Largest field id a 32-bit (SOFAB_DISABLE_INT64_SUPPORT) build can encode:
+ * the (id<<3)|type header is a varint accumulated in a 32-bit value. */
+#define REQ_ID32_MAX (UINT32_MAX >> 3)
+
+static int value_needs_int64_u(uint64_t v) { return v > UINT32_MAX; }
+static int value_needs_int64_i(int64_t v)  { return v > INT32_MAX || v < INT32_MIN; }
+
+/* Derive the capability mask a vector requires from its ops + values + ids. */
+static uint32_t compute_requires(const oplist_t *l)
+{
+    uint32_t req = 0;
+    for (size_t i = 0; i < l->n; ++i)
+    {
+        const op_t *op = &l->ops[i];
+
+        if (op->id > REQ_ID32_MAX) req |= REQ_INT64;
+
+        switch (op->kind)
+        {
+            case K_UNSIGNED:  if (value_needs_int64_u(op->u)) req |= REQ_INT64; break;
+            case K_SIGNED:    if (value_needs_int64_i(op->s)) req |= REQ_INT64; break;
+            case K_BOOLEAN:   break;
+            case K_FP32:      req |= REQ_FIXLEN; break;
+            case K_FP64:      req |= REQ_FIXLEN | REQ_FP64; break;
+            case K_STRING:    req |= REQ_FIXLEN; break;
+            case K_BLOB:      req |= REQ_FIXLEN; break;
+            case K_SEQ_BEGIN: req |= REQ_SEQUENCE; break;
+            case K_SEQ_END:   break;
+            case K_ARR_FP32:  req |= REQ_ARRAY | REQ_FIXLEN; break;
+            case K_ARR_FP64:  req |= REQ_ARRAY | REQ_FIXLEN | REQ_FP64; break;
+            default: /* integer arrays K_ARR_U8..K_ARR_I64 */
+                req |= REQ_ARRAY;
+                for (int32_t k = 0; k < op->count; ++k)
+                {
+                    if (op->kind == K_ARR_U64 && value_needs_int64_u(((const uint64_t *)op->arr)[k])) req |= REQ_INT64;
+                    else if (op->kind == K_ARR_I64 && value_needs_int64_i(((const int64_t *)op->arr)[k])) req |= REQ_INT64;
+                }
+                break;
+        }
+    }
+    return req;
+}
+
+static void emit_requires(FILE *o, uint32_t req)
+{
+    if (!req) return;
+    static const struct { uint32_t bit; const char *name; } tags[] = {
+        { REQ_FIXLEN, "fixlen" }, { REQ_ARRAY, "array" }, { REQ_SEQUENCE, "sequence" },
+        { REQ_FP64, "fp64" }, { REQ_INT64, "int64" },
+    };
+    fprintf(o, "      \"requires\": [");
+    int first = 1;
+    for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); ++i)
+        if (req & tags[i].bit)
+        {
+            fprintf(o, "%s\"%s\"", first ? "" : ", ", tags[i].name);
+            first = 0;
+        }
+    fprintf(o, "],\n");
+}
+
 /*!
  * Emit one vector. @p skip_ids (optional, may be NULL) lists field ids a
  * receiver is expected to skip during decoding — it drives the harness's
  * "skip-ids" scenario (simulating optional fields the receiver ignores). It is
  * purely decode-side metadata and does not affect the encoded bytes.
+ *
+ * A "requires" array (derived from the ops/values/ids) is emitted when the
+ * vector needs optional features, so a build compiled without a feature can
+ * skip the vectors it cannot handle.
  */
 static void emit_vector_skip(FILE *o, const char *name, const char *group,
                              const char *desc, const oplist_t *l,
@@ -253,6 +327,7 @@ static void emit_vector_skip(FILE *o, const char *name, const char *group,
     fprintf(o, "      \"group\": ");       json_string(o, group); fputs(",\n", o);
     fprintf(o, "      \"description\": "); json_string(o, desc);  fputs(",\n", o);
     fprintf(o, "      \"offset\": 0,\n");
+    emit_requires(o, compute_requires(l));
     if (skip_ids && nskip)
     {
         fprintf(o, "      \"skip_ids\": [");
@@ -351,6 +426,25 @@ static void emit_all(FILE *o)
         EMIT(o, signed_ladder[i].name, "scalar/signed",
              "Signed varint covering a zig-zag / varint length boundary.",
              op_i(&l, 0, signed_ladder[i].value));
+
+    /* --- 32-bit value-type boundaries (SOFAB_DISABLE_INT64_SUPPORT) ---
+     * These all fit in 32 bits, so they carry no "int64" requirement and run in
+     * EVERY build. In the default 64-bit build they add boundary coverage; in a
+     * 32-bit (no-int64) build they are the extreme min/max values, since the
+     * 64-bit signed_min/max, id_max and large unsigned ladder steps are skipped
+     * there. */
+    EMIT(o, "unsigned_u32_max", "scalar/unsigned",
+         "UINT32_MAX — the largest unsigned a 32-bit (no-int64) build can encode.",
+         op_u(&l, 0, UINT32_MAX));
+    EMIT(o, "signed_i32_min", "scalar/signed",
+         "INT32_MIN — the most-negative signed a 32-bit (no-int64) build can encode.",
+         op_i(&l, 0, INT32_MIN));
+    EMIT(o, "signed_i32_max", "scalar/signed",
+         "INT32_MAX — the largest signed a 32-bit (no-int64) build can encode.",
+         op_i(&l, 0, INT32_MAX));
+    EMIT(o, "id_max_32bit", "scalar/id",
+         "Largest field id a 32-bit (no-int64) build can encode (UINT32_MAX >> 3).",
+         op_u(&l, UINT32_MAX >> 3, 0));
 
     /* --- boolean (test_write_boolean) --- */
     EMIT(o, "boolean_true", "scalar/boolean", "Boolean true encoded as unsigned 1.",
