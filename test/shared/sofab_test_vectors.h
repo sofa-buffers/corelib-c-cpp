@@ -35,6 +35,7 @@ typedef struct
 {
     int  loaded;            /*!< 1 if the vector file parsed successfully */
     int  vectors;           /*!< number of vectors found */
+    int  skipped;           /*!< vectors skipped: they require a feature this build lacks */
     int  checks;            /*!< number of (vector, scenario) checks run */
     int  failures;          /*!< number of failed checks */
     char first_error[256];  /*!< description of the first failure (or load error) */

@@ -26,6 +26,7 @@ next to it is **only a helper** used to produce the JSON (see
       "group": "scalar/float",
       "description": "...",
       "offset": 0,                       // start offset passed to the encoder
+      "requires": ["fixlen"],            // OPTIONAL: capabilities this vector needs
       "skip_ids": [2, 4],                // OPTIONAL: field ids a receiver skips
       "fields": [                        // ordered encode operations (the structure + values)
         { "op": "fp32", "id": 0, "value": 3.1415 }
@@ -49,6 +50,26 @@ next to it is **only a helper** used to produce the JSON (see
 | `array`           | `id`, `element_type`, `values`              | array; `element_type` ∈ `u8..u64`, `i8..i64`, `fp32`, `fp64` |
 | `sequence_begin`  | `id`                                        | open a nested sequence |
 | `sequence_end`    | —                                           | close the current sequence |
+
+### Optional `requires`
+
+A vector may carry a top-level `"requires": [..]` array naming the optional
+library features it needs. The generator derives it automatically from the
+vector's ops, values and ids, so it can't drift. A harness compiled without a
+feature (a `SOFAB_DISABLE_*` flag) **skips** the vectors that require it, so the
+same vector file can be run against every build configuration. Capability tags:
+
+| tag        | a vector needs it when…                                            | disabled by |
+|------------|-------------------------------------------------------------------|-------------|
+| `fixlen`   | it has an fp32/fp64/string/blob (or a fixed-length array)          | `SOFAB_DISABLE_FIXLEN_SUPPORT` |
+| `array`    | it has any array field                                             | `SOFAB_DISABLE_ARRAY_SUPPORT` |
+| `sequence` | it has a nested sequence                                           | `SOFAB_DISABLE_SEQUENCE_SUPPORT` |
+| `fp64`     | it has a 64-bit float (implies `fixlen`)                           | `SOFAB_DISABLE_FP64_SUPPORT` |
+| `int64`    | a value/element is outside the 32-bit range, or a field id exceeds the 32-bit id cap | `SOFAB_DISABLE_INT64_SUPPORT` |
+
+A vector with no special needs omits `requires` and runs in every build. The
+standalone `sofab_vectortest` runner reports `run` vs `skipped` counts, and CI
+builds it across the feature matrix.
 
 ### Optional `skip_ids`
 

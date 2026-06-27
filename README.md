@@ -316,6 +316,13 @@ Tests are registered with CTest and cover both the C and C++ core libraries:
 ctest --test-dir build --output-on-failure
 ```
 
+The hand-written unit tests run in the full-feature ("max") build. The
+language-agnostic conformance-vector suite additionally runs as a standalone,
+flag-tolerant runner (`sofab_vectortest`): each vector declares the capabilities
+it needs, so the runner skips vectors a reduced build can't handle. CI builds it
+across the [feature-flag](#feature-flags) matrix (one flag off at a time, plus a
+minimal build), so the union of runs exercises every configuration.
+
 ### Useful CMake options
 
 | Option | Default | Description |
