@@ -395,6 +395,33 @@ static void emit_all(FILE *o)
             "Five scalars; a receiver ignoring optional ids 2 and 4 must still read 1, 3, 5.",
             &l, skip, sizeof(skip) / sizeof(skip[0]));
     }
+    {
+        /* One field of every wire type, each (except the two kept anchors)
+         * marked optional. Exercises the decoder skipping every wire type —
+         * scalar, string, blob, array and a whole sub-sequence — and resuming
+         * correctly between them. */
+        static const uint8_t  blob[] = {0x01, 0x02, 0x03};
+        static const uint32_t arr[]  = {10, 20, 30};
+        static const uint32_t skip[] = {2, 3, 4, 5, 6, 7, 8, 9};
+        oplist_t l = {0};
+        op_u  (&l, 1, 100);                 /* keep: anchor before */
+        op_i  (&l, 2, -200);                /* skip: signed        */
+        op_bool(&l, 3, 1);                  /* skip: boolean       */
+        op_f32(&l, 4, 1.5f);               /* skip: fp32          */
+        op_f64(&l, 5, 2.5);                /* skip: fp64          */
+        op_str(&l, 6, "skip me");          /* skip: string        */
+        op_blob(&l, 7, blob, (int32_t)sizeof(blob)); /* skip: blob */
+        op_arr(&l, K_ARR_U32, 8, arr, 3);  /* skip: array         */
+        op_seqb(&l, 9);                     /* skip: whole sub-sequence */
+            op_u(&l, 0, 1);
+            op_str(&l, 1, "ignored");
+        op_seqe(&l);
+        op_u  (&l, 10, 300);               /* keep: anchor after  */
+        emit_vector_skip(o, "skip_all_wire_types", "skip",
+            "Every wire type as an optional field; a receiver skipping ids 2-9 "
+            "must still read the id 1 and id 10 anchors.",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
 
     /* --- integer arrays (test_write_array_of_*) --- */
     {
@@ -535,6 +562,38 @@ static void emit_all(FILE *o)
         static const uint32_t skip[] = {1};
         emit_vector_skip(o, "nested_sequence_multilevel", "sequence",
                     "Ten levels of nested sequences.", &l, skip, 1);
+    }
+
+    {
+        /* Multi-depth nested sequences with skipping at several levels: a scalar
+         * skipped at depth 2 (id 5) and a whole sub-tree skipped at depth 3
+         * (id 7, which itself nests a depth-4 sequence). Verifies the decoder
+         * resumes correctly after a skipped field and after a skipped sub-tree,
+         * at every level on the way back out. */
+        static const int32_t arr[] = {-1, -2, -3};
+        static const uint32_t skip[] = {5, 7};
+        oplist_t l = {0};
+        op_u(&l, 1, 10);                       /* depth 0: keep */
+        op_seqb(&l, 2);                         /* depth 1: descend */
+            op_u(&l, 3, 20);                    /*   keep */
+            op_seqb(&l, 4);                     /*   depth 2: descend */
+                op_i(&l, 5, -30);              /*     skip (scalar at depth 2) */
+                op_str(&l, 6, "deep");         /*     keep */
+                op_seqb(&l, 7);                /*     depth 3: skip whole sub-tree */
+                    op_arr(&l, K_ARR_I32, 8, arr, 3);
+                    op_seqb(&l, 9);            /*       depth 4 (skipped via parent) */
+                        op_f64(&l, 10, 1.5);
+                    op_seqe(&l);
+                op_seqe(&l);
+                op_u(&l, 11, 40);             /*     keep: resume after skipped sub-tree */
+            op_seqe(&l);
+            op_i(&l, 12, -60);                /*   keep: resume at depth 1 */
+        op_seqe(&l);
+        op_u(&l, 13, 70);                     /* depth 0: keep, resume after deep sequence */
+        emit_vector_skip(o, "nested_sequence_deep_skip", "sequence",
+                    "Multi-depth nested sequences skipping a depth-2 scalar (id 5) "
+                    "and a whole depth-3 sub-tree (id 7).", &l, skip,
+                    sizeof(skip) / sizeof(skip[0]));
     }
 
     /* --- full scale composite message (test_write_full_scale_example) --- */

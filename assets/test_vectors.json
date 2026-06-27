@@ -427,6 +427,29 @@
       "serialized": { "length": 20, "hex": "0864118f031a226b65657022200000c03f28ac02" }
     },
     {
+      "name": "skip_all_wire_types",
+      "group": "skip",
+      "description": "Every wire type as an optional field; a receiver skipping ids 2-9 must still read the id 1 and id 10 anchors.",
+      "offset": 0,
+      "skip_ids": [2, 3, 4, 5, 6, 7, 8, 9],
+      "fields": [
+        { "op": "unsigned", "id": 1, "value": 100 },
+        { "op": "signed", "id": 2, "value": -200 },
+        { "op": "boolean", "id": 3, "value": true },
+        { "op": "fp32", "id": 4, "value": 1.5 },
+        { "op": "fp64", "id": 5, "value": 2.5 },
+        { "op": "string", "id": 6, "value": "skip me" },
+        { "op": "blob", "id": 7, "value_hex": "010203" },
+        { "op": "array", "id": 8, "element_type": "u32", "values": [10, 20, 30] },
+        { "op": "sequence_begin", "id": 9 },
+        { "op": "unsigned", "id": 0, "value": 1 },
+        { "op": "string", "id": 1, "value": "ignored" },
+        { "op": "sequence_end" },
+        { "op": "unsigned", "id": 10, "value": 300 }
+      ],
+      "serialized": { "length": 58, "hex": "0864118f03180122200000c03f2a410000000000000440323a736b6970206d653a1b01020343030a141e4e00010a3a69676e6f7265640750ac02" }
+    },
+    {
       "name": "array_unsigned_u32",
       "group": "array/integer",
       "description": "Array of unsigned values (u32 input).",
@@ -677,6 +700,33 @@
         { "op": "signed", "id": 2, "value": -42 }
       ],
       "serialized": { "length": 64, "hex": "002a0e002a11530e002a11530e002a11530e002a11530e002a11530e002a11530e002a11530e002a11530e002a11530e002a1153070707070707070707071153" }
+    },
+    {
+      "name": "nested_sequence_deep_skip",
+      "group": "sequence",
+      "description": "Multi-depth nested sequences skipping a depth-2 scalar (id 5) and a whole depth-3 sub-tree (id 7).",
+      "offset": 0,
+      "skip_ids": [5, 7],
+      "fields": [
+        { "op": "unsigned", "id": 1, "value": 10 },
+        { "op": "sequence_begin", "id": 2 },
+        { "op": "unsigned", "id": 3, "value": 20 },
+        { "op": "sequence_begin", "id": 4 },
+        { "op": "signed", "id": 5, "value": -30 },
+        { "op": "string", "id": 6, "value": "deep" },
+        { "op": "sequence_begin", "id": 7 },
+        { "op": "array", "id": 8, "element_type": "i32", "values": [-1, -2, -3] },
+        { "op": "sequence_begin", "id": 9 },
+        { "op": "fp64", "id": 10, "value": 1.5 },
+        { "op": "sequence_end" },
+        { "op": "sequence_end" },
+        { "op": "unsigned", "id": 11, "value": 40 },
+        { "op": "sequence_end" },
+        { "op": "signed", "id": 12, "value": -60 },
+        { "op": "sequence_end" },
+        { "op": "unsigned", "id": 13, "value": 70 }
+      ],
+      "serialized": { "length": 41, "hex": "080a16181426293b3222646565703e44030103054e5241000000000000f83f07075828076177076846" }
     },
     {
       "name": "full_scale_example",

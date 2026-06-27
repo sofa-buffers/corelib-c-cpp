@@ -55,17 +55,17 @@ next to it is **only a helper** used to produce the JSON (see
 A vector may carry a top-level `"skip_ids": [..]` array — field ids a receiver is
 expected to **skip** during decoding (simulating optional fields it doesn't care
 about). The harness uses it to drive a *skip-ids* decode scenario: it leaves those
-ids unread at every nesting level (so the decoder auto-skips the field, and the
-whole sub-sequence if the id names a sequence), then verifies the remaining fields
-still decode and the message is fully consumed. Vectors without `skip_ids` simply
-don't run that scenario.
+ids unread at every nesting level (so the decoder auto-skips the field — for any
+wire type — and the whole sub-sequence, at any nesting depth, when the id names a
+sequence), then verifies the remaining fields still decode and the message is
+fully consumed. **Fields are only ever skipped when `skip_ids` is present**;
+vectors without it just don't run that scenario.
 
 ### Decode scenarios the harness runs per vector
 
 `encode`, `chunked-encode` (1/3/7-byte buffers), `decode`, `chunked-decode`
-(one byte at a time), `skip-all` (read nothing), `skip-nested` (skip every
-sequence wholesale), `skip-ids` (+ chunked, when `skip_ids` is present), and
-`roundtrip`.
+(one byte at a time), `skip-ids` (+ a chunked variant, only when `skip_ids` is
+present), and `roundtrip`.
 
 ### Conventions
 
