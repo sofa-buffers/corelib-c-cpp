@@ -21,24 +21,10 @@ allocator and no third-party dependencies — with an API simple enough to use
 without a code generator, so the same wire format runs from deeply embedded MCUs
 up to IoT-class devices.
 
-### Why this design
-
-| Goal | How |
-|------|-----|
-| No allocator | All state lives in caller-provided buffers and structs; nothing is ever heap-allocated, avoiding heap fragmentation. |
-| No dependencies | The corelib pulls in no third-party libraries, so it drops cleanly into any toolchain. |
-| Streaming **out** | `sofab_ostream` writes into a small caller buffer and invokes a flush callback whenever it fills, so a message can exceed available RAM. |
-| Streaming **in** | `sofab_istream` is a callback-driven decoder fed arbitrary byte chunks; large string/blob payloads are delivered in pieces. |
-| Reserve-offset | `sofab_ostream_init` takes a start offset that leaves room at the front of the buffer for a lower-layer protocol header (saves a copy). |
-| Usable without a generator | The field-level API is explicit enough to write by hand, while the descriptor-driven `object` API stays optional. |
-| C++ without surprises | The C++ wrapper reports the first error through a `Result` instead of throwing and avoids `std::iostream`, for toolchains that forbid exceptions or lack heavy stdlib facilities. |
-| Portable | Plain C99 / C++20 with explicit endianness handling, so the same wire format works across little- and big-endian architectures. |
-| Small footprint | CMake options drop whole code paths (e.g. `SOFAB_ENABLE_OBJECT`); release builds target size with `-Os`, down to ~1&nbsp;KB of `.text`. |
-
 ### Supported languages
 
-- <b>C99</b> or later
-- <b>C++20</b> or later
+- **C99** or later
+- **C++20** or later
 
 ### Built with following compilers
 
@@ -50,70 +36,27 @@ up to IoT-class devices.
 | GCC PowerPC (big endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml) |
 | GCC RISCV-V 64 (little endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml) |
 
+## Why this design
 
-### Build and test
+| Goal | How |
+|------|-----|
+| No allocator | All state lives in caller-provided buffers and structs; nothing is ever heap-allocated, avoiding heap fragmentation. |
+| No dependencies | The corelib pulls in no third-party libraries, so it drops cleanly into any toolchain. |
+| Streaming **out** | `sofab_ostream` writes into a small caller buffer and invokes a flush callback whenever it fills, so a message can exceed available RAM. |
+| Streaming **in** | `sofab_istream` is a callback-driven decoder fed arbitrary byte chunks; large string/blob payloads are delivered in pieces. |
+| Reserve-offset | `sofab_ostream_init` takes a start offset that leaves room at the front of the buffer for a lower-layer protocol header (saves a copy). |
+| Usable without a generator | The field-level API is explicit enough to write by hand, while the descriptor-driven `object` API stays optional. |
+| C++ without surprises | The C++ wrapper reports the first error through a `Result` instead of throwing and avoids `std::iostream`, for toolchains that forbid exceptions or lack heavy stdlib facilities. |
+| Portable | Plain C99 / C++20 with explicit endianness handling, so the same wire format works across little- and big-endian architectures. |
+| Small footprint | CMake options drop whole code paths (e.g. `SOFAB_DISABLE_OBJECT_API`); release builds target size with `-Os`, down to ~1&nbsp;KB of `.text`. |
 
-The library is built with [CMake](https://cmake.org/) (version 3.10 or later) and a C99 / C++20 capable toolchain such as GCC or Clang.
-
-#### Build
-
-```sh
-cmake -S . -B build
-cmake --build build --parallel
-```
-
-#### Test
-
-Tests are registered with CTest and cover both the C and C++ core libraries:
-
-```sh
-ctest --test-dir build --output-on-failure
-```
-
-#### Useful CMake options
-
-| Option | Default | Description |
-| - | - | - |
-| `SOFAB_ENABLE_CPP` | `ON` | Build the C++ tests |
-| `SOFAB_ENABLE_BENCH` | `ON` | Build the throughput benchmarks (`bench_c` / `bench_cpp`) |
-| `SOFAB_ENABLE_COVERAGE` | `OFF` | Enable code coverage instrumentation (`-O0 -g --coverage`) |
-| `SOFAB_ENABLE_FUZZ` | `OFF` | Enable fuzzing instrumentation (sanitizers) |
-| `SOFAB_ENABLE_DOXYGEN` | `OFF` | Build the `doc` target (API documentation) |
-| `SOFAB_ENABLE_VECTORGEN` | `OFF` | Build the test-vector generator (see `test/vectorgen`) |
-| `SOFAB_DISABLE_OBJECT_API` | `OFF` | Exclude the descriptor-driven object API (`object.c`) |
-
-For example, to configure a debug build with coverage enabled:
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_COVERAGE=ON
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-```
-
-#### Feature flags
-
-The corelib can be trimmed at compile time by defining these macros (e.g. via
-`-DSOFAB_DISABLE_ARRAY_SUPPORT`). Disabling unused features removes their code
-paths and shrinks the footprint (see [Footprint](#footprint)).
-
-| Macro | Effect |
-| - | - |
-| `SOFAB_DISABLE_FIXLEN_SUPPORT` | Drop fixed-length fields: floats, strings, and blobs |
-| `SOFAB_DISABLE_ARRAY_SUPPORT` | Drop array fields (scalar arrays and fixed-length arrays) |
-| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | Drop nested sequence framing |
-| `SOFAB_DISABLE_FP64_SUPPORT` | Drop 64-bit float (`fp64`) support; auto-defined where `double` is not 8 bytes |
-| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | Skip overflow checks when decoding integers (smaller/faster, less safe) |
-
-The descriptor-driven object API is excluded with the `SOFAB_DISABLE_OBJECT_API`
-CMake option above (it drops `object.c` entirely).
-
-### Usage
+## Usage
 
 The corelib serializes fields into a caller-owned buffer and deserializes them
 through a small callback-driven decoder. No heap is required, and the same wire
 format is shared by the C and C++ APIs.
 
-#### C: encoding with `ostream`
+### C: encoding with `ostream`
 
 Initialize an `sofab_ostream_t` over a buffer, write a few fields, then read the
 number of bytes produced:
@@ -153,7 +96,7 @@ for (uint32_t i = 0; i < 1000; i++)
 sofab_ostream_flush(&os); /* flush the final partial buffer */
 ```
 
-#### C: decoding with `istream`
+### C: decoding with `istream`
 
 Decoding is callback-driven: feed raw bytes and dispatch on the field id inside
 the callback, binding each field to a destination with a `sofab_istream_read_*()`
@@ -184,7 +127,7 @@ sofab_istream_init(&is, on_field, &msg);
 sofab_istream_feed(&is, buf, used);
 ```
 
-#### C: descriptor-driven `object` API
+### C: descriptor-driven `object` API
 
 When you have many messages, the generic transcoder keeps the footprint small:
 instead of per-field API calls, a constant descriptor drives both encoding and
@@ -222,7 +165,7 @@ sofab_istream_init(&is, sofab_object_field_cb, &dec);
 sofab_istream_feed(&is, buf, used);
 ```
 
-#### C++: encoding with `OStream`
+### C++: encoding with `OStream`
 
 The C++ API is a thin, type-deducing wrapper. `write()` picks the right encoding
 from the argument type and the calls chain through a `Result` that carries the
@@ -240,7 +183,7 @@ os.write(1, 42u)                      // unsigned
 std::span<const uint8_t> msg{os.data(), os.bytesUsed()};
 ```
 
-#### C++: decoding with `IStream`
+### C++: decoding with `IStream`
 
 Derive a message from `sofab::IStreamMessage` and dispatch fields in
 `deserialize()`; `IStreamObject` wires the decoder to an embedded instance:
@@ -273,13 +216,13 @@ sensor.feed(msg.data(), msg.size()); // msg from the encoding example above
 // sensor->id and sensor->value now hold the decoded values
 ```
 
-### API summary
+## API summary
 
 The full reference is generated from the headers (see
 [Documentation](https://sofa-buffers.github.io/corelib-c-cpp/)); this is the
 high-level surface.
 
-#### C (`sofab/ostream.h`, `sofab/istream.h`)
+### C (`sofab/ostream.h`, `sofab/istream.h`)
 
 | Encoder (`sofab_ostream_*`) | Purpose |
 | - | - |
@@ -298,7 +241,7 @@ high-level surface.
 | `read_sequence` | descend into a nested sequence with a child callback |
 | *(read nothing)* | the field — and any sub-sequence — is skipped automatically |
 
-#### C++ (`sofab/sofab.hpp`)
+### C++ (`sofab/sofab.hpp`)
 
 | Output class | Purpose |
 | - | - |
@@ -314,21 +257,70 @@ high-level surface.
 | `IStreamObject<T>` | Wraps an `IStreamMessage`-derived type; call `feed(buf, len)` to decode; access data via `->` / `*` |
 | `IStreamInline` | Lambda-based decoder — pass a `std::function` callback without subclassing |
 
-`write(id, value)` and `read(value)` deduce the wire encoding from the C++ type:
+`write(id, value)` and `read(value)` deduce the wire encoding from the C++ type.
 
-### Who is this suitable for?
+## Feature flags
 
-The C core library is very much aimed at small embedded devices, where C is simply essential. The focus here was therefore on minimal resource consumption.
+The corelib can be trimmed at compile time by defining these macros (e.g. via
+`-DSOFAB_DISABLE_ARRAY_SUPPORT`). Disabling unused features removes their code
+paths and shrinks the footprint (see [Footprint](#footprint)).
 
-The C++ core library is aimed more at IoT devices. Such devices do not necessarily run Linux directly, but they are powerful enough to deal with C++/Heap etc. However, the focus here was also on supporting IoT devices that do not support everything specified by C++ - for example, no exceptions are used, as these are often prohibited or not supported. Similarly, std::iostream is not used, as this is often not supported or simply too heavy.
+| Macro | Default | Effect |
+| - | - | - |
+| `SOFAB_DISABLE_FIXLEN_SUPPORT` | off | Drop fixed-length fields: floats, strings, and blobs |
+| `SOFAB_DISABLE_ARRAY_SUPPORT` | off | Drop array fields (scalar arrays and fixed-length arrays) |
+| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | off | Drop nested sequence framing |
+| `SOFAB_DISABLE_FP64_SUPPORT` | off | Drop 64-bit float (`fp64`) support; auto-defined where `double` is not 8 bytes |
+| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | off | Skip overflow checks when decoding integers (smaller/faster, less safe) |
 
-### Is this C/C++ implementation zero-copy?
+The descriptor-driven object API is excluded with the CMake option
+`-DSOFAB_DISABLE_OBJECT_API=ON` (drops `object.c` entirely). Example minimal
+build (integers only):
 
-No. SofaBuffers focuses on generating as little protocol overhead as possible, which is why the words in the payload of a message are not always aligned.
-To be compatible with all architectures, the data from the message is copied to user-provided memory.
+```sh
+cmake -S . -B build -DSOFAB_DISABLE_FIXLEN_SUPPORT=1 -DSOFAB_DISABLE_ARRAY_SUPPORT=1 -DSOFAB_DISABLE_SEQUENCE_SUPPORT=1
+```
 
+## Build & test
 
-### Benchmarks
+The library is built with [CMake](https://cmake.org/) (version 3.10 or later) and a C99 / C++20 capable toolchain such as GCC or Clang.
+
+### Build
+
+```sh
+cmake -S . -B build
+cmake --build build --parallel
+```
+
+### Test
+
+Tests are registered with CTest and cover both the C and C++ core libraries:
+
+```sh
+ctest --test-dir build --output-on-failure
+```
+
+### Useful CMake options
+
+| Option | Default | Description |
+| - | - | - |
+| `SOFAB_ENABLE_CPP` | `ON` | Build the C++ tests |
+| `SOFAB_ENABLE_BENCH` | `ON` | Build the throughput benchmarks (`bench_c` / `bench_cpp`) |
+| `SOFAB_ENABLE_COVERAGE` | `OFF` | Enable code coverage instrumentation (`-O0 -g --coverage`) |
+| `SOFAB_ENABLE_FUZZ` | `OFF` | Enable fuzzing instrumentation (sanitizers) |
+| `SOFAB_ENABLE_DOXYGEN` | `OFF` | Build the `doc` target (API documentation) |
+| `SOFAB_ENABLE_VECTORGEN` | `OFF` | Build the test-vector generator (see `test/vectorgen`) |
+| `SOFAB_DISABLE_OBJECT_API` | `OFF` | Exclude the descriptor-driven object API (`object.c`) |
+
+For example, to configure a debug build with coverage enabled:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_COVERAGE=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+## Benchmarks
 
 Two complementary benchmark tools are built for both C and C++ (enabled by
 `SOFAB_ENABLE_BENCH`, on by default):
@@ -352,13 +344,24 @@ The instruction-count report (`bench/run_callgrind.sh`) is machine-independent,
 so its numbers are directly comparable across machines and language
 implementations.
 
-### Footprint
+## Who is this suitable for?
+
+The C core library is very much aimed at small embedded devices, where C is simply essential. The focus here was therefore on minimal resource consumption.
+
+The C++ core library is aimed more at IoT devices. Such devices do not necessarily run Linux directly, but they are powerful enough to deal with C++/Heap etc. However, the focus here was also on supporting IoT devices that do not support everything specified by C++ - for example, no exceptions are used, as these are often prohibited or not supported. Similarly, std::iostream is not used, as this is often not supported or simply too heavy.
+
+## Is this C/C++ implementation zero-copy?
+
+No. SofaBuffers focuses on generating as little protocol overhead as possible, which is why the words in the payload of a message are not always aligned.
+To be compatible with all architectures, the data from the message is copied to user-provided memory.
+
+## Footprint
 
 This table shows the memory requirements of the C corelib for different bare metal architectures.
 
 The lib was always built with `-Os` (optimized for minimal size).
 
-#### Full configuration
+### Full configuration
 
 | Architecture | .text | .data | .bss
 | - | - | - | -
@@ -368,7 +371,7 @@ The lib was always built with `-Os` (optimized for minimal size).
 | ARMv8.1-m.main+mve | ~2.7KB | 0.0KB | 0.0KB
 | atmega8 |            ~6.3KB | 0.0KB | 0.0KB
 
-#### Minimal configuration
+### Minimal configuration
 
 | Architecture | .text | .data | .bss
 | - | - | - | -
