@@ -17,11 +17,17 @@
 #include <string.h>
 
 /* limits (the vector file is small and machine-generated) */
-#define MAXELEM   64
+#define MAXELEM   256
 #define STRMAX    256
 #define BLOBMAX   256
 #define MAXDEPTH  16
 #define ENCBUF    4096
+
+/* decode skip modes (exercise the decoder's field/sub-sequence skipping) */
+#define SKIP_NONE   0  /* read every field (default) */
+#define SKIP_ALL    1  /* read nothing; sequences are not descended */
+#define SKIP_NESTED 2  /* read top-level scalars; skip every sequence wholesale */
+#define SKIP_IDS    3  /* skip fields whose id is in the vector's skip_ids set */
 
 /* op model ******************************************************************/
 
@@ -54,6 +60,8 @@ typedef struct
     double   af[MAXELEM];
 } op_t;
 
+#define MAXSKIP 16
+
 typedef struct
 {
     char    *name;
@@ -61,6 +69,8 @@ typedef struct
     size_t   nops;
     uint8_t *bytes;
     size_t   nbytes;
+    uint32_t skip_ids[MAXSKIP]; /* optional: field ids a receiver skips */
+    size_t   nskip;
 } vector_t;
 
 /* per-op decode destination (persists across the whole feed) */
@@ -92,6 +102,9 @@ typedef struct
     slot_t     *slots;
     sofab_istream_decoder_t decoders[MAXDEPTH];
     int         overflow;
+    int         skip_mode;       /* SKIP_NONE / SKIP_ALL / SKIP_NESTED / SKIP_IDS */
+    const uint32_t *skip_ids;    /* for SKIP_IDS */
+    size_t      nskip;
 } cursor_t;
 
 /* helpers *******************************************************************/
@@ -257,6 +270,14 @@ static int load_vector(const sofab_json_t *vj, vector_t *out)
     if (!hex || hex2bin(hex, hl, &out->bytes, &out->nbytes))
     { free_vector(out); return -1; }
 
+    /* optional: field ids a receiver is expected to skip */
+    const sofab_json_t *skip = sofab_json_get(vj, "skip_ids");
+    size_t ns = sofab_json_array_size(skip);
+    if (ns > MAXSKIP) ns = MAXSKIP;
+    out->nskip = ns;
+    for (size_t i = 0; i < ns; i++)
+        out->skip_ids[i] = (uint32_t)sofab_json_u64(sofab_json_array_at(skip, i));
+
     return 0;
 }
 
@@ -376,6 +397,33 @@ static void vec_field_cb(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_
     size_t idx = c->i++;
     const op_t *op = &c->ops[idx];
     slot_t *s = &c->slots[idx];
+
+    /* skip-mode: leave this field unread so the decoder auto-skips it. */
+    int id_skipped = 0;
+    if (c->skip_mode == SKIP_IDS)
+        for (size_t k = 0; k < c->nskip; k++)
+            if (c->skip_ids[k] == op->id) { id_skipped = 1; break; }
+    int skip_this = (c->skip_mode == SKIP_ALL) ||
+                    (c->skip_mode == SKIP_NESTED && op->kind == OP_SEQ_BEGIN) ||
+                    id_skipped;
+    if (skip_this)
+    {
+        if (op->kind == OP_SEQ_BEGIN)
+        {
+            /* Do not descend: the decoder auto-skips the whole sub-sequence.
+             * Advance the cursor past the matching SEQ_END (handles nesting),
+             * since no child callbacks will fire for it. */
+            int d = 1;
+            while (d > 0 && c->i < c->n)
+            {
+                opk_t k = c->ops[c->i++].kind;
+                if (k == OP_SEQ_BEGIN) d++;
+                else if (k == OP_SEQ_END) d--;
+            }
+        }
+        return; /* non-sequence: decoder skips the payload automatically */
+    }
+
     s->fired = 1;
 
     switch (op->kind)
@@ -468,12 +516,16 @@ static int compare_slot(const op_t *op, const slot_t *s, char *err, size_t errle
 }
 
 static int decode_bytes(const op_t *ops, size_t nops, const uint8_t *bytes, size_t nbytes,
-                        int one_byte, char *err, size_t errlen)
+                        int one_byte, int skip_mode, const uint32_t *skip_ids, size_t nskip,
+                        char *err, size_t errlen)
 {
     cursor_t c;
     memset(&c, 0, sizeof(c));
     c.ops = ops;
     c.n = nops;
+    c.skip_mode = skip_mode;
+    c.skip_ids = skip_ids;
+    c.nskip = nskip;
     c.slots = (slot_t *)calloc(nops ? nops : 1, sizeof(slot_t));
     if (!c.slots) { snprintf(err, errlen, "oom"); return -1; }
 
@@ -503,6 +555,13 @@ static int decode_bytes(const op_t *ops, size_t nops, const uint8_t *bytes, size
     for (size_t i = 0; rc == 0 && i < nops; i++)
     {
         if (ops[i].kind == OP_SEQ_BEGIN || ops[i].kind == OP_SEQ_END) continue;
+        if (!c.slots[i].fired)
+        {
+            /* In SKIP_NONE every field must be delivered; in skip modes a
+             * deliberately-skipped field has no value to compare. */
+            if (skip_mode == SKIP_NONE) { snprintf(err, errlen, "field %zu never decoded", i); rc = -1; }
+            continue;
+        }
         if (compare_slot(&ops[i], &c.slots[i], err, errlen)) rc = -1;
     }
 
@@ -527,7 +586,7 @@ static int run_roundtrip(const vector_t *v, char *err, size_t errlen)
     uint8_t out[ENCBUF];
     size_t  used = 0;
     if (encode_bytes(v->ops, v->nops, 0, out, sizeof(out), &used, err, errlen)) return -1;
-    return decode_bytes(v->ops, v->nops, out, used, 0, err, errlen);
+    return decode_bytes(v->ops, v->nops, out, used, 0, SKIP_NONE, NULL, 0, err, errlen);
 }
 
 /* top-level *****************************************************************/
@@ -597,13 +656,40 @@ int sofab_test_vectors_run_all(const char *path, sofab_test_vectors_result_t *ou
 
         /* decode (whole) */
         out->checks++;
-        if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 0, err, sizeof(err))) { out->failures++;
+        if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 0, SKIP_NONE, NULL, 0, err, sizeof(err))) { out->failures++;
             if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/decode: %s", vec.name, err); }
 
         /* chunked decode (one byte at a time) */
         out->checks++;
-        if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 1, err, sizeof(err))) { out->failures++;
+        if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 1, SKIP_NONE, NULL, 0, err, sizeof(err))) { out->failures++;
             if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/chunked-decode: %s", vec.name, err); }
+
+        /* skip-all decode: read nothing; the decoder must skip every field and
+         * whole sub-sequence and still consume the message cleanly. */
+        out->checks++;
+        if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 0, SKIP_ALL, NULL, 0, err, sizeof(err))) { out->failures++;
+            if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/skip-all: %s", vec.name, err); }
+
+        /* skip-nested decode: read top-level scalars but skip every sequence
+         * wholesale, verifying fields after a skipped sub-section still arrive. */
+        out->checks++;
+        if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 0, SKIP_NESTED, NULL, 0, err, sizeof(err))) { out->failures++;
+            if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/skip-nested: %s", vec.name, err); }
+
+        /* skip-ids decode: skip exactly the field ids the vector marks optional
+         * (at every nesting level) and verify the remaining fields still decode
+         * and the message is fully consumed. */
+        if (vec.nskip)
+        {
+            out->checks++;
+            if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 0, SKIP_IDS, vec.skip_ids, vec.nskip, err, sizeof(err))) { out->failures++;
+                if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/skip-ids: %s", vec.name, err); }
+
+            /* and the same, fed one byte at a time (skip across chunk boundaries) */
+            out->checks++;
+            if (decode_bytes(vec.ops, vec.nops, vec.bytes, vec.nbytes, 1, SKIP_IDS, vec.skip_ids, vec.nskip, err, sizeof(err))) { out->failures++;
+                if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/skip-ids-chunked: %s", vec.name, err); }
+        }
 
         /* roundtrip */
         out->checks++;

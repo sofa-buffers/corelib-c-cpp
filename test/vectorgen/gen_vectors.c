@@ -221,8 +221,15 @@ static void json_field(FILE *o, const char *indent, const op_t *op)
 
 static int g_first_vector = 1;
 
-static void emit_vector(FILE *o, const char *name, const char *group,
-                        const char *desc, const oplist_t *l)
+/*!
+ * Emit one vector. @p skip_ids (optional, may be NULL) lists field ids a
+ * receiver is expected to skip during decoding — it drives the harness's
+ * "skip-ids" scenario (simulating optional fields the receiver ignores). It is
+ * purely decode-side metadata and does not affect the encoded bytes.
+ */
+static void emit_vector_skip(FILE *o, const char *name, const char *group,
+                             const char *desc, const oplist_t *l,
+                             const uint32_t *skip_ids, size_t nskip)
 {
     uint8_t buffer[1024];
     sofab_ostream_t os;
@@ -246,6 +253,13 @@ static void emit_vector(FILE *o, const char *name, const char *group,
     fprintf(o, "      \"group\": ");       json_string(o, group); fputs(",\n", o);
     fprintf(o, "      \"description\": "); json_string(o, desc);  fputs(",\n", o);
     fprintf(o, "      \"offset\": 0,\n");
+    if (skip_ids && nskip)
+    {
+        fprintf(o, "      \"skip_ids\": [");
+        for (size_t i = 0; i < nskip; ++i)
+            fprintf(o, "%s%" PRIu32, i ? ", " : "", skip_ids[i]);
+        fprintf(o, "],\n");
+    }
     fprintf(o, "      \"fields\": [\n");
     for (size_t i = 0; i < l->n; ++i)
     {
@@ -257,6 +271,12 @@ static void emit_vector(FILE *o, const char *name, const char *group,
     json_hex(o, buffer, used);
     fprintf(o, " }\n");
     fprintf(o, "    }");
+}
+
+static void emit_vector(FILE *o, const char *name, const char *group,
+                        const char *desc, const oplist_t *l)
+{
+    emit_vector_skip(o, name, group, desc, l, NULL, 0);
 }
 
 /* helper to run a single-call builder **************************************
@@ -303,21 +323,40 @@ static void emit_all(FILE *o)
              "Unsigned varint at field id 0 covering a varint length boundary.",
              op_u(&l, 0, ladder[i].value));
 
-    /* --- field id encoding (test_id_min / test_id_max) --- */
-    EMIT(o, "id_min", "scalar/id", "Smallest field id (0) with value 0.",
-         op_u(&l, 0, 0));
+    /* --- field id encoding --- */
+    /* (id 0 / value 0 is already covered by unsigned_0, so it is not repeated.) */
     EMIT(o, "id_max", "scalar/id", "Largest field id (SOFAB_ID_MAX = INT32_MAX) with value 0.",
          op_u(&l, 2147483647u, 0));
+    EMIT(o, "id_two_byte_header", "scalar/id",
+         "Field id 16 — the first id whose (id<<3)|type header needs two varint bytes.",
+         op_u(&l, 16, 1));
 
-    /* --- signed (test_write_signed_min / _max) --- */
+    /* --- signed scalars --- */
     EMIT(o, "signed_min", "scalar/signed", "INT64_MIN as a zigzag signed varint.",
          op_i(&l, 0, INT64_MIN));
     EMIT(o, "signed_max", "scalar/signed", "INT64_MAX as a zigzag signed varint.",
          op_i(&l, 0, INT64_MAX));
+    /* zig-zag + varint boundaries: 0->0, -1->1, 1->2, 63->126 (1 byte),
+     * 64->128 (2 bytes), -64->127 (1 byte), -65->129 (2 bytes). */
+    static const struct { const char *name; int64_t value; } signed_ladder[] = {
+        {"signed_0",       0},
+        {"signed_minus1",  -1},
+        {"signed_1",       1},
+        {"signed_63",      63},
+        {"signed_64",      64},
+        {"signed_minus64", -64},
+        {"signed_minus65", -65},
+    };
+    for (size_t i = 0; i < sizeof(signed_ladder) / sizeof(signed_ladder[0]); ++i)
+        EMIT(o, signed_ladder[i].name, "scalar/signed",
+             "Signed varint covering a zig-zag / varint length boundary.",
+             op_i(&l, 0, signed_ladder[i].value));
 
     /* --- boolean (test_write_boolean) --- */
     EMIT(o, "boolean_true", "scalar/boolean", "Boolean true encoded as unsigned 1.",
          op_bool(&l, 0, 1));
+    EMIT(o, "boolean_false", "scalar/boolean", "Boolean false encoded as unsigned 0.",
+         op_bool(&l, 0, 0));
 
     /* --- floating point scalars (test_write_fp32 / _fp64) --- */
     EMIT(o, "fp32", "scalar/float", "32-bit float 3.1415f as a little-endian fixed-length field.",
@@ -330,6 +369,9 @@ static void emit_all(FILE *o)
          op_str(&l, 0, "Hello Couch!"));
     EMIT(o, "string_empty", "scalar/string", "Empty string field.",
          op_str(&l, 0, ""));
+    EMIT(o, "string_16", "scalar/string",
+         "16-byte string — the fixlen length header crosses into two varint bytes.",
+         op_str(&l, 0, "0123456789abcdef"));
 
     /* --- blobs (test_write_blob / _empty) --- */
     {
@@ -339,6 +381,20 @@ static void emit_all(FILE *o)
     }
     EMIT(o, "blob_empty", "scalar/blob", "Empty blob field.",
          op_blob(&l, 0, NULL, 0));
+
+    /* --- optional fields a receiver may skip (drives the skip-ids scenario) --- */
+    {
+        static const uint32_t skip[] = {2, 4};
+        oplist_t l = {0};
+        op_u(&l, 1, 100);
+        op_i(&l, 2, -200);
+        op_str(&l, 3, "keep");
+        op_f32(&l, 4, 1.5f);
+        op_u(&l, 5, 300);
+        emit_vector_skip(o, "optional_scalars", "skip",
+            "Five scalars; a receiver ignoring optional ids 2 and 4 must still read 1, 3, 5.",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
 
     /* --- integer arrays (test_write_array_of_*) --- */
     {
@@ -375,6 +431,14 @@ static void emit_all(FILE *o)
         static const int64_t a[] = {-1, -2, -3, INT64_MIN, INT64_MAX};
         EMIT(o, "array_i64", "array/integer", "Array of i64.", op_arr(&l, K_ARR_I64, 0, a, 5));
     }
+    {
+        /* 200 elements: the element-count varint crosses into two bytes (>127). */
+        static uint8_t a[200];
+        for (int i = 0; i < 200; ++i) a[i] = (uint8_t)(i * 7 + 1);
+        EMIT(o, "array_u8_large", "array/integer",
+             "200-element u8 array — the element count crosses into two varint bytes.",
+             op_arr(&l, K_ARR_U8, 0, a, 200));
+    }
 
     /* --- float arrays (test_write_array_of_fp32 / _fp64) --- */
     {
@@ -400,6 +464,34 @@ static void emit_all(FILE *o)
              op_arr(&l, K_ARR_FP64, 0, a, 4));
     }
 
+    /* --- empty / edge sequences --- */
+    {
+        oplist_t l = {0};
+        op_seqb(&l, 1);
+        op_seqe(&l);
+        emit_vector(o, "empty_sequence", "sequence", "A sequence with no fields.", &l);
+    }
+    {
+        oplist_t l = {0};
+        op_seqb(&l, 1);
+            op_seqb(&l, 2);
+            op_seqe(&l);
+        op_seqe(&l);
+        emit_vector(o, "nested_empty_sequences", "sequence",
+                    "A sequence whose only content is an empty sub-sequence.", &l);
+    }
+    {
+        static const uint32_t skip[] = {1};
+        oplist_t l = {0};
+        op_u(&l, 0, 7);
+        op_seqb(&l, 1);
+        op_seqe(&l);
+        op_i(&l, 2, -7);
+        emit_vector_skip(o, "empty_sequence_between_fields", "sequence",
+                    "An empty sequence between two scalars; the decoder must resume after it.",
+                    &l, skip, 1);
+    }
+
     /* --- nested sequences (test_write_nested_sequence*) --- */
     {
         oplist_t l = {0};
@@ -409,8 +501,9 @@ static void emit_all(FILE *o)
             op_i(&l, 2, -42);
         op_seqe(&l);
         op_i(&l, 2, -42);
-        emit_vector(o, "nested_sequence", "sequence",
-                    "A scalar, a nested sequence, then a scalar.", &l);
+        static const uint32_t skip[] = {1};
+        emit_vector_skip(o, "nested_sequence", "sequence",
+                    "A scalar, a nested sequence, then a scalar.", &l, skip, 1);
     }
 
     {
@@ -422,8 +515,9 @@ static void emit_all(FILE *o)
             op_arr(&l, K_ARR_I32, 3, a, 3);
         op_seqe(&l);
         op_i(&l, 2, -42);
-        emit_vector(o, "nested_sequence_with_array", "sequence",
-                    "A nested sequence containing a signed array.", &l);
+        static const uint32_t skip[] = {3};
+        emit_vector_skip(o, "nested_sequence_with_array", "sequence",
+                    "A nested sequence containing a signed array.", &l, skip, 1);
     }
 
     {
@@ -438,8 +532,9 @@ static void emit_all(FILE *o)
         for (int i = 0; i < 10; ++i)
             op_seqe(&l);
         op_i(&l, 2, -42);
-        emit_vector(o, "nested_sequence_multilevel", "sequence",
-                    "Ten levels of nested sequences.", &l);
+        static const uint32_t skip[] = {1};
+        emit_vector_skip(o, "nested_sequence_multilevel", "sequence",
+                    "Ten levels of nested sequences.", &l, skip, 1);
     }
 
     /* --- full scale composite message (test_write_full_scale_example) --- */
@@ -497,9 +592,13 @@ static void emit_all(FILE *o)
             op_str(&l, 4, "This_is_a_very_long_test_string_with_!@#$%^&*()_+-=[]{}");
         op_seqe(&l);
 
-        emit_vector(o, "full_scale_example", "composite",
+        /* Skip a top-level scalar (id 1) and a whole top-level sub-sequence
+         * (id 100); id 1 also appears inside sequences, exercising id-based
+         * skipping at multiple nesting levels. */
+        static const uint32_t skip[] = {1, 100};
+        emit_vector_skip(o, "full_scale_example", "composite",
                     "Large message mixing scalars, nested sequences, "
-                    "integer/float arrays and strings.", &l);
+                    "integer/float arrays and strings.", &l, skip, 2);
     }
 }
 

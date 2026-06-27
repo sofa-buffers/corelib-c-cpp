@@ -26,6 +26,7 @@ next to it is **only a helper** used to produce the JSON (see
       "group": "scalar/float",
       "description": "...",
       "offset": 0,                       // start offset passed to the encoder
+      "skip_ids": [2, 4],                // OPTIONAL: field ids a receiver skips
       "fields": [                        // ordered encode operations (the structure + values)
         { "op": "fp32", "id": 0, "value": 3.1415 }
       ],
@@ -48,6 +49,23 @@ next to it is **only a helper** used to produce the JSON (see
 | `array`           | `id`, `element_type`, `values`              | array; `element_type` ∈ `u8..u64`, `i8..i64`, `fp32`, `fp64` |
 | `sequence_begin`  | `id`                                        | open a nested sequence |
 | `sequence_end`    | —                                           | close the current sequence |
+
+### Optional `skip_ids`
+
+A vector may carry a top-level `"skip_ids": [..]` array — field ids a receiver is
+expected to **skip** during decoding (simulating optional fields it doesn't care
+about). The harness uses it to drive a *skip-ids* decode scenario: it leaves those
+ids unread at every nesting level (so the decoder auto-skips the field, and the
+whole sub-sequence if the id names a sequence), then verifies the remaining fields
+still decode and the message is fully consumed. Vectors without `skip_ids` simply
+don't run that scenario.
+
+### Decode scenarios the harness runs per vector
+
+`encode`, `chunked-encode` (1/3/7-byte buffers), `decode`, `chunked-decode`
+(one byte at a time), `skip-all` (read nothing), `skip-nested` (skip every
+sequence wholesale), `skip-ids` (+ chunked, when `skip_ids` is present), and
+`roundtrip`.
 
 ### Conventions
 
