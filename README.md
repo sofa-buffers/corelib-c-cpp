@@ -325,7 +325,7 @@ There are two layers:
 - **Conformance-vector suite** (`test_vectors_c`) — a language-agnostic set of
   vectors in [`assets/test_vectors.json`](assets/test_vectors.json), each pairing
   a message with its exact serialized bytes (format documented in
-  [`assets/README.md`](assets/README.md); generator in
+  [`assets/test_vectors_README.md`](assets/test_vectors_README.md); generator in
   [`test/vectorgen`](test/vectorgen)). The shared engine encodes, decodes,
   round-trips and chunk-feeds every vector.
 

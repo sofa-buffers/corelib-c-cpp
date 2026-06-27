@@ -4,8 +4,8 @@
 conformance suite **[`assets/test_vectors.json`](../../assets/test_vectors.json)**.
 
 **The format and contents of that file are documented next to it, in
-[`assets/README.md`](../../assets/README.md).** This page only covers
-regenerating it.
+[`assets/test_vectors_README.md`](../../assets/test_vectors_README.md).** This
+page only covers regenerating it.
 
 ## How it works
 
