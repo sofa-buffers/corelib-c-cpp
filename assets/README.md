@@ -70,6 +70,12 @@ A vector with no special needs omits `requires` and runs in every build. The
 standalone `sofab_vectortest` runner reports `run` vs `skipped` counts, and CI
 builds it across the feature matrix.
 
+> **`requires` only matters to consumers that can disable features.** An
+> implementation that always supports the full wire format (i.e. has no way to
+> compile features out) inherently supports every capability a vector can ask
+> for, so it should **ignore `requires` and run all vectors**. The tags exist
+> solely so a feature-reduced build can skip what it cannot represent.
+
 ### Optional `skip_ids`
 
 A vector may carry a top-level `"skip_ids": [..]` array — field ids a receiver is
