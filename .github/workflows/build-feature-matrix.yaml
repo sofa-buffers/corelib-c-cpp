@@ -4,7 +4,10 @@ name: Feature-Flag Matrix (vector suite)
 # configuration and runs it. The runner skips vectors that need a capability the
 # build was compiled without (each vector declares its "requires" tags), so the
 # union of these jobs exercises the encoder/decoder across every SOFAB_DISABLE_*
-# combination. The hand-written unit tests run separately, only in the full
+# combination. Each configuration is run on a little-endian (x86_64) and a
+# big-endian (PowerPC, under qemu) target, so byte-order handling is covered for
+# every feature set — including the 32-bit (no-int64) mode the native cross-arch
+# jobs don't reach. The hand-written unit tests run separately, only in the full
 # (max) build — see build-gcc-x86_64 / build-clang-x86_64.
 
 on:
@@ -16,53 +19,69 @@ on:
 jobs:
   vectors:
     runs-on: ubuntu-latest
+    name: ${{ matrix.arch }} / ${{ matrix.config.name }}
 
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: max
-            flags: ""
-          - name: no-fp64
-            flags: "-DSOFAB_DISABLE_FP64_SUPPORT"
-          - name: no-int64
-            flags: "-DSOFAB_DISABLE_INT64_SUPPORT"
-          - name: no-array
-            flags: "-DSOFAB_DISABLE_ARRAY_SUPPORT"
-          - name: no-sequence
-            flags: "-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
-          - name: no-fixlen
-            flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT"
-          - name: no-overflow-check
-            flags: "-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
-          - name: minimal
-            flags: >-
-              -DSOFAB_DISABLE_FIXLEN_SUPPORT
-              -DSOFAB_DISABLE_ARRAY_SUPPORT
-              -DSOFAB_DISABLE_SEQUENCE_SUPPORT
-              -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
+        arch: [x86_64, powerpc-be]
+        config:
+          - { name: max, flags: "" }
+          - { name: no-fp64, flags: "-DSOFAB_DISABLE_FP64_SUPPORT" }
+          - { name: no-int64, flags: "-DSOFAB_DISABLE_INT64_SUPPORT" }
+          - { name: no-array, flags: "-DSOFAB_DISABLE_ARRAY_SUPPORT" }
+          - { name: no-sequence, flags: "-DSOFAB_DISABLE_SEQUENCE_SUPPORT" }
+          - { name: no-fixlen, flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT" }
+          - { name: no-overflow-check, flags: "-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" }
+          - { name: minimal, flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" }
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies (x86_64)
+        if: matrix.arch == 'x86_64'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
-      - name: Configure (${{ matrix.name }})
+      - name: Install dependencies (PowerPC big-endian + qemu)
+        if: matrix.arch == 'powerpc-be'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-powerpc-linux-gnu cmake make qemu-user-static
+
+      - name: Configure (x86_64, ${{ matrix.config.name }})
+        if: matrix.arch == 'x86_64'
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DSOFAB_ENABLE_CPP=OFF \
             -DSOFAB_ENABLE_BENCH=OFF \
-            -DCMAKE_C_FLAGS="${{ matrix.flags }}"
+            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}"
+
+      - name: Configure (PowerPC big-endian, ${{ matrix.config.name }})
+        if: matrix.arch == 'powerpc-be'
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=powerpc \
+            -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSOFAB_ENABLE_CPP=OFF \
+            -DSOFAB_ENABLE_BENCH=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="-static" \
+            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}"
 
       # Build only the flag-tolerant vector runner: the hand-written unit tests
       # are intentionally max-only and would not compile in reduced configs.
-      - name: Build vector runner (${{ matrix.name }})
+      - name: Build vector runner (${{ matrix.config.name }})
         run: cmake --build build --target sofab_vectortest
 
-      - name: Run vector suite (${{ matrix.name }})
+      - name: Run vector suite (x86_64, ${{ matrix.config.name }})
+        if: matrix.arch == 'x86_64'
         run: ./build/test/c/sofab_vectortest
+
+      - name: Run vector suite (PowerPC big-endian via qemu, ${{ matrix.config.name }})
+        if: matrix.arch == 'powerpc-be'
+        run: qemu-ppc-static ./build/test/c/sofab_vectortest
