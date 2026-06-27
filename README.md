@@ -412,28 +412,30 @@ The lib was always built with `-Os` (optimized for minimal size).
 
 | Architecture | .text | .data | .bss
 | - | - | - | -
-| ARMv6-m |            ~2.6KB | 0.0KB | 0.0KB
-| ARMv7-m+fp.dp |      ~2.7KB | 0.0KB | 0.0KB
-| ARMv8-m.main+fp |    ~2.7KB | 0.0KB | 0.0KB
-| ARMv8.1-m.main+mve | ~2.7KB | 0.0KB | 0.0KB
+| ARMv6-m |            ~2.7KB | 0.0KB | 0.0KB
+| ARMv7-m+fp.dp |      ~2.8KB | 0.0KB | 0.0KB
+| RV32IMC |            ~3.6KB | 0.0KB | 0.0KB
 | atmega8 |            ~6.3KB | 0.0KB | 0.0KB
 
 ### Minimal configuration
 
+Built with `SOFAB_DISABLE_FIXLEN_SUPPORT`, `SOFAB_DISABLE_ARRAY_SUPPORT`,
+`SOFAB_DISABLE_SEQUENCE_SUPPORT`, `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` and the
+`SOFAB_OBJECT_DESCR_SMALL` descriptor profile.
+
 | Architecture | .text | .data | .bss
 | - | - | - | -
-| ARMv6-m |            ~1.0KB | 0.0KB | 0.0KB
-| ARMv7-m+fp.dp |      ~1.1KB | 0.0KB | 0.0KB
-| ARMv8-m.main+fp |    ~1.1KB | 0.0KB | 0.0KB
-| ARMv8.1-m.main+mve | ~1.1KB | 0.0KB | 0.0KB
-| atmega8 |            ~2.6KB | 0.0KB | 0.0KB
+| ARMv6-m |            ~1.2KB | 0.0KB | 0.0KB
+| ARMv7-m+fp.dp |      ~1.2KB | 0.0KB | 0.0KB
+| RV32IMC |            ~1.6KB | 0.0KB | 0.0KB
+| atmega8 |            ~2.8KB | 0.0KB | 0.0KB
 
-corelib API without `object.c`:
+Same minimal configuration, additionally without `object.c`
+(`SOFAB_DISABLE_OBJECT_API`):
 
 | Architecture | .text | .data | .bss
 | - | - | - | -
 | ARMv6-m |            ~0.8KB | 0.0KB | 0.0KB
 | ARMv7-m+fp.dp |      ~0.9KB | 0.0KB | 0.0KB
-| ARMv8-m.main+fp |    ~0.9KB | 0.0KB | 0.0KB
-| ARMv8.1-m.main+mve | ~0.9KB | 0.0KB | 0.0KB
+| RV32IMC |            ~1.0KB | 0.0KB | 0.0KB
 | atmega8 |            ~1.9KB | 0.0KB | 0.0KB
