@@ -300,28 +300,39 @@ high-level surface.
 
 #### C++ (`sofab/sofab.hpp`)
 
-A thin, type-deducing wrapper over the C API: `sofab::OStream` /
-`sofab::OStreamInline<N>` with a chainable `write(id, value)`, and
-`sofab::IStreamMessage` / `sofab::IStreamObject<T>` whose `deserialize()` /
-`read()` bind fields. Errors are reported via a `Result` rather than exceptions,
-and no `std::iostream` is used.
+| Output class | Purpose |
+| - | - |
+| `OStreamInline<N, Offset=0>` | Stack-allocated N-byte output stream — zero heap, suitable for bare-metal targets |
+| `OStream(buflen, offset=0)` | Heap-backed output stream; accepts an optional `shared_ptr<uint8_t[]>` or flush callback for streaming output |
+| `OStreamMessage` | Abstract base: override `serialize(OStreamImpl &)` to define the encoding of a message type |
+| `OStreamObject<T>` | Combines an `OStreamMessage`-derived type with its own inline buffer; call `serialize()` to encode |
+| `OStream::Result` | Propagates the first error across a chain of `write()` / `writeIf()` / `sequenceBegin()` / `sequenceEnd()` calls |
+
+| Input class | Purpose |
+| - | - |
+| `IStreamMessage` | Abstract base: override `deserialize(IStreamImpl &, id, size, count)` to bind fields inside the callback |
+| `IStreamObject<T>` | Wraps an `IStreamMessage`-derived type; call `feed(buf, len)` to decode; access data via `->` / `*` |
+| `IStreamInline` | Lambda-based decoder — pass a `std::function` callback without subclassing |
+
+`write(id, value)` and `read(value)` deduce the wire encoding from the C++ type:
+
+| C++ type | Wire encoding |
+| - | - |
+| `unsigned` integral | unsigned varint |
+| `signed` integral | signed varint |
+| `bool` | boolean |
+| `float` | fp32 |
+| `double` | fp64 |
+| `const char *` / `std::string_view` | string |
+| span-convertible of numeric elements | typed array |
+| `OStreamMessage` subclass | nested sequence |
+| `write(id, ptr, size)` overload | blob |
 
 ### Who is this suitable for?
 
 The C core library is very much aimed at small embedded devices, where C is simply essential. The focus here was therefore on minimal resource consumption.
 
 The C++ core library is aimed more at IoT devices. Such devices do not necessarily run Linux directly, but they are powerful enough to deal with C++/Heap etc. However, the focus here was also on supporting IoT devices that do not support everything specified by C++ - for example, no exceptions are used, as these are often prohibited or not supported. Similarly, std::iostream is not used, as this is often not supported or simply too heavy.
-
-### Features
-
-Since the focus was on embedded devices, special attention was paid to the following features during implementation:
-
-* **Keep it simple** and don't use anything too fancy.
-* Fully streaming-capable to serialize **messages larger than the available memory**.
-* The start of the message in the destination buffer can be defined by an offset value to reserve space for protocol headers of underlying protocols, thus **reducing the amount of copy operations**.
-* Data can be serialized and deserialized **without heap** to avoid heap fragmentation.
-* The corelib API should remain clearly structured so that it **can be used without a code generator**.
-* **No dependencies** on other libraries to be embeddable.
 
 ### Is this C/C++ implementation zero-copy?
 
