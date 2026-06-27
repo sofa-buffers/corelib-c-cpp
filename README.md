@@ -310,18 +310,41 @@ cmake --build build --parallel
 
 ### Test
 
-Tests are registered with CTest and cover both the C and C++ core libraries:
+Tests are registered with CTest:
 
 ```sh
 ctest --test-dir build --output-on-failure
 ```
 
-The hand-written unit tests run in the full-feature ("max") build. The
-language-agnostic conformance-vector suite additionally runs as a standalone,
-flag-tolerant runner (`sofab_vectortest`): each vector declares the capabilities
-it needs, so the runner skips vectors a reduced build can't handle. CI builds it
-across the [feature-flag](#feature-flags) matrix (one flag off at a time, plus a
-minimal build), so the union of runs exercises every configuration.
+There are two layers:
+
+- **Unit tests** (`test_c` / `test_cpp`) — hand-written C (Unity) and C++ (Catch2)
+  tests covering the encoder, decoder and object API, including error paths
+  (truncated varints, unbalanced sequences, overflow). These run in the
+  full-feature ("max") build, which exercises every wire type at 64-bit width.
+- **Conformance-vector suite** (`test_vectors_c`) — a language-agnostic set of
+  vectors in [`assets/test_vectors.json`](assets/test_vectors.json), each pairing
+  a message with its exact serialized bytes (see
+  [`test/vectorgen`](test/vectorgen)). The shared engine encodes, decodes,
+  round-trips and chunk-feeds every vector.
+
+The vector suite is also built as a standalone, **feature-flag-tolerant** runner
+(`sofab_vectortest`): each vector declares the capabilities it needs (`requires`),
+so a build compiled with a `SOFAB_DISABLE_*` flag skips the vectors it can't
+handle and reports a `run` / `skipped` count. This lets one vector file validate
+every configuration. CI runs it across a [feature-flag](#feature-flags) matrix —
+`max`, each flag off in turn, and a minimal build — so the union exercises all
+configurations. Boundary vectors that fit in 32 bits (e.g. `UINT32_MAX`,
+`INT32_MIN/MAX`) run in every build, giving the reduced builds their own min/max
+coverage.
+
+To run a reduced configuration directly:
+
+```sh
+cmake -S . -B build -DSOFAB_ENABLE_CPP=OFF -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT"
+cmake --build build --target sofab_vectortest   # the unit tests are max-only
+./build/test/c/sofab_vectortest
+```
 
 ### Useful CMake options
 
