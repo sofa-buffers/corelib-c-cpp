@@ -316,18 +316,6 @@ high-level surface.
 
 `write(id, value)` and `read(value)` deduce the wire encoding from the C++ type:
 
-| C++ type | Wire encoding |
-| - | - |
-| `unsigned` integral | unsigned varint |
-| `signed` integral | signed varint |
-| `bool` | boolean |
-| `float` | fp32 |
-| `double` | fp64 |
-| `const char *` / `std::string_view` | string |
-| span-convertible of numeric elements | typed array |
-| `OStreamMessage` subclass | nested sequence |
-| `write(id, ptr, size)` overload | blob |
-
 ### Who is this suitable for?
 
 The C core library is very much aimed at small embedded devices, where C is simply essential. The focus here was therefore on minimal resource consumption.
