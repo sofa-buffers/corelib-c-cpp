@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 
 if [[ -f "$ENV_FILE" ]]; then
-  docker run -it --rm --name sofa-cpp-dev \
+  docker run -it --rm --name sofa-c-dev \
     --env-file "$ENV_FILE" \
     -v "$(pwd)":/workspace \
     -v claude-config:/root/.claude \
@@ -14,7 +14,7 @@ if [[ -f "$ENV_FILE" ]]; then
 else
   echo "warning: $ENV_FILE not found — starting without --env-file." >&2
   echo "         copy .devcontainer/.env.example to .devcontainer/.env to load secrets." >&2
-  docker run -it --rm --name sofa-cpp-dev \
+  docker run -it --rm --name sofa-c-dev \
     -v "$(pwd)":/workspace \
     -v claude-config:/root/.claude \
     cpp-devcontainer
