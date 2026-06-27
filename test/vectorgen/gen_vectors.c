@@ -427,6 +427,25 @@ static void emit_all(FILE *o)
              "Signed varint covering a zig-zag / varint length boundary.",
              op_i(&l, 0, signed_ladder[i].value));
 
+    /* --- 32-bit value-type boundaries (SOFAB_DISABLE_INT64_SUPPORT) ---
+     * These all fit in 32 bits, so they carry no "int64" requirement and run in
+     * EVERY build. In the default 64-bit build they add boundary coverage; in a
+     * 32-bit (no-int64) build they are the extreme min/max values, since the
+     * 64-bit signed_min/max, id_max and large unsigned ladder steps are skipped
+     * there. */
+    EMIT(o, "unsigned_u32_max", "scalar/unsigned",
+         "UINT32_MAX — the largest unsigned a 32-bit (no-int64) build can encode.",
+         op_u(&l, 0, UINT32_MAX));
+    EMIT(o, "signed_i32_min", "scalar/signed",
+         "INT32_MIN — the most-negative signed a 32-bit (no-int64) build can encode.",
+         op_i(&l, 0, INT32_MIN));
+    EMIT(o, "signed_i32_max", "scalar/signed",
+         "INT32_MAX — the largest signed a 32-bit (no-int64) build can encode.",
+         op_i(&l, 0, INT32_MAX));
+    EMIT(o, "id_max_32bit", "scalar/id",
+         "Largest field id a 32-bit (no-int64) build can encode (UINT32_MAX >> 3).",
+         op_u(&l, UINT32_MAX >> 3, 0));
+
     /* --- boolean (test_write_boolean) --- */
     EMIT(o, "boolean_true", "scalar/boolean", "Boolean true encoded as unsigned 1.",
          op_bool(&l, 0, 1));

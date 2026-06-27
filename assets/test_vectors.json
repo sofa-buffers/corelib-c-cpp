@@ -336,6 +336,46 @@
       "serialized": { "length": 3, "hex": "018101" }
     },
     {
+      "name": "unsigned_u32_max",
+      "group": "scalar/unsigned",
+      "description": "UINT32_MAX — the largest unsigned a 32-bit (no-int64) build can encode.",
+      "offset": 0,
+      "fields": [
+        { "op": "unsigned", "id": 0, "value": 4294967295 }
+      ],
+      "serialized": { "length": 6, "hex": "00ffffffff0f" }
+    },
+    {
+      "name": "signed_i32_min",
+      "group": "scalar/signed",
+      "description": "INT32_MIN — the most-negative signed a 32-bit (no-int64) build can encode.",
+      "offset": 0,
+      "fields": [
+        { "op": "signed", "id": 0, "value": -2147483648 }
+      ],
+      "serialized": { "length": 6, "hex": "01ffffffff0f" }
+    },
+    {
+      "name": "signed_i32_max",
+      "group": "scalar/signed",
+      "description": "INT32_MAX — the largest signed a 32-bit (no-int64) build can encode.",
+      "offset": 0,
+      "fields": [
+        { "op": "signed", "id": 0, "value": 2147483647 }
+      ],
+      "serialized": { "length": 6, "hex": "01feffffff0f" }
+    },
+    {
+      "name": "id_max_32bit",
+      "group": "scalar/id",
+      "description": "Largest field id a 32-bit (no-int64) build can encode (UINT32_MAX >> 3).",
+      "offset": 0,
+      "fields": [
+        { "op": "unsigned", "id": 536870911, "value": 0 }
+      ],
+      "serialized": { "length": 6, "hex": "f8ffffff0f00" }
+    },
+    {
       "name": "boolean_true",
       "group": "scalar/boolean",
       "description": "Boolean true encoded as unsigned 1.",
