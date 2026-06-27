@@ -271,7 +271,23 @@ paths and shrinks the footprint (see [Footprint](#footprint)).
 | `SOFAB_DISABLE_ARRAY_SUPPORT` | off | Drop array fields (scalar arrays and fixed-length arrays) |
 | `SOFAB_DISABLE_SEQUENCE_SUPPORT` | off | Drop nested sequence framing |
 | `SOFAB_DISABLE_FP64_SUPPORT` | off | Drop 64-bit float (`fp64`) support; auto-defined where `double` is not 8 bytes |
+| `SOFAB_DISABLE_INT64_SUPPORT` | off | Narrow unsigned/signed scalar varint values from 64-bit to 32-bit (drops the `u64`/`i64` read and array helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | off | Skip overflow checks when decoding integers (smaller/faster, less safe) |
+
+> **`SOFAB_DISABLE_INT64_SUPPORT` — change only if you know what you are doing.**
+> It shrinks 64-bit varint math (smaller/faster on 32-bit MCUs) but has wire- and
+> API-level side effects:
+> - **Wire compatibility:** the format is width-agnostic, so messages whose values
+>   all fit in 32 bits stay byte-identical and interoperable. A value beyond 32-bit
+>   range from a 64-bit peer is **rejected** as a malformed message
+>   (`SOFAB_RET_E_INVALID_MSG`) — never silently truncated — so a 32-bit build
+>   safely refuses data it cannot represent.
+> - **ABI:** the value types appear in public signatures and context structs, so
+>   32-bit and 64-bit builds are **not** ABI-compatible — don't mix them.
+> - **Field ids:** `SOFAB_ID_MAX` shrinks to `UINT32_MAX >> 3`, since the field
+>   header is itself a varint of `(id << 3) | type`.
+> - **Conformance:** the shipped test vectors include 64-bit values and won't
+>   decode in this mode.
 
 The descriptor-driven object API is excluded with the CMake option
 `-DSOFAB_DISABLE_OBJECT_API=ON` (drops `object.c` entirely). Example minimal

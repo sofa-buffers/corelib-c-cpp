@@ -68,8 +68,16 @@ typedef enum
 
 /*! @brief Field identifier type */
 typedef uint32_t sofab_id_t;
-#define SOFAB_ID_MAX (INT32_MAX)
 
+/*! @brief Scalar varint value types.
+ *
+ * By default the unsigned/signed scalar values carried by varint fields are
+ * 64-bit. Defining @ref SOFAB_DISABLE_INT64_SUPPORT narrows them to 32-bit,
+ * which removes the 64-bit varint math (smaller/faster on 32-bit MCUs) at the
+ * cost of the 64-bit value range and wire compatibility for larger values —
+ * see the @c SOFAB_DISABLE_INT64_SUPPORT notes below before enabling it.
+ */
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
 /*! @brief Unsigned value type */
 typedef uint64_t sofab_unsigned_t;
 #define SOFAB_UNSIGNED_MAX (UINT64_MAX)
@@ -78,6 +86,25 @@ typedef uint64_t sofab_unsigned_t;
 typedef int64_t sofab_signed_t;
 #define SOFAB_SIGNED_MAX (INT64_MAX)
 #define SOFAB_SIGNED_MIN (INT64_MIN)
+
+/*! @brief Largest encodable field id (the (id<<3)|type header must fit in
+ *  @ref sofab_unsigned_t). */
+#define SOFAB_ID_MAX (INT32_MAX)
+#else
+/*! @brief Unsigned value type (32-bit; see SOFAB_DISABLE_INT64_SUPPORT) */
+typedef uint32_t sofab_unsigned_t;
+#define SOFAB_UNSIGNED_MAX (UINT32_MAX)
+
+/*! @brief Signed value type (32-bit; see SOFAB_DISABLE_INT64_SUPPORT) */
+typedef int32_t sofab_signed_t;
+#define SOFAB_SIGNED_MAX (INT32_MAX)
+#define SOFAB_SIGNED_MIN (INT32_MIN)
+
+/*! @brief Largest encodable field id. The (id<<3)|type header is itself a
+ *  varint accumulated in @ref sofab_unsigned_t, so with 32-bit values the id
+ *  is capped to what leaves room for the 3 type bits (UINT32_MAX >> 3). */
+#define SOFAB_ID_MAX (UINT32_MAX >> 3)
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
 
 /*! @brief Maximum fixed-length field size in bytes */
 #if SIZE_MAX == INT16_MAX
@@ -113,6 +140,27 @@ typedef int64_t sofab_signed_t;
 
 /*! @brief Disable integer overflow checks when reading integer values. */
 // #define SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
+
+/*!
+ * @brief Narrow unsigned/signed scalar varint values from 64-bit to 32-bit.
+ *
+ * Changes @ref sofab_unsigned_t / @ref sofab_signed_t to 32-bit and removes the
+ * 64-bit integer convenience API (read_u64/read_i64, write/read array_of_u64 and
+ * array_of_i64). Useful on 32-bit MCUs where 64-bit varint math is emulated.
+ *
+ * @warning Change only if you know what you are doing — side effects:
+ *  - @b Wire @b compatibility: the format itself is width-agnostic, so messages
+ *    whose every value fits in 32 bits stay byte-identical and interoperable.
+ *    A value beyond 32-bit range from a 64-bit peer is rejected as a malformed
+ *    message (@ref SOFAB_RET_E_INVALID_MSG) and never silently truncated.
+ *  - @b ABI: the value types appear in public signatures and context structs, so
+ *    32-bit and 64-bit builds are not ABI-compatible — do not mix them.
+ *  - @b Field @b ids: @ref SOFAB_ID_MAX shrinks to @c UINT32_MAX>>3, because the
+ *    field header is itself a varint of @c (id<<3)|type.
+ *  - @b Conformance: the shipped test vectors include 64-bit values and will not
+ *    decode in this mode.
+ */
+// #define SOFAB_DISABLE_INT64_SUPPORT
 
 /* object descriptor configuration ********************************************/
 /*!

@@ -110,7 +110,7 @@ typedef struct sofab_istream_decoder
  */
 struct sofab_istream
 {
-    uint64_t varint_value;                      /*!< Accumulated varint value under construction */
+    sofab_unsigned_t varint_value;              /*!< Accumulated varint value under construction */
     sofab_istream_decoder_t default_decoder;    /*!< Top-level decoder instance */
     uint32_t id;                                /*!< Current field ID being processed */
     uint32_t fixlen_remaining;                  /*!< Remaining bytes to read for a fixed-length field */
@@ -243,6 +243,7 @@ static inline void sofab_istream_read_u32 (sofab_istream_t *ctx, uint32_t *var)
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
 
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
 /*!
  * @brief Reads a 64-bit signed integer.
 *
@@ -266,6 +267,7 @@ static inline void sofab_istream_read_u64 (sofab_istream_t *ctx, uint64_t *var)
     sofab_istream_read_field(ctx, var, sizeof(uint64_t),
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
 }
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
 
 /*!
  * @brief Reads a boolean value (1 byte).
@@ -459,6 +461,7 @@ static inline void sofab_istream_read_array_of_u32 (
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 }
 
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
 /*!
  * @brief Reads an array of 64-bit signed integers.
  *
@@ -486,6 +489,7 @@ static inline void sofab_istream_read_array_of_u64 (
     sofab_istream_read_array(ctx, var, element_count, sizeof(uint64_t),
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
 }
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
