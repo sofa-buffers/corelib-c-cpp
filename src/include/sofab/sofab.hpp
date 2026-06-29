@@ -482,6 +482,10 @@ namespace sofab
     /*** IStream ***/
     /***************/
 
+    class IStreamMessage;
+    template <typename T>
+    concept InputMessage = std::derived_from<T, IStreamMessage>;
+
     class IStreamImpl
     {
     protected:
@@ -582,6 +586,14 @@ namespace sofab
                     // std::string doesn't need a null terminator, so we use read_noterm
                     sofab_istream_read_string_noterm(&ctx_, value.data(), value.size());
                 }
+                else if constexpr (InputMessage<T>)
+                {
+                    // descend into a nested sequence: bind this message's own
+                    // decoder + field callback to the active stream context, so
+                    // its child fields dispatch to value.deserialize(...). Mirrors
+                    // the C object API's sequence handling (object.c).
+                    value.readNested_(&ctx_, this);
+                }
                 else if constexpr (
                     requires {
                         typename T::value_type;
@@ -672,23 +684,22 @@ namespace sofab
         }
     };
 
-    class IStreamMessage;
-    template <typename T>
-    concept InputMessage = std::derived_from<T, IStreamMessage>;
-
     class IStreamMessage
     {
     private:
         sofab_istream_decoder_t decoder_;
 
+        friend class IStreamImpl;
         template <InputMessage MessageType>
         friend class IStreamObject;
 
         struct Context
         {
-            IStreamImpl &istream;
-            IStreamMessage &message;
+            IStreamImpl *istream;
+            IStreamMessage *message;
         };
+
+        Context context_{nullptr, nullptr};
 
         static void field_callback_(
             sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
@@ -696,7 +707,17 @@ namespace sofab
             (void)ctx;
 
             auto context = static_cast<Context*>(usrptr);
-            context->message.deserialize(context->istream, id, size, count);
+            context->message->deserialize(*context->istream, id, size, count);
+        }
+
+        // Wire this message up as a nested sequence decoded on the active stream:
+        // bind its own decoder + field callback so each child field is dispatched
+        // to this->deserialize(...). `ctx`/`istream` are passed in by IStreamImpl
+        // so all stream-internal access stays inside IStreamImpl::read().
+        void readNested_(sofab_istream_t *ctx, IStreamImpl *istream) noexcept
+        {
+            context_ = Context{istream, this};
+            sofab_istream_read_sequence(ctx, &decoder_, field_callback_, &context_);
         }
 
     public:
@@ -707,13 +728,12 @@ namespace sofab
     class IStreamObject : public IStreamImpl
     {
         MessageType data_;
-        IStreamMessage::Context context_;
 
     public:
         IStreamObject() noexcept
-            : context_{*this, data_}
         {
-            sofab_istream_init(&ctx_, MessageType::field_callback_, &context_);
+            data_.context_ = IStreamMessage::Context{this, &data_};
+            sofab_istream_init(&ctx_, MessageType::field_callback_, &data_.context_);
         }
 
         MessageType& operator->() noexcept
