@@ -261,61 +261,31 @@ decode sequences of variable-length elements.
 
 ### Memory handling
 
-This is the core of the design: **no heap is ever used**, and all state lives in
-caller-provided structs and buffers. The `sofab_ostream_t` / `sofab_istream_t`
-contexts hold only pointers and counters (which is why the [Footprint](#footprint)
-tables report `.data` and `.bss` of `0.0KB`).
+**No heap is ever used.** Every context, decoder, and buffer is caller-provided,
+which is why the [Footprint](#footprint) tables show `0.0KB` `.data`/`.bss`.
 
-**Encoder — caller owns the output buffer.**
+**Encoder — the caller owns the output buffer.** `sofab_ostream_init()` takes a
+writable buffer the stream never allocates, copies, or frees; it only advances a
+cursor. `offset` reserves room at the front for a lower-layer header. When the
+buffer fills (or on `sofab_ostream_flush()`) an optional flush callback drains it
+— with no callback, a full buffer returns an error instead of overflowing — and
+may call `sofab_ostream_buffer_set()` to swap in a fresh buffer mid-stream. In C++
+the buffer lives on the stack (`OStreamInline<N>`) or heap (`OStream`, via a
+`shared_ptr<uint8_t[]>` or flush callback).
 
-- `sofab_ostream_init(ctx, buffer, buflen, offset, flush, usrptr)` hands the stream
-  a writable buffer the *caller* owns; the stream never copies, allocates, or frees
-  it and only advances a cursor inside it. The buffer must stay valid until it is
-  replaced or the stream is torn down.
-- `offset` reserves space at the front of the buffer for a lower-layer protocol
-  header, so the framing layer can prepend its header without an extra copy.
-- When the buffer fills (or on an explicit `sofab_ostream_flush()`), the optional
-  **flush callback** drains the bytes to a socket/file/sink. With no callback set,
-  a full buffer makes the write return an error instead of overflowing.
-- The callback can call `sofab_ostream_buffer_set()` to hand the stream a fresh
-  buffer **mid-stream**, so a single message can exceed available RAM. C++ mirrors
-  this: `OStreamInline<N>` keeps the buffer inline on the stack, while heap-backed
-  `OStream` accepts a `shared_ptr<uint8_t[]>` or a flush callback.
+**Decoder — binding is deferred.** A `read_*()` call copies nothing; it only
+records where the value goes (pointer, length, type). The bytes are written into
+that destination by later `feed()` calls. Two rules follow:
 
-**Decoder — lazy/deferred binding into caller memory.**
-
-The C `istream` is **deferred**: a `read_*()` call does *not* copy anything. It
-only records the destination pointer, length, and field options in the context
-(`read_field` / `read_array` just store `target_ptr` / `target_len` / `target_opt`;
-`read_sequence` registers a child decoder). The actual bytes are **copied into the
-bound destination by later `feed()` calls** as they arrive — a scalar is written
-once its varint completes, and fixed-length/array/string payloads are streamed
-byte-by-byte straight into `target_ptr`.
-
-Two consequences follow directly, and they are the most important rules for using
-this library:
-
-1. **Destinations must be address-stable and must outlive decoding.** Because the
-   pointer you bind is filled on a *later* `feed()`, it cannot point into a stack
-   frame (or any storage) that goes away before the message is fully fed. This is
-   exactly why C++ `read(std::string&)` must **pre-size** the string (it binds
-   `data()` now) and why the `std::vector<std::string>` helper emplaces an element
-   and binds *that* heap-stable slot — it never reads into a temporary and moves.
-2. **Data is copied into your memory, not aliased** (this port is **not**
-   zero-copy; see [Is this implementation zero-copy?](#is-this-cc-implementation-zero-copy)).
-   Copying into caller-provided, correctly-typed storage is what makes the format
-   safe on every architecture regardless of alignment or endianness, and it keeps
-   sizes bounded by the buffers you supply: `read_string` caps the payload at
-   `maxlen-1` and a `read_blob` field must carry the BLOB tag; an oversized or
-   malformed field is rejected with `SOFAB_RET_E_INVALID_MSG` rather than
-   overrunning the destination. Fields you do not bind — and their nested
-   sub-sequences — are skipped without touching any memory.
-
-The decoder allocates nothing of its own: the `sofab_istream_t`, any nested
-`sofab_istream_decoder_t` structs, and every destination buffer are all provided
-by the caller and must outlive the `feed()` sequence. This ties into the
-[Footprint](#footprint) memory-requirement tables, whose zero `.data`/`.bss`
-figures reflect that no state is held outside those caller structures.
+1. **Destinations must be address-stable and outlive decoding** — the pointer you
+   bind is filled on a *later* `feed()`, so it cannot point at storage that
+   disappears first. Hence C++ `read(std::string&)` must be pre-sized, and the
+   `std::vector<std::string>` helper binds an emplaced, heap-stable slot.
+2. **Data is copied into your memory, not aliased** — this port is **not**
+   [zero-copy](#is-this-cc-implementation-zero-copy). Copying into typed storage
+   is what keeps it alignment/endianness-safe and bounds sizes to your buffers;
+   oversized or malformed fields are rejected with `SOFAB_RET_E_INVALID_MSG`, and
+   unbound fields (and their sub-sequences) are skipped untouched.
 
 ### Differences from the pure-C++20 port (`corelib-cpp`)
 
