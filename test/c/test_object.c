@@ -657,6 +657,110 @@ static void test_object_deserialize_invalid_field_type (void)
 
 //
 
+/*
+ * Regression test: omitting a sequence field must not shift the nested-descriptor
+ * index of the sequence fields that follow it.
+ *
+ * The encoder skips any field equal to its default (here: zero). For each SEQUENCE
+ * field it DOES emit, it must select that field's own nested descriptor. If a
+ * preceding sequence is skipped, a naive running counter would pick the wrong
+ * entry of nested_list for the next emitted sequence and corrupt the stream, while
+ * the decoder (which keys off the static field->nested_idx) disagrees and the
+ * round-trip fails.
+ *
+ * Layout: seq_a (nested_idx 0) is left zero and skipped; only seq_b (nested_idx 1)
+ * carries data. seq_a and seq_b have deliberately different field layouts so a
+ * wrong-descriptor encode is detectable. The round-trip must preserve seq_b.
+ */
+typedef struct
+{
+    uint32_t x;
+} regr_seq_a_t;
+
+static const sofab_object_descr_field_t _info_fields_regr_seq_a[] =
+{
+    SOFAB_OBJECT_FIELD(0, regr_seq_a_t, x, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+
+static const sofab_object_descr_t _info_regr_seq_a =
+    SOFAB_OBJECT_DESCR(_info_fields_regr_seq_a, 1, NULL, 0);
+
+typedef struct
+{
+    char s[16];
+    uint32_t y;
+} regr_seq_b_t;
+
+static const sofab_object_descr_field_t _info_fields_regr_seq_b[] =
+{
+    SOFAB_OBJECT_FIELD(0, regr_seq_b_t, s, SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(1, regr_seq_b_t, y, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+
+static const sofab_object_descr_t _info_regr_seq_b =
+    SOFAB_OBJECT_DESCR(_info_fields_regr_seq_b, 2, NULL, 0);
+
+typedef struct
+{
+    regr_seq_a_t a; /* sequence, omitted when zero */
+    regr_seq_b_t b; /* sequence, carries data */
+} regr_msg_t;
+
+static const sofab_object_descr_field_t _info_fields_regr_msg[] =
+{
+    SOFAB_OBJECT_FIELD_SEQUENCE(0, regr_msg_t, a, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(1, regr_msg_t, b, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 1),
+};
+
+static const sofab_object_descr_t *const _info_nested_regr_msg[] =
+{
+    &_info_regr_seq_a,
+    &_info_regr_seq_b,
+};
+
+static const sofab_object_descr_t _info_regr_msg =
+    SOFAB_OBJECT_DESCR(_info_fields_regr_msg, 2, _info_nested_regr_msg, 2);
+
+typedef struct
+{
+    sofab_istream_t ctx;
+    sofab_object_decoder_t decoder[2];
+} regr_msg_decoder_t;
+
+static void test_object_roundtrip_skipped_sequence_before_sequence (void)
+{
+    regr_msg_t in;
+    memset(&in, 0, sizeof(in));
+    /* leave `a` zero so the encoder omits it; only `b` carries data */
+    strncpy(in.b.s, "hello", sizeof(in.b.s));
+    in.b.y = 0xABCD;
+
+    sofab_ostream_t octx;
+    uint8_t buffer[128];
+    sofab_ostream_init(&octx, buffer, sizeof(buffer), 0, NULL, NULL);
+    sofab_ret_t enc = sofab_object_encode(&octx, &_info_regr_msg, &in);
+    size_t used = sofab_ostream_flush(&octx);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, enc, "encode failed");
+
+    regr_msg_t out;
+    memset(&out, 0x55, sizeof(out));
+    sofab_object_init(&_info_regr_msg, &out);
+
+    regr_msg_decoder_t dec;
+    memset(&dec, 0, sizeof(dec));
+    dec.decoder[0].info = &_info_regr_msg;
+    dec.decoder[0].dst = (uint8_t *)&out;
+    dec.decoder[0].depth = sizeof(dec.decoder) / sizeof(dec.decoder[0]) - 1;
+    sofab_istream_init(&dec.ctx, sofab_object_field_cb, (void *)&dec.decoder[0]);
+
+    sofab_ret_t r = sofab_istream_feed(&dec.ctx, buffer, used);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, r, "decode of omitted-sequence-before-sequence failed");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("hello", out.b.s, "seq_b.s not preserved");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0xABCD, out.b.y, "seq_b.y not preserved");
+}
+
+//
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
@@ -670,6 +774,8 @@ int test_object_main (void)
 
     RUN_TEST(test_object_deserialize_invalid_nested_depth);
     RUN_TEST(test_object_deserialize_invalid_field_type);
+
+    RUN_TEST(test_object_roundtrip_skipped_sequence_before_sequence);
 
     return UNITY_END();
 }

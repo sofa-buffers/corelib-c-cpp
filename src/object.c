@@ -79,10 +79,6 @@ extern sofab_ret_t sofab_object_encode (
     const void *src)
 {
     sofab_ret_t ret = SOFAB_RET_OK;
-#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-    size_t nested_idx = 0;
-#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
-
     assert(ctx != NULL);
     assert(info != NULL);
     assert(src != NULL);
@@ -214,7 +210,7 @@ extern sofab_ret_t sofab_object_encode (
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
                 ret = sofab_ostream_write_sequence_begin(ctx, field->id);
                 ret |= sofab_object_encode(ctx,
-                    info->nested_list[nested_idx++],
+                    info->nested_list[field->nested_idx],
                     CAST_TO(const uint8_t *, src, field->offset));
                 ret |= sofab_ostream_write_sequence_end(ctx);
                 break;
