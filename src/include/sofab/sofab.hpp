@@ -26,6 +26,48 @@
 #include "sofab/istream.h"
 #include "sofab/ostream.h"
 
+/* feature-flag consistency with the C core ***********************************/
+/*
+ * The C core can be built with capabilities removed via its SOFAB_DISABLE_*
+ * switches. Because this wrapper is header-only and calls the C API directly,
+ * it must honour the same switches or it would emit calls to functions the core
+ * no longer declares (an opaque "sofab_... was not declared" error). The
+ * capabilities split into two groups:
+ *
+ *   Type-dispatch capabilities (FP64, INT64, ARRAY) are reachable only through
+ *   the templated write()/read() via `if constexpr`. When one is disabled the
+ *   matching branch turns into a clear static_assert, so code that never uses
+ *   that type still compiles, while code that does gets a readable diagnostic.
+ *
+ *   Structural capabilities (FIXLEN, SEQUENCE) underpin concrete methods and
+ *   the whole nested-message API (strings, blobs, floats, sequences, message
+ *   objects) — i.e. most of the C++ surface. The wrapper cannot offer a
+ *   coherent object API without them, so building the C++ layer with either
+ *   disabled is rejected outright; use the C API directly for such configs.
+ */
+#if defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+#  error "sofab C++ wrapper requires FIXLEN support (strings, blobs, floats). Do not define SOFAB_DISABLE_FIXLEN_SUPPORT when building the C++ API; use the C API directly for fixlen-less builds."
+#endif
+#if defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+#  error "sofab C++ wrapper requires SEQUENCE support (nested messages, variable-length array reads). Do not define SOFAB_DISABLE_SEQUENCE_SUPPORT when building the C++ API; use the C API directly for sequence-less builds."
+#endif
+
+#if defined(SOFAB_DISABLE_FP64_SUPPORT)
+#  define SOFAB_CPP_HAVE_FP64 0
+#else
+#  define SOFAB_CPP_HAVE_FP64 1
+#endif
+#if defined(SOFAB_DISABLE_INT64_SUPPORT)
+#  define SOFAB_CPP_HAVE_INT64 0
+#else
+#  define SOFAB_CPP_HAVE_INT64 1
+#endif
+#if defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+#  define SOFAB_CPP_HAVE_ARRAY 0
+#else
+#  define SOFAB_CPP_HAVE_ARRAY 1
+#endif
+
 /* types **********************************************************************/
 namespace sofab
 {
@@ -230,6 +272,11 @@ namespace sofab
 
             if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
             {
+#if !SOFAB_CPP_HAVE_INT64
+                static_assert(sizeof(T) <= 4,
+                    "64-bit integer fields require INT64 support, disabled via "
+                    "SOFAB_DISABLE_INT64_SUPPORT");
+#endif
                 if constexpr (std::is_unsigned_v<T>)
                 {
                     ret = sofab_ostream_write_unsigned(
@@ -251,7 +298,13 @@ namespace sofab
             }
             else if constexpr (std::is_same_v<T, double>)
             {
+#if SOFAB_CPP_HAVE_FP64
                 ret = sofab_ostream_write_fp64(&ctx_, id, value);
+#else
+                static_assert(always_false_v<T>,
+                    "double (FP64) fields require FP64 support, disabled via "
+                    "SOFAB_DISABLE_FP64_SUPPORT");
+#endif
             }
             else if constexpr (std::is_convertible_v<T, std::string_view>)
             {
@@ -276,11 +329,17 @@ namespace sofab
                     std::span{ std::declval<const T&>() };
                 })
             {
+#if SOFAB_CPP_HAVE_ARRAY
                 using Elem = typename T::value_type;
                 std::span<const Elem> span{value};
 
                 if constexpr (std::is_integral_v<Elem> && !std::is_same_v<Elem, bool>)
                 {
+#if !SOFAB_CPP_HAVE_INT64
+                    static_assert(sizeof(Elem) <= 4,
+                        "64-bit integer arrays require INT64 support, disabled "
+                        "via SOFAB_DISABLE_INT64_SUPPORT");
+#endif
                     if constexpr (std::is_unsigned_v<Elem>)
                     {
                         ret = sofab_ostream_write_array_of_unsigned(
@@ -307,16 +366,27 @@ namespace sofab
                 }
                 else if constexpr (std::is_same_v<Elem, double>)
                 {
+#if SOFAB_CPP_HAVE_FP64
                     ret = sofab_ostream_write_array_of_fp64(
                         &ctx_, id,
                         span.data(),
                         static_cast<int32_t>(span.size()));
+#else
+                    static_assert(always_false_v<T>,
+                        "double (FP64) arrays require FP64 support, disabled "
+                        "via SOFAB_DISABLE_FP64_SUPPORT");
+#endif
                 }
                 else
                 {
                     static_assert(always_false_v<T>,
                         "Unsupported span element type in OStream::write()");
                 }
+#else
+                static_assert(always_false_v<T>,
+                    "array/span fields require ARRAY support, disabled via "
+                    "SOFAB_DISABLE_ARRAY_SUPPORT");
+#endif
             }
             else
             {
@@ -571,6 +641,11 @@ namespace sofab
             {
                 if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
                 {
+#if !SOFAB_CPP_HAVE_INT64
+                    static_assert(sizeof(T) <= 4,
+                        "64-bit integer fields require INT64 support, disabled "
+                        "via SOFAB_DISABLE_INT64_SUPPORT");
+#endif
                     if constexpr (std::is_unsigned_v<T>)
                     {
                         sofab_istream_read_field(
@@ -594,7 +669,13 @@ namespace sofab
                 }
                 else if constexpr (std::is_same_v<T, double>)
                 {
+#if SOFAB_CPP_HAVE_FP64
                     sofab_istream_read_fp64(&ctx_, &value);
+#else
+                    static_assert(always_false_v<T>,
+                        "double (FP64) fields require FP64 support, disabled "
+                        "via SOFAB_DISABLE_FP64_SUPPORT");
+#endif
                 }
                 else if constexpr (std::is_same_v<T, std::string>)
                 {
@@ -616,11 +697,17 @@ namespace sofab
                     } &&
                     !std::is_const_v<typename T::value_type>)
                 {
+#if SOFAB_CPP_HAVE_ARRAY
                     using Elem = typename T::value_type;
                     std::span<Elem> span{value};
 
                     if constexpr (std::is_integral_v<Elem> && !std::is_same_v<Elem, bool>)
                     {
+#if !SOFAB_CPP_HAVE_INT64
+                        static_assert(sizeof(Elem) <= 4,
+                            "64-bit integer arrays require INT64 support, "
+                            "disabled via SOFAB_DISABLE_INT64_SUPPORT");
+#endif
                         if constexpr (std::is_unsigned_v<Elem>)
                         {
                             sofab_istream_read_array(
@@ -649,16 +736,27 @@ namespace sofab
                     }
                     else if constexpr (std::is_same_v<Elem, double>)
                     {
+#if SOFAB_CPP_HAVE_FP64
                         sofab_istream_read_array_of_fp64(
                             &ctx_,
                             span.data(),
                             static_cast<int32_t>(span.size()));
+#else
+                        static_assert(always_false_v<T>,
+                            "double (FP64) arrays require FP64 support, "
+                            "disabled via SOFAB_DISABLE_FP64_SUPPORT");
+#endif
                     }
                     else
                     {
                         static_assert(always_false_v<T>,
                             "Unsupported span element type in IStream::read()");
                     }
+#else
+                    static_assert(always_false_v<T>,
+                        "array/span fields require ARRAY support, disabled via "
+                        "SOFAB_DISABLE_ARRAY_SUPPORT");
+#endif
                 }
                 else
                 {

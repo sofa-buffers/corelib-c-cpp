@@ -1,0 +1,143 @@
+name: C++ Feature-Flag Matrix (wrapper smoke)
+
+# The C feature matrix (build-feature-matrix.yaml) builds SOFAB_ENABLE_CPP=OFF
+# and only exercises the C core. This workflow closes that gap for the C++
+# wrapper (sofab.hpp): the wrapper calls flag-gated C functions, so a disabled
+# capability must be reflected in the wrapper too, or it would emit calls to
+# functions the core no longer declares.
+#
+# The wrapper splits capabilities into two kinds (see sofab.hpp):
+#   - Type-dispatch (FP64, INT64, ARRAY): degrade gracefully — using the type
+#     yields a static_assert, but the header still compiles and the smoke (which
+#     avoids those types) builds and round-trips. These are the "graceful" jobs.
+#   - Structural (FIXLEN, SEQUENCE): the wrapper rejects the build with a #error,
+#     because strings/blobs/floats and the nested-message API underpin it. These
+#     are the "rejected" jobs, which assert the #error fires.
+#
+# The full Catch2 unit tests stay max-only (build-gcc-x86_64 / build-clang-x86_64);
+# they use every type and cannot compile in reduced configs by design.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # --- configs the wrapper supports gracefully: build + run the smoke ---
+  graceful:
+    runs-on: ubuntu-latest
+    name: ${{ matrix.arch }} / ${{ matrix.config.name }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, powerpc-be]
+        config:
+          - { name: max,         flags: "" }
+          - { name: no-fp64,     flags: "-DSOFAB_DISABLE_FP64_SUPPORT" }
+          - { name: no-int64,    flags: "-DSOFAB_DISABLE_INT64_SUPPORT" }
+          - { name: no-array,    flags: "-DSOFAB_DISABLE_ARRAY_SUPPORT" }
+          - { name: no-overflow, flags: "-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" }
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (x86_64)
+        if: matrix.arch == 'x86_64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Install dependencies (PowerPC big-endian + qemu)
+        if: matrix.arch == 'powerpc-be'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-powerpc-linux-gnu cmake make qemu-user-static
+
+      - name: Configure (x86_64, ${{ matrix.config.name }})
+        if: matrix.arch == 'x86_64'
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_CPP=OFF \
+            -DSOFAB_ENABLE_BENCH=OFF \
+            -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}"
+
+      - name: Configure (PowerPC big-endian, ${{ matrix.config.name }})
+        if: matrix.arch == 'powerpc-be'
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=powerpc \
+            -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=powerpc-linux-gnu-g++ \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSOFAB_ENABLE_CPP=OFF \
+            -DSOFAB_ENABLE_BENCH=OFF \
+            -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-static" \
+            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}"
+
+      - name: Build C++ smoke (${{ matrix.config.name }})
+        run: cmake --build build --target sofab_cpp_smoke
+
+      - name: Run C++ smoke (x86_64, ${{ matrix.config.name }})
+        if: matrix.arch == 'x86_64'
+        run: ./build/test/cpp-smoke/sofab_cpp_smoke
+
+      - name: Run C++ smoke (PowerPC big-endian via qemu, ${{ matrix.config.name }})
+        if: matrix.arch == 'powerpc-be'
+        run: qemu-ppc-static ./build/test/cpp-smoke/sofab_cpp_smoke
+
+  # --- configs the wrapper rejects: assert the #error fires at compile time ---
+  rejected:
+    runs-on: ubuntu-latest
+    name: rejects / ${{ matrix.config.name }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { name: no-fixlen,   flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT",   expect: "requires FIXLEN support" }
+          - { name: no-sequence, flags: "-DSOFAB_DISABLE_SEQUENCE_SUPPORT", expect: "requires SEQUENCE support" }
+          - { name: minimal,     flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK", expect: "requires FIXLEN support" }
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Configure (${{ matrix.config.name }})
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_CPP=OFF \
+            -DSOFAB_ENABLE_BENCH=OFF \
+            -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}"
+
+      - name: Assert C++ build is rejected with a clear #error (${{ matrix.config.name }})
+        run: |
+          set +e
+          out=$(cmake --build build --target sofab_cpp_smoke 2>&1)
+          status=$?
+          echo "$out"
+          if [ $status -eq 0 ]; then
+            echo "::error::Expected the C++ wrapper build to fail for ${{ matrix.config.name }}, but it succeeded."
+            exit 1
+          fi
+          if ! echo "$out" | grep -qF "${{ matrix.config.expect }}"; then
+            echo "::error::Build failed for ${{ matrix.config.name }}, but not with the expected #error (\"${{ matrix.config.expect }}\")."
+            exit 1
+          fi
+          echo "OK: build rejected with the expected #error."
