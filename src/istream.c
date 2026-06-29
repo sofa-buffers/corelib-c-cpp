@@ -49,14 +49,30 @@ typedef enum
 
 /* functions ******************************************************************/
 
-/* ZigZag decode (unsigned -> signed) */
+/*!
+ * @brief ZigZag-decode an unsigned value back to signed.
+ *
+ * Inverse of the encoder's ZigZag transform.
+ *
+ * @param u  ZigZag-encoded unsigned value.
+ * @return The decoded signed value.
+ */
 static sofab_signed_t _zigzag_decode (sofab_unsigned_t u)
 {
     return (sofab_signed_t)((u >> 1) ^ (-(sofab_signed_t)(u & 1)));
 }
 
-/* Read unsigned varlen integer value.
- * Returns 0 on success, -1 need more data, -2 on overflow.
+/*!
+ * @brief Feed one byte into the in-progress varint accumulator.
+ *
+ * Accumulates 7-bit groups across calls; rejects values too wide for
+ * @ref sofab_unsigned_t (checked at the type boundary to avoid dropping bits).
+ *
+ * @param ctx        Input stream context (holds the accumulator state).
+ * @param byte       Next varint byte.
+ * @param out_value  Receives the decoded value when the varint completes.
+ * @return 0 when a value completed (stored in @p out_value), -1 if more bytes
+ *         are needed, -2 on overflow (value wider than the value type).
  */
 static int _varint_decode (sofab_istream_t *ctx, uint8_t byte, sofab_unsigned_t *out_value)
 {
@@ -95,6 +111,13 @@ static int _varint_decode (sofab_istream_t *ctx, uint8_t byte, sofab_unsigned_t 
 }
 
 #if !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK)
+/*!
+ * @brief Test whether an unsigned value fits in @p n bits.
+ *
+ * @param x  Value to check.
+ * @param n  Target width in bits.
+ * @return 1 if @p x fits in @p n bits, 0 otherwise.
+ */
 static int _fits_unsigned_n (sofab_unsigned_t x, int n)
 {
     const int bits = sizeof(sofab_unsigned_t) * 8;
@@ -105,6 +128,13 @@ static int _fits_unsigned_n (sofab_unsigned_t x, int n)
     return (x >> n) == 0;
 }
 
+/*!
+ * @brief Test whether a signed value fits in @p n bits (two's complement).
+ *
+ * @param x  Value to check.
+ * @param n  Target width in bits.
+ * @return 1 if @p x fits in @p n bits, 0 otherwise.
+ */
 static int _fits_signed_n (sofab_signed_t x, int n)
 {
     const int bits = sizeof(sofab_signed_t) * 8;
@@ -113,6 +143,15 @@ static int _fits_signed_n (sofab_signed_t x, int n)
 }
 #endif /* !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK) */
 
+/*!
+ * @brief Split a 3-bit type tag off a decoded header word.
+ *
+ * Reads the low 3 bits as the type and shifts @p value right by 3 in place,
+ * leaving the remaining id/length.
+ *
+ * @param value  In/out: header word; on return holds the value without the type bits.
+ * @return The extracted 3-bit type tag.
+ */
 static uint8_t _type_decode (sofab_unsigned_t *value)
 {
     uint8_t type = (uint8_t)(*value & 0x07);
@@ -122,8 +161,12 @@ static uint8_t _type_decode (sofab_unsigned_t *value)
 }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
-/* Read fixed-length data from the stream.
- * Returns 0 on success, >0 need more data.
+/*!
+ * @brief Consume one byte of a fixed-length field, storing it if a target is bound.
+ *
+ * @param ctx   Input stream context.
+ * @param byte  Next payload byte.
+ * @return Number of payload bytes still remaining (0 when the field is complete).
  */
 static size_t _read_fixlen (sofab_istream_t *ctx, uint8_t byte)
 {
@@ -142,6 +185,16 @@ static size_t _read_fixlen (sofab_istream_t *ctx, uint8_t byte)
 }
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+/*!
+ * @brief Consume one byte of a fixed-length field, storing it in reversed order.
+ *
+ * Big-endian counterpart of @ref _read_fixlen for little-endian float payloads;
+ * advances the target pointer once the field completes.
+ *
+ * @param ctx   Input stream context.
+ * @param byte  Next payload byte.
+ * @return Number of payload bytes still remaining (0 when the field is complete).
+ */
 static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
 {
     // if interested in field ...
@@ -167,6 +220,17 @@ static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
 #endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
+/*!
+ * @brief Invoke the active decoder's field callback for the current field.
+ *
+ * Skips the callback while inside an ignored sequence. After the callback runs,
+ * verifies that the field/fixlen type bound by any read matches the actual
+ * field on the wire.
+ *
+ * @param ctx  Input stream context.
+ * @return SOFAB_RET_OK on success, or SOFAB_RET_E_USAGE if the bound read type
+ *         does not match the decoded field type.
+ */
 static sofab_ret_t _call_field_callback (
     sofab_istream_t *ctx)
 {

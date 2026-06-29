@@ -52,16 +52,22 @@
 #  error "sofab C++ wrapper requires SEQUENCE support (nested messages, variable-length array reads). Do not define SOFAB_DISABLE_SEQUENCE_SUPPORT when building the C++ API; use the C API directly for sequence-less builds."
 #endif
 
+/*! @brief 1 if the wrapper exposes 64-bit float (double) fields, else 0
+ *  (mirrors @c SOFAB_DISABLE_FP64_SUPPORT in the C core). */
 #if defined(SOFAB_DISABLE_FP64_SUPPORT)
 #  define SOFAB_CPP_HAVE_FP64 0
 #else
 #  define SOFAB_CPP_HAVE_FP64 1
 #endif
+/*! @brief 1 if the wrapper exposes 64-bit integer fields, else 0
+ *  (mirrors @c SOFAB_DISABLE_INT64_SUPPORT in the C core). */
 #if defined(SOFAB_DISABLE_INT64_SUPPORT)
 #  define SOFAB_CPP_HAVE_INT64 0
 #else
 #  define SOFAB_CPP_HAVE_INT64 1
 #endif
+/*! @brief 1 if the wrapper exposes array/span fields, else 0
+ *  (mirrors @c SOFAB_DISABLE_ARRAY_SUPPORT in the C core). */
 #if defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 #  define SOFAB_CPP_HAVE_ARRAY 0
 #else
@@ -71,21 +77,26 @@
 /* types **********************************************************************/
 namespace sofab
 {
+    /*! @brief SofaBuffers C++ API version (mirrors @ref SOFAB_API_VERSION). */
     inline constexpr int API_VERSION = 1;
 
+    /*! @brief Always-false trait used to trigger a dependent static_assert in a
+     *  discarded @c if @c constexpr branch (so it only fires when instantiated). */
     template <typename>
     inline constexpr bool always_false_v = false;
 
+    /*! @brief Result/error code returned by the stream APIs (wraps @ref sofab_ret_t). */
     enum class Error
     {
-        None = SOFAB_RET_OK,
-        UsageError = SOFAB_RET_E_USAGE,
-        BufferFull = SOFAB_RET_E_BUFFER_FULL,
-        InvalidArgument = SOFAB_RET_E_ARGUMENT,
-        InvalidMessage = SOFAB_RET_E_INVALID_MSG
+        None = SOFAB_RET_OK,                    //!< Success.
+        UsageError = SOFAB_RET_E_USAGE,         //!< Invalid usage (e.g. type mismatch on read).
+        BufferFull = SOFAB_RET_E_BUFFER_FULL,   //!< Output buffer overflowed during encoding.
+        InvalidArgument = SOFAB_RET_E_ARGUMENT, //!< Invalid argument (e.g. field id out of range).
+        InvalidMessage = SOFAB_RET_E_INVALID_MSG//!< Malformed message encountered while decoding.
     };
 
 
+    /*! @brief Field identifier type (alias of @ref sofab_id_t). */
     using id = sofab_id_t;
 
     /***************/
@@ -93,16 +104,28 @@ namespace sofab
     /***************/
 
     class OStreamMessage;
+
+    /*!
+     * @brief Base output stream: encodes fields into a caller-provided buffer.
+     *
+     * Thin C++ facade over @ref sofab_ostream_t. The @c write() overloads deduce
+     * the wire encoding from the C++ type, and each returns a @ref Result that
+     * can be chained fluently. Concrete buffer ownership is added by the derived
+     * @ref OStream / @ref OStreamInline classes; this base is not constructed
+     * directly.
+     */
     class OStreamImpl
     {
     public:
+        /*! @brief Callback invoked with the bytes to flush (buffer full or on flush()). */
         using flushCallback = std::function<void(std::span<const uint8_t>)>;
 
     protected:
-        sofab_ostream_t ctx_;
-        uint8_t *buffer_;
-        flushCallback flushCallback_;
+        sofab_ostream_t ctx_;           //!< Underlying C output stream context.
+        uint8_t *buffer_;               //!< Pointer to the active encode buffer.
+        flushCallback flushCallback_;   //!< Optional user flush callback.
 
+        /*! @brief Invoke the user flush callback (if any) with @p len buffered bytes. */
         void onFlushCallback(size_t len) noexcept
         {
             if (flushCallback_)
@@ -111,6 +134,7 @@ namespace sofab
             }
         }
 
+        /*! @brief C-ABI flush trampoline: forwards to onFlushCallback() via @p usrptr. */
         static void static_flush_callback(
             sofab_ostream_t *ctx,
             const uint8_t *data,
@@ -127,6 +151,14 @@ namespace sofab
         OStreamImpl() noexcept = default;
 
     public:
+        /*!
+         * @brief Outcome of an encode operation, supporting fluent chaining.
+         *
+         * Returned by every @ref OStreamImpl write/sequence call. The first
+         * error is sticky: once set, subsequent chained calls become no-ops and
+         * the original error is preserved, so a chain can be checked once at the
+         * end. Convertible to @c bool (true on success).
+         */
         class Result
         {
         private:
@@ -145,6 +177,12 @@ namespace sofab
             }
 
         public:
+            /*!
+             * @brief Chained write of a field (no-op if a prior call failed).
+             * @param id     Field identifier.
+             * @param value  Value to encode; the wire type is deduced from @p T.
+             * @return This Result, carrying the first error encountered (if any).
+             */
             template <typename T>
             Result write(sofab_id_t id, const T &value) noexcept
             {
@@ -162,6 +200,13 @@ namespace sofab
                 return *this;
             }
 
+            /*!
+             * @brief Chained conditional write (no-op if a prior call failed).
+             * @param id         Field identifier.
+             * @param value      Value to encode; the wire type is deduced from @p T.
+             * @param condition  Write the field only when true.
+             * @return This Result, carrying the first error encountered (if any).
+             */
             template <typename T>
             Result writeIf(sofab_id_t id, const T &value, bool condition) noexcept
             {
@@ -179,6 +224,11 @@ namespace sofab
                 return *this;
             }
 
+            /*!
+             * @brief Chained sequence-begin marker (no-op if a prior call failed).
+             * @param id  Field identifier of the nested sequence.
+             * @return This Result, carrying the first error encountered (if any).
+             */
             Result sequenceBegin(sofab_id_t id) noexcept
             {
                 if (error_ != Error::None)
@@ -195,6 +245,10 @@ namespace sofab
                 return *this;
             }
 
+            /*!
+             * @brief Chained sequence-end marker (no-op if a prior call failed).
+             * @return This Result, carrying the first error encountered (if any).
+             */
             Result sequenceEnd() noexcept
             {
                 if (error_ != Error::None)
@@ -211,60 +265,93 @@ namespace sofab
                 return *this;
             }
 
+            /*! @brief True if no error occurred (same as ok()). */
             explicit operator bool() const noexcept
             {
                 return ok();
             }
 
+            /*! @brief Compare the held error code to @p e. */
             bool operator==(Error e) const noexcept
             {
                 return error_ == e;
             }
 
+            /*! @brief Negated operator==(). */
             bool operator!=(Error e) const noexcept
             {
                 return !(*this == e);
             }
 
+            /*! @brief True if the operation (and the chain so far) succeeded. */
             bool ok() const noexcept
             {
                 return error_ == Error::None;
             }
 
+            /*! @brief The first @ref Error encountered in the chain. */
             Error code() const noexcept
             {
                 return error_;
             }
         };
 
-        // disable copying due to pointers in ctx_
+        /*! @brief Copy construction is deleted (the context owns raw buffer pointers). */
         OStreamImpl(const OStreamImpl&) = delete;
+        /*! @brief Copy assignment is deleted (the context owns raw buffer pointers). */
         OStreamImpl& operator=(const OStreamImpl&) = delete;
 
-        // allow moving
+        /*! @brief Move construction (transfers the underlying context). */
         OStreamImpl(OStreamImpl&&) noexcept = default;
+        /*! @brief Move assignment (transfers the underlying context). */
         OStreamImpl& operator=(OStreamImpl&&) noexcept = default;
 
+        /*! @brief Destructor; flushes any buffered bytes. */
         virtual ~OStreamImpl() noexcept
         {
             flush();
         }
 
+        /*!
+         * @brief Flush buffered bytes through the flush callback (if any).
+         * @return Number of bytes flushed.
+         */
         size_t flush() noexcept
         {
             return sofab_ostream_flush(&ctx_);
         }
 
+        /*!
+         * @brief Number of bytes written to the active buffer since the last flush.
+         * @return Bytes currently used in the buffer.
+         */
         size_t bytesUsed() noexcept
         {
             return sofab_ostream_bytes_used(&ctx_);
         }
 
+        /*!
+         * @brief Pointer to the start of the active encode buffer.
+         * @return Read-only pointer to the buffer (valid for @ref bytesUsed bytes).
+         */
         const uint8_t* data() const noexcept
         {
             return buffer_;
         }
 
+        /*!
+         * @brief Encode a single field, deducing the wire type from @p T.
+         *
+         * Supports integers, @c bool, @c float, @c double, string-like types
+         * (@c std::string / @c std::string_view / C strings), contiguous ranges
+         * (arrays/vectors/spans), and nested @ref OStreamMessage objects. Using
+         * a type whose capability was compiled out of the C core is a
+         * compile-time error (see the @c SOFAB_DISABLE_* notes at the top).
+         *
+         * @param id     Field identifier.
+         * @param value  Value to encode.
+         * @return @ref Result for fluent chaining and error inspection.
+         */
         template <typename T>
         Result write(sofab_id_t id, const T &value) noexcept
         {
@@ -397,11 +484,25 @@ namespace sofab
             return result(ret);
         }
 
+        /*!
+         * @brief Encode a raw binary blob field.
+         * @param id     Field identifier.
+         * @param value  Pointer to the bytes to write.
+         * @param size   Number of bytes at @p value.
+         * @return @ref Result for fluent chaining and error inspection.
+         */
         Result write(sofab_id_t id, const void *value, int32_t size) noexcept
         {
             return result(sofab_ostream_write_blob(&ctx_, id, value, size));
         }
 
+        /*!
+         * @brief Encode a field only when @p condition is true.
+         * @param id         Field identifier.
+         * @param value      Value to encode; the wire type is deduced from @p T.
+         * @param condition  Write the field only when true; otherwise a success no-op.
+         * @return @ref Result for fluent chaining and error inspection.
+         */
         template <typename T>
         Result writeIf(sofab_id_t id, const T &value, bool condition) noexcept
         {
@@ -413,31 +514,53 @@ namespace sofab
             return result(SOFAB_RET_OK);
         }
 
+        /*!
+         * @brief Open a nested sequence; subsequent writes use a fresh id scope
+         *        until the matching @ref sequenceEnd.
+         * @param id  Field identifier of the sequence.
+         * @return @ref Result for fluent chaining and error inspection.
+         */
         Result sequenceBegin(sofab_id_t id) noexcept
         {
             return result(sofab_ostream_write_sequence_begin(&ctx_, id));
         }
 
+        /*!
+         * @brief Close the most recently opened nested sequence.
+         * @return @ref Result for fluent chaining and error inspection.
+         */
         Result sequenceEnd() noexcept
         {
             return result(sofab_ostream_write_sequence_end(&ctx_));
         }
 
     private:
+        /*! @brief Wrap a C return code in a @ref Result bound to this stream. */
         inline Result result(sofab_ret_t ret) noexcept
         {
             return Result{*this, ret};
         }
     };
 
+    /*!
+     * @brief Output stream backed by a heap buffer (@c std::shared_ptr).
+     *
+     * Owns (or shares) a dynamically allocated buffer. With a flush callback the
+     * buffer can be swapped mid-encoding via @ref setBuffer to stream in chunks.
+     */
     class OStream : public OStreamImpl
     {
     protected:
-        std::shared_ptr<uint8_t[]> bufferOwner_;
+        std::shared_ptr<uint8_t[]> bufferOwner_;    //!< Shared owner of the encode buffer.
 
         OStream() noexcept = default;
 
     public:
+        /*!
+         * @brief Construct with a freshly allocated buffer.
+         * @param buflen  Buffer size in bytes.
+         * @param offset  Initial write offset within the buffer (default 0).
+         */
         OStream(size_t buflen, size_t offset = 0) noexcept
         {
             bufferOwner_ = std::make_shared<uint8_t[]>(buflen);
@@ -445,6 +568,12 @@ namespace sofab
             sofab_ostream_init(&ctx_, buffer_, buflen, offset, nullptr, nullptr);
         }
 
+        /*!
+         * @brief Construct over a caller-provided shared buffer.
+         * @param buffer  Shared buffer to encode into.
+         * @param buflen  Usable size of @p buffer in bytes.
+         * @param offset  Initial write offset within the buffer (default 0).
+         */
         OStream(
             std::shared_ptr<uint8_t[]> buffer, size_t buflen,
             size_t offset = 0) noexcept
@@ -454,6 +583,13 @@ namespace sofab
             sofab_ostream_init(&ctx_, buffer_, buflen, offset, nullptr, nullptr);
         }
 
+        /*!
+         * @brief Construct with a flush callback for chunked streaming.
+         * @param callback  Invoked with buffered bytes when the buffer fills or on flush().
+         * @param buffer    Shared buffer to encode into.
+         * @param buflen    Usable size of @p buffer in bytes.
+         * @param offset    Initial write offset within the buffer (default 0).
+         */
         OStream(
             flushCallback callback,
             std::shared_ptr<uint8_t[]> buffer, size_t buflen,
@@ -465,6 +601,12 @@ namespace sofab
             sofab_ostream_init(&ctx_, buffer_, buflen, offset, static_flush_callback, this);
         }
 
+        /*!
+         * @brief Replace the active buffer (typically from within a flush callback).
+         * @param buffer  New shared buffer to continue encoding into.
+         * @param buflen  Usable size of @p buffer in bytes.
+         * @param offset  Initial write offset within the new buffer (default 0).
+         */
         void setBuffer(
             std::shared_ptr<uint8_t[]> buffer, size_t buflen,
             size_t offset = 0) noexcept
@@ -474,26 +616,44 @@ namespace sofab
             sofab_ostream_buffer_set(&ctx_, buffer_, buflen, offset);
         }
 
+        /*!
+         * @brief Access the currently owned buffer.
+         * @return Shared pointer to the active buffer.
+         */
         std::shared_ptr<uint8_t[]> getBuffer() noexcept
         {
             return bufferOwner_;
         }
     };
 
+    /*!
+     * @brief Output stream backed by an inline, fixed-size buffer.
+     *
+     * Stores the @c N-byte buffer inside the object (no heap allocation), making
+     * it well suited to embedded use.
+     *
+     * @tparam N       Total buffer size in bytes (must be > 0).
+     * @tparam Offset  Initial write offset within the buffer (must be < @c N).
+     */
     template <size_t N, size_t Offset = 0>
     class OStreamInline : public OStreamImpl
     {
         static_assert(N > 0, "Buffer size N must be greater than zero");
         static_assert(Offset < N, "Offset must be less than buffer size N");
-        std::array<uint8_t, N> bufferOwner_ = {};
+        std::array<uint8_t, N> bufferOwner_ = {};   //!< Inline encode buffer.
 
     public:
+        /*! @brief Construct with no flush callback. */
         OStreamInline() noexcept
         {
             buffer_ = bufferOwner_.data();
             sofab_ostream_init(&ctx_, buffer_, N, Offset, nullptr, nullptr);
         }
 
+        /*!
+         * @brief Construct with a flush callback.
+         * @param callback  Invoked with buffered bytes when the buffer fills or on flush().
+         */
         OStreamInline(flushCallback callback) noexcept
         {
             buffer_ = bufferOwner_.data();
@@ -503,6 +663,8 @@ namespace sofab
     };
 
     class OStreamMessage;
+    /*! @brief Concept: a serializable message type usable with @ref OStreamObject
+     *  (derives from @ref OStreamMessage and exposes a @c _maxSize constant). */
     template <class T>
     concept OutputMessage =
         std::derived_from<T, OStreamMessage> &&
@@ -511,29 +673,61 @@ namespace sofab
         } &&
         std::is_same_v<decltype(T::_maxSize), const std::size_t>;
 
+    /*!
+     * @brief Base class for serializable message objects.
+     *
+     * Derive from this and implement @ref serialize to define how the message's
+     * fields are written. Use with @ref OStreamObject to encode instances.
+     */
     class OStreamMessage
     {
     protected:
+        /*!
+         * @brief Serialize this message's fields into @p _ostream.
+         * @param _ostream  Output stream to write the fields to.
+         * @return The encode @ref OStreamImpl::Result.
+         */
         virtual OStream::Result
         serialize(OStreamImpl &_ostream) const noexcept = 0;
     };
 
+    /*!
+     * @brief Self-contained encoder that owns a message and an inline buffer.
+     *
+     * Bundles a @ref OStreamMessage instance with an @ref OStreamInline buffer
+     * sized from the message's @c _maxSize, so a message can be populated and
+     * encoded in one object.
+     *
+     * @tparam MessageType  An @ref OutputMessage type.
+     * @tparam N            Buffer size in bytes (defaults to @c MessageType::_maxSize).
+     * @tparam Offset       Initial write offset within the buffer.
+     */
     template <OutputMessage MessageType, size_t N = MessageType::_maxSize, size_t Offset = 0>
     class OStreamObject : public OStreamInline<N + Offset, Offset>
     {
-        MessageType message_;
+        MessageType message_;   //!< The owned message instance.
 
     public:
+        /*! @brief Construct with no flush callback. */
         OStreamObject() noexcept = default;
+        /*!
+         * @brief Construct with a flush callback.
+         * @param callback  Invoked with buffered bytes when the buffer fills or on flush().
+         */
         OStreamObject(typename OStream::flushCallback callback) noexcept
             : OStreamInline<N + Offset, Offset>{callback}
         { };
 
+        /*! @brief Member-access to the owned message (e.g. @c obj->field = ...). */
         MessageType& operator->() noexcept
         {
             return message_;
         }
 
+        /*!
+         * @brief Serialize the owned message and flush.
+         * @return The encode @ref OStreamImpl::Result.
+         */
         OStream::Result serialize() noexcept
         {
             auto result =  message_.serialize(static_cast<OStreamImpl&>(*this));
@@ -543,6 +737,15 @@ namespace sofab
         }
     };
 
+    /*!
+     * @brief @ref OStreamObject variant parameterized by offset only.
+     *
+     * Convenience alias-like class fixing @c N to @c MessageType::_maxSize while
+     * letting the caller choose a leading @p Offset (e.g. to reserve a header).
+     *
+     * @tparam MessageType  An @ref OutputMessage type.
+     * @tparam Offset       Initial write offset within the buffer.
+     */
     template <OutputMessage MessageType, size_t Offset = 0>
     class OStreamObjectOffset : public OStreamObject<MessageType, MessageType::_maxSize, Offset>
     {
@@ -554,13 +757,24 @@ namespace sofab
     /***************/
 
     class IStreamMessage;
+    /*! @brief Concept: a decodable message type usable with @ref IStreamObject
+     *  and the nested-message @c IStreamImpl::read() overload. */
     template <typename T>
     concept InputMessage = std::derived_from<T, IStreamMessage>;
 
+    /*!
+     * @brief Base input stream: incrementally decodes fed bytes into bound targets.
+     *
+     * Thin C++ facade over @ref sofab_istream_t. Bytes are supplied via
+     * @ref feed; inside a field callback (or a message's @c deserialize) the
+     * matching @c read() overload binds the destination for the current field.
+     * Decoding is lazy — a bound target is filled by subsequent @ref feed calls,
+     * so targets must stay alive and address-stable until decoding completes.
+     */
     class IStreamImpl
     {
     protected:
-        sofab_istream_t ctx_;
+        sofab_istream_t ctx_;   //!< Underlying C input stream context.
 
         // Persistent decoder for variable-length-element array reads (see the
         // std::vector read() overloads below). The C decoder is deferred: a
@@ -579,6 +793,11 @@ namespace sofab
         IStreamImpl() noexcept = default;
 
     public:
+        /*!
+         * @brief Outcome of a @ref feed call.
+         *
+         * Convertible to @c bool (true on success) and comparable to @ref Error.
+         */
         class Result
         {
         private:
@@ -595,45 +814,74 @@ namespace sofab
             }
 
         public:
+            /*! @brief True if decoding succeeded (same as ok()). */
             explicit operator bool() const noexcept
             {
                 return ok();
             }
 
+            /*! @brief Compare the held error code to @p e. */
             bool operator==(Error e) const noexcept
             {
                 return error_ == e;
             }
 
+            /*! @brief Negated operator==(). */
             bool operator!=(Error e) const noexcept
             {
                 return !(*this == e);
             }
 
+            /*! @brief True if no decode error occurred. */
             bool ok() const noexcept
             {
                 return error_ == Error::None;
             }
 
+            /*! @brief The @ref Error result of the feed. */
             Error code() const noexcept
             {
                 return error_;
             }
         };
 
-        // disable copying due to pointers in ctx_
+        /*! @brief Copy construction is deleted (the context owns raw pointers). */
         IStreamImpl(const IStreamImpl&) = delete;
+        /*! @brief Copy assignment is deleted (the context owns raw pointers). */
         IStreamImpl& operator=(const IStreamImpl&) = delete;
 
-        // allow moving
+        /*! @brief Move construction (transfers the underlying context). */
         IStreamImpl(IStreamImpl&&) noexcept = default;
+        /*! @brief Move assignment (transfers the underlying context). */
         IStreamImpl& operator=(IStreamImpl&&) noexcept = default;
 
+        /*!
+         * @brief Feed raw encoded bytes to the decoder.
+         *
+         * May be called repeatedly with arbitrary chunk boundaries; field
+         * callbacks fire as complete field headers are parsed.
+         *
+         * @param buffer  Pointer to the bytes to decode.
+         * @param buflen  Number of bytes at @p buffer.
+         * @return @ref Result indicating success or a decode error.
+         */
         Result feed(const uint8_t *buffer, size_t buflen) noexcept
         {
             return Result{sofab_istream_feed(&ctx_, buffer, buflen)};
         }
 
+        /*!
+         * @brief Bind the current field to a typed destination, deducing the
+         *        wire type from @p T.
+         *
+         * Call from within a field callback / @c deserialize for the active
+         * field. Supports integers, @c bool, @c float, @c double, @c std::string
+         * (pre-sized to the field length), fixed contiguous ranges
+         * (arrays/vectors/spans), and nested @ref IStreamMessage objects. The
+         * destination must outlive decoding (filled by later @ref feed calls).
+         *
+         * @param value  Destination to decode into.
+         */
         template <typename T>
         void read(T &value) noexcept
         {
@@ -771,16 +1019,22 @@ namespace sofab
             }
         }
 
-        // Decode a blob field into a caller-owned, address-stable buffer.
-        //
-        // The templated read() above routes std::string to a STRING-tagged read
-        // and a std::vector<uint8_t> span to a VARINTARRAY-tagged read; neither
-        // matches a BLOB field, so the C type check rejects them and the bytes are
-        // dropped. This overload binds with the BLOB tag (via read_blob) so blob
-        // fields decode correctly. The caller must size the destination to the
-        // field length (provided as `size` in the field callback); the bytes are
-        // filled by a subsequent feed() pass into this buffer, which must stay
-        // alive and unmoved until decoding of the field completes.
+        /*!
+         * @brief Decode a blob field into a caller-owned, address-stable buffer.
+         *
+         * The templated read() above routes std::string to a STRING-tagged read
+         * and a std::vector<uint8_t> span to a VARINTARRAY-tagged read; neither
+         * matches a BLOB field, so the C type check rejects them and the bytes are
+         * dropped. This overload binds with the BLOB tag (via read_blob) so blob
+         * fields decode correctly. The caller must size the destination to the
+         * field length (provided as `size` in the field callback); the bytes are
+         * filled by a subsequent feed() pass into this buffer, which must stay
+         * alive and unmoved until decoding of the field completes.
+         *
+         * @param dst     Destination buffer of at least @p maxlen bytes.
+         * @param maxlen  Field length to read (a zero length is a no-op).
+         * @return Number of bytes bound to be read (@p maxlen, or 0 if @p maxlen is 0).
+         */
         size_t read(void *dst, size_t maxlen) noexcept
         {
             // read_field() asserts varlen > 0; a zero-length blob binds no target
@@ -794,22 +1048,31 @@ namespace sofab
             return maxlen;
         }
 
-        // Decode a sequence of variable-length string elements into a vector.
-        //
-        // Each element is emplaced into `out` and the C read target is bound to
-        // that persistent slot, so feed() fills it in place before the next
-        // element's callback fires. A later emplace_back may reallocate `out`, but
-        // it only moves already-filled elements (heap-stable, or SSO bytes copied
-        // intact), never an unfilled bound target. This is the safe counterpart to
-        // the transient read-into-local-then-move pattern, which dangles under the
-        // deferred decoder.
+        /*!
+         * @brief Decode a sequence of variable-length string elements into a vector.
+         *
+         * Each element is emplaced into `out` and the C read target is bound to
+         * that persistent slot, so feed() fills it in place before the next
+         * element's callback fires. A later emplace_back may reallocate `out`, but
+         * it only moves already-filled elements (heap-stable, or SSO bytes copied
+         * intact), never an unfilled bound target. This is the safe counterpart to
+         * the transient read-into-local-then-move pattern, which dangles under the
+         * deferred decoder.
+         *
+         * @param out  Vector that receives one element per string in the sequence;
+         *             it must outlive decoding of the field.
+         */
         void read(std::vector<std::string> &out) noexcept
         {
             sofab_istream_read_sequence(
                 &ctx_, &arrayDecoder_, &strArrayElem_, &out);
         }
 
-        // Decode a sequence of variable-length blob elements into a vector.
+        /*!
+         * @brief Decode a sequence of variable-length blob elements into a vector.
+         * @param out  Vector that receives one byte-vector per blob in the sequence;
+         *             it must outlive decoding of the field.
+         */
         void read(std::vector<std::vector<uint8_t>> &out) noexcept
         {
             sofab_istream_read_sequence(
@@ -817,6 +1080,7 @@ namespace sofab
         }
 
     private:
+        /*! @brief Per-element callback: emplace and bind one string element. */
         static void strArrayElem_(
             sofab_istream_t *ctx, sofab_id_t, size_t size, size_t, void *usrptr)
         {
@@ -830,6 +1094,7 @@ namespace sofab
             }
         }
 
+        /*! @brief Per-element callback: emplace and bind one blob element. */
         static void blobArrayElem_(
             sofab_istream_t *ctx, sofab_id_t, size_t size, size_t, void *usrptr)
         {
@@ -844,14 +1109,23 @@ namespace sofab
         }
     };
 
+    /*!
+     * @brief Input stream driven by a user-supplied per-field callback.
+     *
+     * The callback receives each decoded field's id, size and element count, and
+     * binds a destination by calling one of the @c IStreamImpl::read() overloads
+     * for the fields it is interested in; unhandled fields are skipped.
+     */
     class IStreamInline : public IStreamImpl
     {
     public:
+        /*! @brief Per-field callback signature: (field id, value size, element count). */
         using fieldCallback = std::function<void(sofab::id _id, size_t _size, size_t _count)>;
 
     private:
         fieldCallback callback_;
 
+        /*! @brief C-ABI field-callback trampoline forwarding to the std::function. */
         static void field_callback_(
             sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
         {
@@ -862,6 +1136,10 @@ namespace sofab
         }
 
     public:
+        /*!
+         * @brief Construct with the per-field callback.
+         * @param callback  Invoked for each decoded field to bind a destination.
+         */
         IStreamInline(fieldCallback callback) noexcept
             : callback_{callback}
         {
@@ -869,6 +1147,13 @@ namespace sofab
         }
     };
 
+    /*!
+     * @brief Base class for decodable message objects.
+     *
+     * Derive from this and implement @ref deserialize to dispatch each field to
+     * the matching @c IStreamImpl::read(). Instances are decoded standalone via
+     * @ref IStreamObject, or as a nested field through @c IStreamImpl::read().
+     */
     class IStreamMessage
     {
     private:
@@ -906,36 +1191,61 @@ namespace sofab
         }
 
     public:
+        /*!
+         * @brief Dispatch one decoded field to the appropriate read.
+         *
+         * Called for each field of this message; implementations typically
+         * switch on @p _id and call @c _istream.read(member).
+         *
+         * @param _istream  Stream to bind the field's destination on.
+         * @param _id       Field identifier.
+         * @param _size     Field value size in bytes (e.g. string/blob length).
+         * @param _count    Number of array elements (for array fields).
+         */
         virtual void deserialize(sofab::IStreamImpl &_istream, sofab::id _id, size_t _size, size_t _count) noexcept = 0;
     };
 
+    /*!
+     * @brief Self-contained decoder that owns a message instance.
+     *
+     * Wires a @ref IStreamMessage subclass to an input stream so fed bytes are
+     * dispatched to its @c deserialize. Access the decoded message via @c -> or
+     * @c *.
+     *
+     * @tparam MessageType  An @ref InputMessage type.
+     */
     template <InputMessage MessageType>
     class IStreamObject : public IStreamImpl
     {
-        MessageType data_;
+        MessageType data_;  //!< The owned message instance being decoded into.
 
     public:
+        /*! @brief Construct and bind the owned message to this stream. */
         IStreamObject() noexcept
         {
             data_.context_ = IStreamMessage::Context{this, &data_};
             sofab_istream_init(&ctx_, MessageType::field_callback_, &data_.context_);
         }
 
+        /*! @brief Member-access to the owned message (e.g. @c obj->field). */
         MessageType& operator->() noexcept
         {
             return data_;
         }
 
+        /*! @brief Const member-access to the owned message. */
         const MessageType& operator->() const noexcept
         {
             return data_;
         }
 
+        /*! @brief Reference to the owned message. */
         MessageType& operator*() noexcept
         {
             return data_;
         }
 
+        /*! @brief Const reference to the owned message. */
         const MessageType& operator*() const noexcept
         {
             return data_;
