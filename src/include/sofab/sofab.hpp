@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include "sofab/istream.h"
 #include "sofab/ostream.h"
@@ -491,6 +492,20 @@ namespace sofab
     protected:
         sofab_istream_t ctx_;
 
+        // Persistent decoder for variable-length-element array reads (see the
+        // std::vector read() overloads below). The C decoder is deferred: a
+        // read_sequence() only registers this decoder, and its per-element
+        // callbacks fire later as feed() advances. It must therefore outlive the
+        // field callback that started the array, so it lives in the stream object
+        // rather than on the caller's stack.
+        //
+        // One member supports one active variable-length array at a time, which
+        // covers all realistic schemas: array elements here are scalars (string /
+        // blob), and sibling or nested-message array fields decode sequentially.
+        // Genuinely nested variable-length arrays (e.g. vector<vector<string>>)
+        // would need a decoder stack and are intentionally not supported.
+        sofab_istream_decoder_t arrayDecoder_;
+
         IStreamImpl() noexcept = default;
 
     public:
@@ -656,6 +671,61 @@ namespace sofab
                 static_assert(always_false_v<T>,
                     "Cannot read into const variable in IStream::read()");
             }
+        }
+
+        // Decode a blob field into a caller-owned, address-stable buffer.
+        //
+        // The templated read() above routes std::string to a STRING-tagged read
+        // and a std::vector<uint8_t> span to a VARINTARRAY-tagged read; neither
+        // matches a BLOB field, so the C type check rejects them and the bytes are
+        // dropped. This overload binds with the BLOB tag (via read_blob) so blob
+        // fields decode correctly. The caller must size the destination to the
+        // field length (provided as `size` in the field callback); the bytes are
+        // filled by a subsequent feed() pass into this buffer, which must stay
+        // alive and unmoved until decoding of the field completes.
+        size_t read(void *dst, size_t maxlen) noexcept
+        {
+            sofab_istream_read_blob(&ctx_, dst, maxlen);
+            return maxlen;
+        }
+
+        // Decode a sequence of variable-length string elements into a vector.
+        //
+        // Each element is emplaced into `out` and the C read target is bound to
+        // that persistent slot, so feed() fills it in place before the next
+        // element's callback fires. A later emplace_back may reallocate `out`, but
+        // it only moves already-filled elements (heap-stable, or SSO bytes copied
+        // intact), never an unfilled bound target. This is the safe counterpart to
+        // the transient read-into-local-then-move pattern, which dangles under the
+        // deferred decoder.
+        void read(std::vector<std::string> &out) noexcept
+        {
+            sofab_istream_read_sequence(
+                &ctx_, &arrayDecoder_, &strArrayElem_, &out);
+        }
+
+        // Decode a sequence of variable-length blob elements into a vector.
+        void read(std::vector<std::vector<uint8_t>> &out) noexcept
+        {
+            sofab_istream_read_sequence(
+                &ctx_, &arrayDecoder_, &blobArrayElem_, &out);
+        }
+
+    private:
+        static void strArrayElem_(
+            sofab_istream_t *ctx, sofab_id_t, size_t size, size_t, void *usrptr)
+        {
+            auto *out = static_cast<std::vector<std::string>*>(usrptr);
+            out->emplace_back(size, '\0');
+            sofab_istream_read_string_noterm(ctx, out->back().data(), size);
+        }
+
+        static void blobArrayElem_(
+            sofab_istream_t *ctx, sofab_id_t, size_t size, size_t, void *usrptr)
+        {
+            auto *out = static_cast<std::vector<std::vector<uint8_t>>*>(usrptr);
+            out->emplace_back(size);
+            sofab_istream_read_blob(ctx, out->back().data(), size);
         }
     };
 
