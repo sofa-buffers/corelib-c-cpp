@@ -45,31 +45,102 @@ extern "C" {
 #include "sofab/ostream.h"
 
 /* constants ******************************************************************/
-#define SOFAB_OBJECT_FIELDTYPE_UNSIGNED 		0x0
-#define SOFAB_OBJECT_FIELDTYPE_SIGNED   		0x1
-#define SOFAB_OBJECT_FIELDTYPE_FP32     		0x2
-#define SOFAB_OBJECT_FIELDTYPE_FP64     		0x3
-#define SOFAB_OBJECT_FIELDTYPE_STRING   		0x4
-#define SOFAB_OBJECT_FIELDTYPE_BLOB     		0x5
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED	0x6
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED   	0x7
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32     	0x8
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9
-#define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA
+/*!
+ * @name Object field types
+ * @brief Field type tags stored in @ref sofab_object_descr_field_t::type.
+ *
+ * Each descriptor field carries one of these tags; it selects which
+ * encode/decode path the transcoder takes for that struct member. Pass the tag
+ * as the @c type argument of the @ref SOFAB_OBJECT_FIELD family of macros.
+ * @{
+ */
+#define SOFAB_OBJECT_FIELDTYPE_UNSIGNED 		0x0 /*!< Unsigned integer (uint8/16/32/64). */
+#define SOFAB_OBJECT_FIELDTYPE_SIGNED   		0x1 /*!< Signed integer (int8/16/32/64). */
+#define SOFAB_OBJECT_FIELDTYPE_FP32     		0x2 /*!< 32-bit floating point (float). */
+#define SOFAB_OBJECT_FIELDTYPE_FP64     		0x3 /*!< 64-bit floating point (double). */
+#define SOFAB_OBJECT_FIELDTYPE_STRING   		0x4 /*!< Null-terminated string. */
+#define SOFAB_OBJECT_FIELDTYPE_BLOB     		0x5 /*!< Raw binary blob (sized by the field). */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED	0x6 /*!< Array of unsigned integers. */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED   	0x7 /*!< Array of signed integers. */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32     	0x8 /*!< Array of 32-bit floats. */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9 /*!< Array of 64-bit doubles. */
+#define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA /*!< Nested object (encoded as a sequence). */
+/*! @} */
 
 /* macros *********************************************************************/
+/*!
+ * @brief Build a scalar field descriptor (@ref sofab_object_descr_field_t).
+ *
+ * Derives the field offset and size from the struct type, so the descriptor
+ * stays in sync with the C declaration. The element size is taken as the size
+ * of the whole field (scalars are a single element).
+ *
+ * @param id     Field ID on the wire.
+ * @param obj    Enclosing struct type (e.g. @c struct my_msg).
+ * @param field  Member name within @p obj.
+ * @param type   Field type tag (one of the scalar @ref SOFAB_OBJECT_FIELDTYPE_UNSIGNED "SOFAB_OBJECT_FIELDTYPE_*").
+ */
 #define SOFAB_OBJECT_FIELD(id, obj, field, type) \
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field) & 0xF) }
 
+/*!
+ * @brief Build a nested-object (sequence) field descriptor.
+ *
+ * Like @ref SOFAB_OBJECT_FIELD but for a nested struct serialized as a
+ * sequence. @p idx selects the child descriptor from the enclosing object's
+ * @c nested_list.
+ *
+ * @param id     Field ID on the wire.
+ * @param obj    Enclosing struct type.
+ * @param field  Nested struct member within @p obj.
+ * @param type   Field type tag (typically @ref SOFAB_OBJECT_FIELDTYPE_SEQUENCE).
+ * @param idx    Index of the nested descriptor in the @c nested_list.
+ */
 #define SOFAB_OBJECT_FIELD_SEQUENCE(id, obj, field, type, idx) \
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), idx, type, (sizeof(((obj *)0)->field) & 0xF) }
 
+/*!
+ * @brief Build an array field descriptor.
+ *
+ * Like @ref SOFAB_OBJECT_FIELD but the element size is taken from a single
+ * array element (@c field[0]); the element count is derived at run time from
+ * the total field size divided by the element size.
+ *
+ * @param id     Field ID on the wire.
+ * @param obj    Enclosing struct type.
+ * @param field  Array member within @p obj.
+ * @param type   Field type tag (one of the array @ref SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED "SOFAB_OBJECT_FIELDTYPE_ARRAY_*").
+ */
 #define SOFAB_OBJECT_FIELD_ARRAY(id, obj, field, type) \
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field[0]) & 0xF) }
 
+/*!
+ * @brief Build an object descriptor (@ref sofab_object_descr_t) without defaults.
+ *
+ * Fields whose value is all-zero are omitted from the encoding (see
+ * @ref sofab_object_encode).
+ *
+ * @param field_list    Array of @ref sofab_object_descr_field_t for this object.
+ * @param field_count   Number of entries in @p field_list.
+ * @param nested_list   Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
+ * @param nested_count  Number of entries in @p nested_list.
+ */
 #define SOFAB_OBJECT_DESCR(field_list, field_count, nested_list, nested_count) \
     { (field_list), (nested_list), NULL, (field_count), (nested_count) }
 
+/*!
+ * @brief Build an object descriptor with a default-values reference.
+ *
+ * As @ref SOFAB_OBJECT_DESCR, but fields equal to the corresponding member in
+ * @p default_struct are omitted from the encoding (instead of comparing against
+ * zero), and @ref sofab_object_init seeds objects from it.
+ *
+ * @param field_list     Array of @ref sofab_object_descr_field_t for this object.
+ * @param field_count    Number of entries in @p field_list.
+ * @param nested_list    Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
+ * @param nested_count   Number of entries in @p nested_list.
+ * @param default_struct Pointer to a fully-populated object holding the field defaults.
+ */
 #define SOFAB_OBJECT_DESCR_WITH_DEFAULTS(field_list, field_count,nested_list, nested_count, default_struct) \
     { (field_list), (nested_list), (default_struct), (field_count), (nested_count) }
 
@@ -131,10 +202,17 @@ extern sofab_ret_t sofab_object_init (
  * @brief Encodes an object with the given descriptor into the output stream.
  *
  * The output stream context must be initialized prior to calling this function.
+ * Fields equal to their default (the matching member of the descriptor's
+ * default-values object, or zero when none is set) are skipped. Nested objects
+ * are written as sequences.
  *
  * @param ctx       Pointer to the output stream context.
  * @param info      Pointer to the object descriptor.
  * @param src       Pointer to the source object to serialize.
+ *
+ * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code
+ *         (e.g. SOFAB_RET_E_USAGE for an unsupported descriptor field type,
+ *         or a write error propagated from the output stream).
  */
 extern sofab_ret_t sofab_object_encode (
     sofab_ostream_t *ctx,
@@ -145,7 +223,17 @@ extern sofab_ret_t sofab_object_encode (
  * @brief Field callback invoked during object decoding.
  *
  * Use this function as the field callback when initializing an input stream
- * for decoding objects with @ref sofab_istream_init.
+ * for decoding objects with @ref sofab_istream_init. The @p usrptr must point
+ * to a @ref sofab_object_decoder_t whose @c info and @c dst describe the target
+ * object; for nested objects the decoder must be the first element of an array
+ * with one slot per supported nesting level (see @c depth). The callback binds
+ * the appropriate read for each known field ID and ignores unknown fields.
+ *
+ * @param ctx     Pointer to the active input stream context.
+ * @param id      Field ID reported by the decoder.
+ * @param size    Size of the field value in bytes (unused; kept for the callback signature).
+ * @param count   Number of array elements (unused; kept for the callback signature).
+ * @param usrptr  Pointer to the @ref sofab_object_decoder_t driving this object.
  */
 extern void sofab_object_field_cb (
     sofab_istream_t *ctx,

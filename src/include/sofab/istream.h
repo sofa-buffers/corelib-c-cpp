@@ -54,7 +54,7 @@ extern "C" {
 /* types **********************************************************************/
 
 /*!
- * @brief Opaque Sofab Pointer to the input stream context.
+ * @brief Opaque Sofab input stream context.
  *
  * This structure contains all state related to the incremental parsing of
  * Sofab-encoded data. Users should not access its fields directly; instead,
@@ -72,7 +72,8 @@ typedef struct sofab_istream sofab_istream_t;
  *
  * Example usage:
  * @code
- * void my_field_cb(sofab_istream_t *ctx, sofab_id_t id, void *usrptr) {
+ * void my_field_cb(sofab_istream_t *ctx, sofab_id_t id,
+ *                  size_t size, size_t count, void *usrptr) {
  *     switch(id) {
  *         case FIELD_TEMP: sofab_istream_read_fp32(ctx, &state.temperature); break;
  *         case FIELD_NAME: sofab_istream_read_string(ctx, buffer, sizeof(buffer)); break;
@@ -125,7 +126,7 @@ struct sofab_istream
 /* prototypes *****************************************************************/
 
 /*!
- * @brief Initializes an Sofab Pointer to the input stream context.
+ * @brief Initializes a Sofab input stream context.
  *
  * Resets all decoder state, assigns the default decoder, and registers the
  * callback that will be triggered for each incoming field ID at the top level sequence.
@@ -156,7 +157,7 @@ extern sofab_ret_t sofab_istream_feed (
 /* read functions *************************************************************/
 
 /*!
- * @brief Reads an variable length integer field.
+ * @brief Reads a variable-length integer field.
  *
  * This function must only be invoked inside a field callback. The value is
  * written to @p var using @p varlen bytes.
@@ -246,7 +247,7 @@ static inline void sofab_istream_read_u32 (sofab_istream_t *ctx, uint32_t *var)
 #if !defined(SOFAB_DISABLE_INT64_SUPPORT)
 /*!
  * @brief Reads a 64-bit signed integer.
-*
+ *
  * @param ctx   Pointer to the input stream context.
  * @param var   Pointer to destination variable.
  */
@@ -284,7 +285,7 @@ static inline void sofab_istream_read_bool (sofab_istream_t *ctx, bool *var)
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Reads a 32-bit floating-point value.
-*
+ *
  * @param ctx   Pointer to the input stream context.
  * @param var   Pointer to destination variable.
  */
@@ -313,7 +314,7 @@ static inline void sofab_istream_read_fp64 (sofab_istream_t *ctx, double *var)
 /*!
  * @brief Reads a string of fixed maximum size.
  *
- * A a null terminator is always appended to the end of the string.
+ * A null terminator is always appended to the end of the string.
  *
  * @param ctx       Pointer to the input stream context.
  * @param var       Destination buffer.

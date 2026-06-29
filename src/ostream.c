@@ -24,15 +24,30 @@
 
 /* functions ******************************************************************/
 
-/* ZigZag encode (signed -> unsigned) */
+/*!
+ * @brief ZigZag-encode a signed value to an unsigned one.
+ *
+ * Maps small-magnitude signed values to small unsigned values so they encode
+ * compactly as a varint.
+ *
+ * @param v  Signed value to transform.
+ * @return The ZigZag-encoded unsigned value.
+ */
 static inline sofab_unsigned_t _zigzag_encode (sofab_signed_t v)
 {
     const int bits = sizeof(v) * 8;
     return ((sofab_unsigned_t)(v << 1)) ^ (sofab_unsigned_t)(v >> (bits - 1));
 }
 
-/* Pushs a single byte to the buffer, flush if needed.
- * Returns 0 on success, -1 on overflow.
+/*!
+ * @brief Push a single byte to the buffer, flushing first if it is full.
+ *
+ * If the buffer is full and a flush callback is set, it is invoked and the
+ * cursor reset; without a callback a full buffer is an overflow.
+ *
+ * @param ctx   Output stream context.
+ * @param byte  Byte to append.
+ * @return 0 on success, -1 on overflow (buffer full and no flush callback).
  */
 static int _push_byte (sofab_ostream_t *ctx, uint8_t byte)
 {
@@ -57,8 +72,12 @@ static int _push_byte (sofab_ostream_t *ctx, uint8_t byte)
     return 0;
 }
 
-/* Write unsigned variable length integer to buffer.
- * Returns 0 on success, negative on overflow.
+/*!
+ * @brief Write an unsigned value to the buffer as a LEB128 varint.
+ *
+ * @param ctx    Output stream context.
+ * @param value  Unsigned value to encode.
+ * @return 0 on success, negative on buffer overflow.
  */
 static int _varint_encode (sofab_ostream_t *ctx, sofab_unsigned_t value)
 {
@@ -78,13 +97,30 @@ static int _varint_encode (sofab_ostream_t *ctx, sofab_unsigned_t value)
     return 0;
 }
 
-/* Encode type into a variable */
+/*!
+ * @brief Combine a value and a 3-bit type tag into a single field header word.
+ *
+ * Shifts @p var left by 3 and packs @p type into the low 3 bits, ready to be
+ * emitted as a varint.
+ *
+ * @param var   Value to shift into the upper bits (e.g. field id or length).
+ * @param type  3-bit type tag to store in the low bits.
+ * @return The combined @c (var<<3)|type word.
+ */
 static sofab_unsigned_t _type_encode (sofab_unsigned_t var, int type)
 {
     return ((var << 3) | (type & 0x07));
 }
 
-/* Write ID and type to buffer as varint */
+/*!
+ * @brief Write a field header (id + type) to the buffer as a varint.
+ *
+ * @param ctx   Output stream context.
+ * @param id    Field identifier (rejected if greater than @ref SOFAB_ID_MAX).
+ * @param type  Field type tag.
+ * @return SOFAB_RET_OK on success, SOFAB_RET_E_ARGUMENT for an out-of-range id,
+ *         or SOFAB_RET_E_BUFFER_FULL on overflow.
+ */
 static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_type_t type)
 {
     if (id > SOFAB_ID_MAX)
@@ -101,7 +137,14 @@ static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_ty
 }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
-/* Write fixed-length data to buffer */
+/*!
+ * @brief Copy fixed-length data to the buffer in source byte order.
+ *
+ * @param ctx      Output stream context.
+ * @param data     Pointer to the bytes to write.
+ * @param datalen  Number of bytes to write.
+ * @return SOFAB_RET_OK on success, SOFAB_RET_E_BUFFER_FULL on overflow.
+ */
 static sofab_ret_t _write_fixlen (sofab_ostream_t *ctx, const void *data, int32_t datalen)
 {
     const uint8_t *bytes = (const uint8_t *)data;
@@ -118,7 +161,16 @@ static sofab_ret_t _write_fixlen (sofab_ostream_t *ctx, const void *data, int32_
 }
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-/* Write fixed-length data to buffer in reverse byte order */
+/*!
+ * @brief Copy fixed-length data to the buffer in reversed byte order.
+ *
+ * Used on big-endian targets to emit little-endian floating-point payloads.
+ *
+ * @param ctx      Output stream context.
+ * @param data     Pointer to the bytes to write.
+ * @param datalen  Number of bytes to write.
+ * @return SOFAB_RET_OK on success, SOFAB_RET_E_BUFFER_FULL on overflow.
+ */
 static sofab_ret_t _write_fixlen_reverse (sofab_ostream_t *ctx, const uint8_t *data, int32_t datalen)
 {
     for (int32_t i = datalen - 1; i >= 0; i--)

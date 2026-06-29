@@ -334,8 +334,8 @@ static inline sofab_ret_t sofab_ostream_write_blob (
  * @param ctx            Pointer to the output stream context.
  * @param id             Field identifier.
  * @param data           Pointer to the array data.
- * @param element_size   Size of each element in bytes.
  * @param element_count  Number of elements in @p data.
+ * @param element_size   Size of each element in bytes.
  *
  * @return SOFAB_RET_OK on success, otherwise an error code.
  */
@@ -353,8 +353,8 @@ extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
  * @param ctx            Pointer to the output stream context.
  * @param id             Field identifier.
  * @param data           Pointer to the array data.
- * @param element_size   Size of each element in bytes.
  * @param element_count  Number of elements in @p data.
+ * @param element_size   Size of each element in bytes.
  *
  * @return SOFAB_RET_OK on success, otherwise an error code.
  */
@@ -374,8 +374,8 @@ extern sofab_ret_t sofab_ostream_write_array_of_signed (
  * @param ctx            Pointer to the output stream context.
  * @param id             Field identifier.
  * @param data           Pointer to element data.
- * @param element_size   Size of each element in bytes.
  * @param element_count  Number of elements.
+ * @param element_size   Size of each element in bytes.
  * @param type           Semantic fixed-length type of elements.
  *
  * @return SOFAB_RET_OK on success, otherwise an error code.

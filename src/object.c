@@ -15,6 +15,7 @@
 /* constants ******************************************************************/
 
 /* macros *********************************************************************/
+/*! @brief Cast @p ptr advanced by @p offset bytes to @p type (field accessor). */
 #define CAST_TO(type, ptr, offset) ((type)((const uint8_t *)(ptr) + (offset)))
 
 /* types **********************************************************************/
@@ -24,6 +25,13 @@
 /* static vars ****************************************************************/
 
 /* functions ******************************************************************/
+/*!
+ * @brief Test whether a memory region is all zero bytes.
+ *
+ * @param ptr  Pointer to the region.
+ * @param len  Number of bytes to examine.
+ * @return 1 if every byte is zero, 0 otherwise.
+ */
 static int _iszero (const void *ptr, size_t len)
 {
     const uint8_t *p = (const uint8_t *)ptr;
