@@ -259,6 +259,21 @@ high-level surface.
 
 `write(id, value)` and `read(value)` deduce the wire encoding from the C++ type.
 
+### Differences from the pure-C++20 port (`corelib-cpp`)
+
+The [`corelib-cpp`](https://github.com/sofa-buffers/corelib-cpp) project exposes
+the *same* `sofab::` C++ surface but is a from-scratch C++20 implementation rather
+than a wrapper over the C core. Comparing the two `sofab.hpp` headers, the
+important C++-API differences are:
+
+| Topic | This library (C-backed) | `corelib-cpp` (pure C++20) |
+| - | - | - |
+| Decode-buffer lifetime | Lazy: `read()` *binds* the destination and the bytes are filled by a later `feed()` — destinations must be address-stable and outlive decoding | Immediate copy from a cursor over contiguous memory |
+| `read(std::string &)` | Must **pre-size** the string; reads into existing storage | Auto-sizes via `assign` |
+| `read(std::string_view &)` | Not available | Zero-copy read, view aliases the source buffer |
+| Sequence-of-varlen helpers | `read(std::vector<std::string> &)` and `read(std::vector<std::vector<uint8_t>> &)` | Not available |
+| Build-time capability flags | Honors the C core's `SOFAB_DISABLE_*` switches (`FP64`/`INT64`/`ARRAY` → `static_assert` on use; `FIXLEN`/`SEQUENCE` → hard `#error`) | None — every type always compiled in |
+
 ## Feature flags
 
 The corelib can be trimmed at compile time by defining these macros (e.g. via
