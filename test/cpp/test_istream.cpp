@@ -143,6 +143,51 @@ public:
     }
 };
 
+// Exercises the wrapper's blob and variable-length-array decode entry points:
+//   - a scalar blob via read(void*, size_t)            (BLOB type tag)
+//   - a sequence of strings via read(vector<string>&)
+//   - a sequence of blobs via read(vector<vector<uint8_t>>&)
+// All three are the paths the deferred C decoder used to drop bytes on or crash.
+class BlobAndVarArrays : public sofab::IStreamMessage
+{
+    struct Data
+    {
+        std::vector<uint8_t>              blob;
+        std::vector<std::string>          strings;
+        std::vector<std::vector<uint8_t>> blobs;
+    } data_;
+
+    void deserialize(sofab::IStreamImpl &istream, sofab::id id, size_t size, size_t count) noexcept override
+    {
+        (void)count;
+
+        switch (id)
+        {
+            case 1:
+                data_.blob.resize(size);
+                istream.read(data_.blob.data(), data_.blob.size());
+                break;
+            case 2:
+                istream.read(data_.strings);
+                break;
+            case 3:
+                istream.read(data_.blobs);
+                break;
+        }
+    }
+
+public:
+    Data* operator ->() noexcept
+    {
+        return &data_;
+    }
+
+    const Data* operator ->() const noexcept
+    {
+        return &data_;
+    }
+};
+
 class FullObject : public sofab::IStreamMessage
 {
 public:
@@ -441,6 +486,68 @@ TEST_CASE("IStream: round-trip repeated fields into dynamic vector")
 
     REQUIRE(result.code() == sofab::Error::None);
     REQUIRE(istream->values == std::vector<uint32_t>{11, 22, 33});
+}
+
+TEST_CASE("IStream: round-trip blob and variable-length-element arrays")
+{
+    sofab::OStream ostream{512};
+
+    const std::vector<uint8_t> blob = {10, 20, 30, 40, 50};
+
+    // Include empty, short (SSO) and a long (heap) string so the per-element
+    // vector reallocation moves a mix of inline- and heap-stored elements -- the
+    // exact path the transient-local decode pattern dangled on.
+    const std::vector<std::string> strings = {
+        "a", "", "hello",
+        "this is a fairly long string well beyond small-string capacity"};
+
+    const std::vector<std::vector<uint8_t>> blobs = {
+        {1, 2, 3}, {}, {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
+
+    // field 1: scalar blob
+    ostream.write(1, blob.data(), static_cast<int32_t>(blob.size()));
+
+    // field 2: sequence of string elements
+    ostream.sequenceBegin(2);
+    for (const auto &s : strings)
+        ostream.write(7, std::string_view{s});
+    ostream.sequenceEnd();
+
+    // field 3: sequence of blob elements
+    ostream.sequenceBegin(3);
+    for (const auto &b : blobs)
+        ostream.write(8, b.data(), static_cast<int32_t>(b.size()));
+    ostream.sequenceEnd();
+
+    const auto used = ostream.bytesUsed();
+
+    SECTION("decode in one shot")
+    {
+        sofab::IStreamObject<BlobAndVarArrays> istream;
+        auto result = istream.feed(ostream.data(), used);
+
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(istream->blob == blob);
+        REQUIRE(istream->strings == strings);
+        REQUIRE(istream->blobs == blobs);
+    }
+
+    SECTION("decode one byte at a time")
+    {
+        // Forces the deferred decoder to suspend/resume mid-element, so the bound
+        // targets must survive across many feed() calls.
+        sofab::IStreamObject<BlobAndVarArrays> istream;
+
+        for (size_t i = 0; i < used; i++)
+        {
+            auto result = istream.feed(ostream.data() + i, 1);
+            REQUIRE(result.code() == sofab::Error::None);
+        }
+
+        REQUIRE(istream->blob == blob);
+        REQUIRE(istream->strings == strings);
+        REQUIRE(istream->blobs == blobs);
+    }
 }
 
 TEST_CASE("IStream: fields without a matching read are skipped")
