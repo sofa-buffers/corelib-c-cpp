@@ -685,6 +685,13 @@ namespace sofab
         // alive and unmoved until decoding of the field completes.
         size_t read(void *dst, size_t maxlen) noexcept
         {
+            // read_field() asserts varlen > 0; a zero-length blob binds no target
+            // and is simply skipped (0 payload bytes), leaving dst untouched.
+            if (maxlen == 0)
+            {
+                return 0;
+            }
+
             sofab_istream_read_blob(&ctx_, dst, maxlen);
             return maxlen;
         }
@@ -717,7 +724,12 @@ namespace sofab
         {
             auto *out = static_cast<std::vector<std::string>*>(usrptr);
             out->emplace_back(size, '\0');
-            sofab_istream_read_string_noterm(ctx, out->back().data(), size);
+            // read_field() asserts varlen > 0; an empty element binds no target
+            // and the (zero-length) payload is skipped, leaving "" in place.
+            if (size > 0)
+            {
+                sofab_istream_read_string_noterm(ctx, out->back().data(), size);
+            }
         }
 
         static void blobArrayElem_(
@@ -725,7 +737,12 @@ namespace sofab
         {
             auto *out = static_cast<std::vector<std::vector<uint8_t>>*>(usrptr);
             out->emplace_back(size);
-            sofab_istream_read_blob(ctx, out->back().data(), size);
+            // read_field() asserts varlen > 0; an empty element binds no target
+            // and the (zero-length) payload is skipped, leaving {} in place.
+            if (size > 0)
+            {
+                sofab_istream_read_blob(ctx, out->back().data(), size);
+            }
         }
     };
 
