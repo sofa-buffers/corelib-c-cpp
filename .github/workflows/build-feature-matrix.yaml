@@ -1,4 +1,4 @@
-name: Feature-Flag Matrix (vector suite)
+name: "Matrix: C features"
 
 # Builds the standalone conformance-vector runner under each feature
 # configuration and runs it. The runner skips vectors that need a capability the
@@ -19,7 +19,7 @@ on:
 jobs:
   vectors:
     runs-on: ubuntu-latest
-    name: ${{ matrix.arch }} / ${{ matrix.config.name }}
+    name: ${{ matrix.config.name }} (${{ matrix.arch }})
 
     strategy:
       fail-fast: false

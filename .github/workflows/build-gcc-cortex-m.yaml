@@ -1,4 +1,4 @@
-name: GCC Cortex-M Build
+name: "Build: Cortex-M"
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
 
 jobs:
   build:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
 
     strategy:

@@ -1,4 +1,4 @@
-name: GCC AVR Build
+name: "Build: AVR"
 
 on:
   push:

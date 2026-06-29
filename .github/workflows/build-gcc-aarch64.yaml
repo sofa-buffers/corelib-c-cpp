@@ -1,4 +1,4 @@
-name: GCC AArch64 Build & Test
+name: "Build: AArch64"
 
 on:
   push:
