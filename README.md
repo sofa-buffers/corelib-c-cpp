@@ -332,16 +332,6 @@ paths and shrinks the footprint (see [Footprint](#footprint)).
 > - **Conformance:** the shipped test vectors include 64-bit values and won't
 >   decode in this mode.
 
-### Build flags
-
-The descriptor-driven object API is excluded with the CMake option
-`-DSOFAB_DISABLE_OBJECT_API=ON` (drops `object.c` entirely). Example minimal
-build (integers only):
-
-```sh
-cmake -S . -B build -DSOFAB_DISABLE_FIXLEN_SUPPORT=1 -DSOFAB_DISABLE_ARRAY_SUPPORT=1 -DSOFAB_DISABLE_SEQUENCE_SUPPORT=1
-```
-
 ## Build & test
 
 The library is built with [CMake](https://cmake.org/) (version 3.10 or later) and a C99 / C++20 capable toolchain such as GCC or Clang.
