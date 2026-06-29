@@ -216,6 +216,50 @@ public:
     }
 };
 
+// Nested-message decode: a child IStreamMessage embedded in a parent. The parent
+// binds the child via istream.read(child) on a sequence field, exercising the
+// IStreamImpl::read<T> InputMessage branch (sofab_istream_read_sequence).
+
+class NestedChild : public sofab::IStreamMessage
+{
+public:
+    struct Data
+    {
+        uint32_t id = 0;
+        float    value = 0.0f;
+    } data_;
+
+    void deserialize(sofab::IStreamImpl &istream, sofab::id id, size_t, size_t) noexcept override
+    {
+        switch (id)
+        {
+            case 1: istream.read(data_.id); break;
+            case 2: istream.read(data_.value); break;
+        }
+    }
+};
+
+class NestedParent : public sofab::IStreamMessage
+{
+public:
+    struct Data
+    {
+        uint32_t    header = 0;
+        NestedChild child;
+        uint32_t    footer = 0;
+    } data_;
+
+    void deserialize(sofab::IStreamImpl &istream, sofab::id id, size_t, size_t) noexcept override
+    {
+        switch (id)
+        {
+            case 1: istream.read(data_.header); break;
+            case 2: istream.read(data_.child); break;   // nested sequence
+            case 3: istream.read(data_.footer); break;
+        }
+    }
+};
+
 //
 
 static_assert(sofab::API_VERSION == 1, "API version mismatch");
@@ -471,5 +515,80 @@ TEST_CASE("IStream: malformed input is rejected")
         auto result = istream.feed(buffer, sizeof(buffer));
 
         REQUIRE(result.code() == sofab::Error::InvalidMessage);
+    }
+}
+
+//
+// Nested-message round-trip: a parent with a scalar before and after a nested
+// child sequence. Exercises the IStreamImpl::read<T> InputMessage branch both in
+// one shot and fed one byte at a time (the nested decoder must suspend/resume at
+// any byte boundary), plus a skip path where the parent ignores the sub-sequence.
+//
+
+TEST_CASE("IStream: round-trip nested message into object")
+{
+    sofab::OStream ostream{256};
+
+    ostream
+        .write(1, 7u)                   // parent header
+        .sequenceBegin(2)               // nested child (fresh id scope)
+            .write(1, 42u)              //   child id
+            .write(2, 3.1415f)          //   child value
+        .sequenceEnd()
+        .write(3, 99u);                 // parent footer
+
+    const auto used = ostream.bytesUsed();
+
+    SECTION("decode in one shot")
+    {
+        sofab::IStreamObject<NestedParent> istream;
+        auto result = istream.feed(ostream.data(), used);
+
+        REQUIRE(result.code() == sofab::Error::None);
+
+        const auto &d = (*istream).data_;
+        REQUIRE(d.header == 7u);
+        REQUIRE(d.child.data_.id == 42u);
+        REQUIRE(d.child.data_.value == 3.1415f);
+        REQUIRE(d.footer == 99u);
+    }
+
+    SECTION("decode one byte at a time")
+    {
+        sofab::IStreamObject<NestedParent> istream;
+
+        for (size_t i = 0; i < used; i++)
+        {
+            auto result = istream.feed(ostream.data() + i, 1);
+            REQUIRE(result.code() == sofab::Error::None);
+        }
+
+        const auto &d = (*istream).data_;
+        REQUIRE(d.header == 7u);
+        REQUIRE(d.child.data_.id == 42u);
+        REQUIRE(d.child.data_.value == 3.1415f);
+        REQUIRE(d.footer == 99u);
+    }
+
+    SECTION("an unread nested sequence is skipped and the parent resyncs")
+    {
+        uint32_t header = 0, footer = 0;
+        int seqCalls = 0;
+
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t, size_t) noexcept
+            {
+                if (id == 1)      istream.read(header);
+                else if (id == 3) istream.read(footer);
+                else if (id == 2) seqCalls++;   // sequence-start: left unread -> skipped
+            }
+        };
+
+        auto result = istream.feed(ostream.data(), used);
+
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(header == 7u);
+        REQUIRE(footer == 99u);
+        REQUIRE(seqCalls == 1);                 // only the top-level start fired
     }
 }
