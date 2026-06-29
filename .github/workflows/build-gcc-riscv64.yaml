@@ -1,4 +1,4 @@
-name: GCC RISC-V 64 Build & Test
+name: "Build: RISC-V 64"
 
 on:
   push:

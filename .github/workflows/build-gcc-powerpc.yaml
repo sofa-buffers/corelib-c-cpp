@@ -1,4 +1,4 @@
-name: GCC PowerPC Build & Test
+name: "Build: PowerPC"
 
 on:
   push:

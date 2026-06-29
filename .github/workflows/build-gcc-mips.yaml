@@ -1,4 +1,4 @@
-name: GCC MIPS Build & Test
+name: "Build: MIPS"
 
 on:
   push:

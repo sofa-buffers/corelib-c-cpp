@@ -1,4 +1,4 @@
-name: GCC RL78 Build
+name: "Build: RL78"
 
 on:
   push:
