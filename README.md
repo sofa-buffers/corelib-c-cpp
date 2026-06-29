@@ -222,106 +222,42 @@ The full reference is generated from the headers (see
 [Documentation](https://sofa-buffers.github.io/corelib-c-cpp/)); this is the
 high-level surface.
 
-### C (`sofab/ostream.h`, `sofab/istream.h`)
+### Setting up a stream (C)
 
-| Encoder (`sofab_ostream_*`) | Purpose |
+Both contexts are initialised over a **caller-owned** buffer/struct, then driven;
+see [Memory handling](#memory-handling) for who owns what.
+
+- **Encode** — `sofab_ostream_init(ctx, buffer, buflen, offset, flush, usrptr)`,
+  then the `sofab_ostream_write_*` helpers (scalars, `fp32`/`fp64`, `string`,
+  `blob`, `array_of_*`, `sequence_begin`/`end`), then `sofab_ostream_flush()`.
+  `sofab_ostream_buffer_set()` swaps in a fresh buffer mid-stream.
+- **Decode** — `sofab_istream_init(ctx, field_cb, usrptr)`, then
+  `sofab_istream_feed()` with arbitrarily small chunks. Inside the field callback
+  a single `sofab_istream_read_*` call *binds* the destination for that field
+  (`read_sequence` descends into a nested sequence); bind nothing and the field —
+  and any sub-sequence — is skipped.
+
+### Setting up a stream (C++)
+
+The C++ layer is a header-only RAII wrapper; pick a class by where its buffer
+lives. `write(id, value)` / `read(value)` deduce the wire encoding from the C++
+type — an unsupported type is a compile-time `static_assert`, not a silent
+mis-encode (and disabled capabilities, e.g. `double` under
+`SOFAB_DISABLE_FP64_SUPPORT`, fail the same way).
+
+| Class | Buffer / role |
 | - | - |
-| `init` / `buffer_set` / `flush` / `bytes_used` | set up the stream (with optional start offset + flush callback), swap the buffer mid-stream, flush, query size |
-| `write_unsigned` / `write_signed` / `write_boolean` | scalar integers and booleans |
-| `write_fp32` / `write_fp64` / `write_string` / `write_blob` | fixed-length values |
-| `write_array_of_*` (`u8`..`u64`, `i8`..`i64`, `fp32`, `fp64`) | arrays |
-| `write_sequence_begin` / `write_sequence_end` | nested sequence framing |
+| `OStreamInline<N, Offset=0>` | output, `N`-byte buffer inline on the stack (no heap; `Offset` reserves room for a lower-layer header) |
+| `OStream(buflen, offset=0)` | output, heap buffer (`shared_ptr<uint8_t[]>`) with an optional flush callback for streaming |
+| `OStreamObject<T>` | output, inline buffer sized from `T::_maxSize`; `serialize()` encodes one `OStreamMessage` type |
+| `IStreamInline(cb)` | input, decode with a `std::function` callback (no subclassing) |
+| `IStreamObject<T>` | input, decode into one `IStreamMessage` type; access fields via `->` / `*` |
 
-| Decoder (`sofab_istream_*`) | Purpose |
-| - | - |
-| `init` / `feed` | register a field callback, then feed bytes in arbitrarily small chunks |
-| `read_u8`..`read_u64` / `read_i8`..`read_i64` / `read_bool` | bind a scalar destination inside the callback |
-| `read_fp32` / `read_fp64` / `read_string` / `read_blob` | bind a fixed-length destination |
-| `read_array_of_*` | bind an array destination |
-| `read_sequence` | descend into a nested sequence with a child callback |
-| *(read nothing)* | the field — and any sub-sequence — is skipped automatically |
-
-#### Read (decode) operations in detail
-
-Every `read` call below is issued **inside a field callback** and only *binds* a
-caller-owned destination — the bytes are filled later by `feed()` (see
-[Memory handling](#memory-handling)). Destinations marked `*` must stay valid and
-at a stable address until decoding finishes.
-
-| Function | Destination pointer | Notes |
-| - | - | - |
-| `read_u8` / `read_u16` / `read_u32` / `read_u64` | `uint8_t*` … `uint64_t*` | unsigned varint; `u64` needs `INT64` support; overflow → `SOFAB_RET_E_INVALID_MSG` |
-| `read_i8` / `read_i16` / `read_i32` / `read_i64` | `int8_t*` … `int64_t*` | zig-zag signed varint; `i64` needs `INT64` support |
-| `read_bool` | `bool*` | one byte (0/1) |
-| `read_fp32` / `read_fp64` | `float*` / `double*` | fixed-length; `fp64` needs `FP64` support |
-| `read_string` | `char* var, size_t maxlen` | copies up to `maxlen-1` payload bytes and **appends a NUL**; longer payload → error |
-| `read_string_noterm` | `char* var, size_t maxlen` | same, but writes no terminator (caps at `maxlen`) |
-| `read_blob` | `void* var, size_t maxlen` | raw bytes; the field must carry the **BLOB** fixlen tag |
-| `read_array_of_{u8..u64,i8..i64}` | `T* var, size_t count` | varint-array elements decoded into the typed buffer |
-| `read_array_of_{fp32,fp64}` | `float*` / `double*`, `size_t count` | fixed-length array; **only fp32/fp64** element types exist |
-| `read_field` | `void* var, size_t varlen, uint8_t opt` | generic primitive used by all scalar/fixlen helpers |
-| `read_array` | `void* var, count, element_size, uint8_t opt` | generic primitive used by all array helpers |
-| `read_sequence` | `sofab_istream_decoder_t* decoder, cb, usrptr` | descend into a nested sequence; the decoder struct must outlive the sub-message |
-| *(call nothing)* | — | the field, including any nested sub-sequence, is skipped automatically |
-
-`read_field` / `read_array` assert `var != NULL` and a non-zero length, so a
-zero-length blob/string simply binds no target.
-
-### C++ (`sofab/sofab.hpp`)
-
-| Output class | Purpose |
-| - | - |
-| `OStreamInline<N, Offset=0>` | Stack-allocated N-byte output stream — zero heap, suitable for bare-metal targets |
-| `OStream(buflen, offset=0)` | Heap-backed output stream; accepts an optional `shared_ptr<uint8_t[]>` or flush callback for streaming output |
-| `OStreamMessage` | Abstract base: override `serialize(OStreamImpl &)` to define the encoding of a message type |
-| `OStreamObject<T>` | Combines an `OStreamMessage`-derived type with its own inline buffer; call `serialize()` to encode |
-| `OStream::Result` | Propagates the first error across a chain of `write()` / `writeIf()` / `sequenceBegin()` / `sequenceEnd()` calls |
-
-| Input class | Purpose |
-| - | - |
-| `IStreamMessage` | Abstract base: override `deserialize(IStreamImpl &, id, size, count)` to bind fields inside the callback |
-| `IStreamObject<T>` | Wraps an `IStreamMessage`-derived type; call `feed(buf, len)` to decode; access data via `->` / `*` |
-| `IStreamInline` | Lambda-based decoder — pass a `std::function` callback without subclassing |
-
-`write(id, value)` and `read(value)` deduce the wire encoding from the C++ type.
-
-#### C++ read methods in detail
-
-`IStreamImpl` exposes the deducing `read()` plus a couple of explicit overloads.
-As on the C side, every overload only *binds* a destination; the value is filled
-by a later `feed()` (see [Memory handling](#memory-handling)).
-
-| Overload | Bound destination | Wire encoding |
-| - | - | - |
-| `read(T&)`, `T` integral | `&value` (≤ 4 bytes always; 8 bytes with `INT64`) | unsigned / signed varint deduced from `is_unsigned_v<T>` |
-| `read(bool&)` | `&value` | one byte |
-| `read(float&)` / `read(double&)` | `&value` | fp32 / fp64 (`double` needs `FP64`) |
-| `read(std::string&)` | `value.data()`, length `value.size()` | string (no terminator) — **must be pre-sized** |
-| `read(std::span/array/vector of integral)` | element storage | varint array (element ≤ 4 bytes, or 8 with `INT64`) |
-| `read(std::span/array/vector of float/double)` | element storage | fp32 / fp64 array |
-| `read(MessageType&)` (an `IStreamMessage`) | the message's own decoder | descends into a nested sequence |
-| `read(void* dst, size_t maxlen)` | `dst` | **blob** (BLOB tag) — disambiguates raw bytes from a varint array |
-| `read(std::vector<std::string>&)` | emplaced, heap-stable elements | sequence of variable-length strings |
-| `read(std::vector<std::vector<uint8_t>>&)` | emplaced, heap-stable elements | sequence of variable-length blobs |
-
-### Allowed types and templates
-
-The deducing `write()` / `read()` accept a fixed set of element types; anything
-else triggers a `static_assert` at the call site rather than a silent mis-encode.
-
-| Category | Allowed | Disallowed |
-| - | - | - |
-| Integer width | `uint8/16/32`, `int8/16/32`; plus `uint64`/`int64` when `INT64` is enabled | 64-bit width when built with `SOFAB_DISABLE_INT64_SUPPORT` (`static_assert sizeof(T) <= 4`) |
-| Floating point | `float` (fp32); `double` (fp64) when `FP64` is enabled | `double` when `SOFAB_DISABLE_FP64_SUPPORT` is set |
-| String / blob | `std::string` (string tag), `read(void*, len)` (blob tag) | — |
-| Scalar arrays | contiguous spans (`std::array`, `std::vector`, `std::span`) of the integer / float element types above | element types wider than allowed; `bool` elements |
-| Fixed-length arrays | **fp32 / fp64 only** | arrays of strings/blobs or other dynamic ("varlen") subtypes — use the `std::vector<std::string>` / `std::vector<std::vector<uint8_t>>` sequence helpers instead |
-
-Output buffers are sized by template parameters: **`OStreamInline<N, Offset = 0>`**
-holds an `N`-byte buffer inline (no heap) and reserves `Offset` bytes at the
-front for a lower-layer header (`static_assert N > 0` and `Offset < N`).
-`OStreamObject<MessageType, N, Offset>` derives its size from the message's
-`_maxSize`.
+Define a message by deriving from `OStreamMessage` / `IStreamMessage` and
+overriding `serialize` / `deserialize`. As in C, each `read()` only *binds* a
+destination that a later `feed()` fills — `read(std::string&)` must be pre-sized,
+and the `std::vector<std::string>` / `std::vector<std::vector<uint8_t>>` overloads
+decode sequences of variable-length elements.
 
 ### Memory handling
 
