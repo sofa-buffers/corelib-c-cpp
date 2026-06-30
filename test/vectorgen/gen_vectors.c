@@ -585,6 +585,32 @@ static void emit_all(FILE *o)
              op_arr(&l, K_ARR_FP64, 0, a, 4));
     }
 
+    /* --- zero-count arrays (§4.7/§4.8): [hdr][count=0], no payload --- */
+    {
+        static const uint32_t a[1] = {0};
+        EMIT(o, "array_unsigned_u32_empty", "array/integer",
+             "Zero-count unsigned array — [hdr][count=0], no elements (§4.7).",
+             op_arr(&l, K_ARR_U32, 0, a, 0));
+    }
+    {
+        static const int32_t a[1] = {0};
+        EMIT(o, "array_signed_i32_empty", "array/integer",
+             "Zero-count signed array — [hdr][count=0], no elements (§4.7).",
+             op_arr(&l, K_ARR_I32, 0, a, 0));
+    }
+    {
+        static const float a[1] = {0};
+        EMIT(o, "array_fp32_empty", "array/float",
+             "Zero-count fixlen array — [hdr][count=0], no fixlen_word, no payload (§4.8).",
+             op_arr(&l, K_ARR_FP32, 0, a, 0));
+    }
+    {
+        static const double a[1] = {0};
+        EMIT(o, "array_fp64_empty", "array/float",
+             "Zero-count fixlen array (fp64) — [hdr][count=0], no fixlen_word, no payload (§4.8).",
+             op_arr(&l, K_ARR_FP64, 0, a, 0));
+    }
+
     /* --- empty / edge sequences --- */
     {
         oplist_t l = {0};

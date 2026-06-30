@@ -731,6 +731,67 @@ static void test_write_array_of_signed (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
 }
 
+static void test_write_array_of_unsigned_empty (void)
+{
+    // §4.7: a zero-count unsigned array encodes as exactly [hdr][count=0].
+    sofab_ostream_t ctx;
+    sofab_ret_t ret;
+    uint8_t buffer[16];
+    memset(buffer, 0x55, sizeof(buffer));
+
+    const uint32_t array[1] = {0};
+
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
+    ret = sofab_ostream_write_array_of_unsigned(&ctx, 0, array, 0, sizeof(array[0]));
+    size_t used = sofab_ostream_bytes_used(&ctx);
+
+    const uint8_t expected[] = {0x03, 0x00};
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
+}
+
+static void test_write_array_of_signed_empty (void)
+{
+    // §4.7: a zero-count signed array encodes as exactly [hdr][count=0].
+    sofab_ostream_t ctx;
+    sofab_ret_t ret;
+    uint8_t buffer[16];
+    memset(buffer, 0x55, sizeof(buffer));
+
+    const int32_t array[1] = {0};
+
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
+    ret = sofab_ostream_write_array_of_signed(&ctx, 0, array, 0, sizeof(array[0]));
+    size_t used = sofab_ostream_bytes_used(&ctx);
+
+    const uint8_t expected[] = {0x04, 0x00};
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
+}
+
+static void test_write_array_of_fp32_empty (void)
+{
+    // §4.8: a zero-count fixlen array carries no fixlen_word and no payload —
+    // exactly [hdr][count=0].
+    sofab_ostream_t ctx;
+    sofab_ret_t ret;
+    uint8_t buffer[16];
+    memset(buffer, 0x55, sizeof(buffer));
+
+    const float array[1] = {0};
+
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
+    ret = sofab_ostream_write_array_of_fp32(&ctx, 0, array, 0);
+    size_t used = sofab_ostream_bytes_used(&ctx);
+
+    const uint8_t expected[] = {0x05, 0x00};
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
+}
+
 static void test_write_array_of_i8 (void)
 {
     sofab_ostream_t ctx;
@@ -1255,6 +1316,9 @@ int test_ostream_main (void)
 
     RUN_TEST(test_write_array_of_unsigned);
     RUN_TEST(test_write_array_of_signed);
+    RUN_TEST(test_write_array_of_unsigned_empty);
+    RUN_TEST(test_write_array_of_signed_empty);
+    RUN_TEST(test_write_array_of_fp32_empty);
     RUN_TEST(test_write_array_of_i8);
     RUN_TEST(test_write_array_of_u8);
     RUN_TEST(test_write_array_of_i16);

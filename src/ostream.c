@@ -334,8 +334,8 @@ extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
     sofab_ret_t ret;
 
     assert(ctx != NULL);
-    assert(data != NULL);
-    assert(element_count > 0);
+    assert(element_count >= 0); /* zero-count arrays are legal */
+    assert(data != NULL || element_count == 0); /* data unused when empty */
     assert(element_size > 0);
 
     if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_VARINTARRAY_UNSIGNED)) != SOFAB_RET_OK)
@@ -387,8 +387,8 @@ extern sofab_ret_t sofab_ostream_write_array_of_signed (
     sofab_ret_t ret;
 
     assert(ctx != NULL);
-    assert(data != NULL);
-    assert(element_count > 0);
+    assert(element_count >= 0); /* zero-count arrays are legal */
+    assert(data != NULL || element_count == 0); /* data unused when empty */
     assert(element_size > 0);
 
     if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_VARINTARRAY_SIGNED)) != SOFAB_RET_OK)
@@ -442,8 +442,8 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
     sofab_ret_t ret;
 
     assert(ctx != NULL);
-    assert(data != NULL);
-    assert(element_count > 0);
+    assert(element_count >= 0); /* zero-count arrays are legal */
+    assert(data != NULL || element_count == 0); /* data unused when empty */
     assert(element_size > 0);
 
     // only FP32 and FP64 are supported for fixlen arrays
@@ -457,6 +457,13 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
     if (_varint_encode(ctx, element_count) < 0)
     {
         return SOFAB_RET_E_BUFFER_FULL;
+    }
+
+    if (element_count == 0)
+    {
+        // a zero-count fixlen array carries no shared fixlen_word and
+        // no payload - just the header and the count.
+        return SOFAB_RET_OK;
     }
 
     if (_varint_encode(ctx, _type_encode(element_size, type)) < 0)
