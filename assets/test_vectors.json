@@ -656,6 +656,50 @@
       "serialized": { "length": 35, "hex": "05044100000000000000000000000000000080000000000000f07f000000000000f0ff" }
     },
     {
+      "name": "array_unsigned_u32_empty",
+      "group": "array/integer",
+      "description": "Zero-count unsigned array — [hdr][count=0], no elements (§4.7).",
+      "offset": 0,
+      "requires": ["array"],
+      "fields": [
+        { "op": "array", "id": 0, "element_type": "u32", "values": [] }
+      ],
+      "serialized": { "length": 2, "hex": "0300" }
+    },
+    {
+      "name": "array_signed_i32_empty",
+      "group": "array/integer",
+      "description": "Zero-count signed array — [hdr][count=0], no elements (§4.7).",
+      "offset": 0,
+      "requires": ["array"],
+      "fields": [
+        { "op": "array", "id": 0, "element_type": "i32", "values": [] }
+      ],
+      "serialized": { "length": 2, "hex": "0400" }
+    },
+    {
+      "name": "array_fp32_empty",
+      "group": "array/float",
+      "description": "Zero-count fixlen array — [hdr][count=0], no fixlen_word, no payload (§4.8).",
+      "offset": 0,
+      "requires": ["fixlen", "array"],
+      "fields": [
+        { "op": "array", "id": 0, "element_type": "fp32", "values": [] }
+      ],
+      "serialized": { "length": 2, "hex": "0500" }
+    },
+    {
+      "name": "array_fp64_empty",
+      "group": "array/float",
+      "description": "Zero-count fixlen array (fp64) — [hdr][count=0], no fixlen_word, no payload (§4.8).",
+      "offset": 0,
+      "requires": ["fixlen", "array", "fp64"],
+      "fields": [
+        { "op": "array", "id": 0, "element_type": "fp64", "values": [] }
+      ],
+      "serialized": { "length": 2, "hex": "0500" }
+    },
+    {
       "name": "empty_sequence",
       "group": "sequence",
       "description": "A sequence with no fields.",

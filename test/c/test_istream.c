@@ -543,29 +543,104 @@ static void test_msg_invalid_array_count_limit_overflow (void)
     TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to array count > SOFAB_ARRAY_MAX, callback is not called
 }
 
-static void test_msg_invalid_array_count_zero (void)
+static void test_msg_array_count_zero_signed (void)
 {
+    // §4.7: a zero-count signed-int array is well-formed: [hdr][count=0].
     sofab_istream_t ctx;
     sofab_ret_t ret;
-    const uint8_t buffer[] = {
-        0x04,
-        0x00,
-        0x53};
+    const uint8_t buffer[] = {0x04, 0x00};
 
-    int8_t value[128] = {0};
+    int8_t value[1] = {0};
     test_single_field_t test =
     {
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = sizeof(value) / sizeof(value[0]),
+        .target_size = 0, // bind a zero-length destination to match the wire count
         .calls = 0
     };
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
-    TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to zero array count, callback is not called
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL(0, test.field_count);
+}
+
+static void test_msg_array_count_zero_unsigned (void)
+{
+    // §4.7: a zero-count unsigned-int array is well-formed: [hdr][count=0].
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x03, 0x00};
+
+    uint8_t value[1] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_INT8U,
+        .target_ptr = &value,
+        .target_size = 0,
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL(0, test.field_count);
+}
+
+static void test_msg_array_count_zero_fixlen (void)
+{
+    // §4.8: a zero-count fixlen array carries no fixlen_word and no payload:
+    // exactly [hdr][count=0].
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x05, 0x00};
+
+    float value[1] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_FP32,
+        .target_ptr = &value,
+        .target_size = 0,
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL(0, test.field_count);
+}
+
+static void test_msg_array_count_zero_resumes_next_field (void)
+{
+    // A zero-count array must not desync the decoder: a following field
+    // decodes normally.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    // field 0: zero-count signed array [0x04][0x00]
+    // field 1: unsigned varint id=1, value=42 [0x08][0x2A]
+    const uint8_t buffer[] = {0x04, 0x00, 0x08, 0x2A};
+
+    uint32_t value = 0;
+    test_single_field_t test =
+    {
+        .expected_id = 1,
+        .target_type = FIELD_TYPE_INT32U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(2, test.calls); // both fields delivered
+    TEST_ASSERT_EQUAL_UINT32(42, value);
 }
 
 static void test_msg_invalid_array_fixlen_type (void)
@@ -2235,7 +2310,10 @@ int test_istream_main (void)
     RUN_TEST(test_msg_invalid_fixlen_length_limit_overflow);
     RUN_TEST(test_msg_invalid_array_count_varint_overflow);
     RUN_TEST(test_msg_invalid_array_count_limit_overflow);
-    RUN_TEST(test_msg_invalid_array_count_zero);
+    RUN_TEST(test_msg_array_count_zero_signed);
+    RUN_TEST(test_msg_array_count_zero_unsigned);
+    RUN_TEST(test_msg_array_count_zero_fixlen);
+    RUN_TEST(test_msg_array_count_zero_resumes_next_field);
     RUN_TEST(test_msg_invalid_array_fixlen_type);
     RUN_TEST(test_msg_invalid_nested_sequence_depth);
     RUN_TEST(test_msg_invalid_nested_sequence_extra_end);

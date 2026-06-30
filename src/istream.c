@@ -231,8 +231,8 @@ static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
  * @return SOFAB_RET_OK on success, or SOFAB_RET_E_USAGE if the bound read type
  *         does not match the decoded field type.
  */
-static sofab_ret_t _call_field_callback (
-    sofab_istream_t *ctx)
+static sofab_ret_t _call_field_callback_masked (
+    sofab_istream_t *ctx, uint8_t type_mask)
 {
     uint8_t field_opt = ctx->target_opt;
 
@@ -258,8 +258,12 @@ static sofab_ret_t _call_field_callback (
     if (ctx->target_ptr)
     {
         // ctx->target_opts can be changed by the callback via read functions,
-        // so verify that it matches the actual field type
-        if ((ctx->target_opt ^ field_opt) & 0x3F)
+        // so verify that it matches the actual field type.
+        //
+        // type_mask selects which bits must match:
+        // 0x3F = field type [0..2] + fixlen subtype [3..5];
+        // 0x07 = field type only
+        if ((ctx->target_opt ^ field_opt) & type_mask)
         {
             // target type mismatch
             return SOFAB_RET_E_USAGE;
@@ -267,6 +271,13 @@ static sofab_ret_t _call_field_callback (
     }
 
     return SOFAB_RET_OK;
+}
+
+static sofab_ret_t _call_field_callback (
+    sofab_istream_t *ctx)
+{
+    // verify both the wire field type and the fixlen subtype
+    return _call_field_callback_masked(ctx, 0x3F);
 }
 
 //
@@ -715,13 +726,31 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 size_t count = (size_t)(array_count);
                 ctx->target_count = count;
 
+                // read array elements (see IDLE state for type check)
+                uint8_t type = _OPT_FIELDTYPE(ctx->target_opt);
+
                 if (count == 0)
                 {
-                    // arrays with zero elements are not allowed
-                    return SOFAB_RET_E_INVALID_MSG;
+                    // A zero-count fixlen array has no fixlen_word, so the
+                    // element subtype is absent from the wire and
+                    // cannot be validated against the bound destination!
+                    // Match only the field type (0x07), not the subtype.
+                    if ((ret = _call_field_callback_masked(ctx, 0x07)) != SOFAB_RET_OK)
+                    {
+                        return ret;
+                    }
+
+                    if (ctx->target_ptr && count != ctx->target_count)
+                    {
+                        // array size missmatch
+                        return SOFAB_RET_E_INVALID_MSG;
+                    }
+
+                    ctx->decoder->state = _DECODER_STATE_IDLE;
+                    break;
                 }
 
-                if (_OPT_FIELDTYPE(ctx->target_opt) != SOFAB_TYPE_FIXLENARRAY)
+                if (type != SOFAB_TYPE_FIXLENARRAY)
                 {
                     if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
                     {
@@ -738,8 +767,6 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     }
                 }
 
-                // read array elements (see IDLE state for type check)
-                uint8_t type = _OPT_FIELDTYPE(ctx->target_opt);
                 if (type == SOFAB_TYPE_VARINTARRAY_UNSIGNED)
                     ctx->decoder->state = _DECODER_STATE_VARINT_UNSIGNED;
                 else if (type == SOFAB_TYPE_VARINTARRAY_SIGNED)
@@ -777,7 +804,6 @@ extern void sofab_istream_read_array (
 {
     assert(ctx != NULL);
     assert(var != NULL);
-    assert(element_count > 0);
     assert(element_size > 0);
 
     ctx->target_ptr = (uint8_t *)var;
