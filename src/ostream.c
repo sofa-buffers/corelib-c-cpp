@@ -459,13 +459,11 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
         return SOFAB_RET_E_BUFFER_FULL;
     }
 
-    if (element_count == 0)
-    {
-        // a zero-count fixlen array carries no shared fixlen_word and
-        // no payload - just the header and the count.
-        return SOFAB_RET_OK;
-    }
-
+    // The shared fixlen_word (element width + subtype) is ALWAYS written, even
+    // for a zero-count array. Otherwise an empty fp32 and an empty fp64 array
+    // would be wire-identical ([header][count=0]) and a decoder could not tell
+    // them apart. A zero-count array is thus [header][count=0][fixlen_word], with
+    // no payload.
     if (_varint_encode(ctx, _type_encode(element_size, type)) < 0)
     {
         return SOFAB_RET_E_BUFFER_FULL;

@@ -773,8 +773,9 @@ static void test_write_array_of_signed_empty (void)
 
 static void test_write_array_of_fp32_empty (void)
 {
-    // §4.8: a zero-count fixlen array carries no fixlen_word and no payload —
-    // exactly [hdr][count=0].
+    // §4.8: a zero-count fixlen array still carries its fixlen_word (so an empty
+    // fp32 and fp64 array stay distinguishable) but no payload —
+    // exactly [hdr][count=0][fixlen_word].
     sofab_ostream_t ctx;
     sofab_ret_t ret;
     uint8_t buffer[16];
@@ -786,7 +787,7 @@ static void test_write_array_of_fp32_empty (void)
     ret = sofab_ostream_write_array_of_fp32(&ctx, 0, array, 0);
     size_t used = sofab_ostream_bytes_used(&ctx);
 
-    const uint8_t expected[] = {0x05, 0x00};
+    const uint8_t expected[] = {0x05, 0x00, 0x20}; // fixlen_word 0x20 = (4<<3)|fp32
     TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_OK, "ret != SOFAB_RET_OK");
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "used != sizeof(expected)");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");

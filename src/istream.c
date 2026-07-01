@@ -636,6 +636,17 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     }
                 }
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+                // An empty fixlen ARRAY has just read its fixlen_word (the callback
+                // above fired with the subtype) but carries no elements - finish.
+                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY &&
+                    ctx->target_count == 0)
+                {
+                    ctx->decoder->state = _DECODER_STATE_IDLE;
+                    break;
+                }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+
                 if (length)
                 {
                     // store source length to know how many bytes to consume
@@ -731,10 +742,21 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                 if (count == 0)
                 {
-                    // A zero-count fixlen array has no fixlen_word, so the
-                    // element subtype is absent from the wire and
-                    // cannot be validated against the bound destination!
-                    // Match only the field type (0x07), not the subtype.
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+                    if (type == SOFAB_TYPE_FIXLENARRAY)
+                    {
+                        // A zero-count fixlen array still carries its fixlen_word,
+                        // so the element subtype IS on the wire: read it (the field
+                        // callback fires there with the full subtype). No payload
+                        // follows for an empty array.
+                        ctx->decoder->state = _DECODER_STATE_FIXLEN_LEN;
+                        break;
+                    }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
+                    // A zero-count varint (integer) array carries no fixlen_word;
+                    // its element width is API-only, so match the field type
+                    // (0x07) without a subtype and finish.
                     if ((ret = _call_field_callback_masked(ctx, 0x07)) != SOFAB_RET_OK)
                     {
                         return ret;

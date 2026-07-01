@@ -593,11 +593,12 @@ static void test_msg_array_count_zero_unsigned (void)
 
 static void test_msg_array_count_zero_fixlen (void)
 {
-    // §4.8: a zero-count fixlen array carries no fixlen_word and no payload:
-    // exactly [hdr][count=0].
+    // §4.8: a zero-count fixlen array carries its fixlen_word (element subtype)
+    // but no payload: [hdr][count=0][fixlen_word]. The callback fires with the
+    // fp32 subtype, count 0.
     sofab_istream_t ctx;
     sofab_ret_t ret;
-    const uint8_t buffer[] = {0x05, 0x00};
+    const uint8_t buffer[] = {0x05, 0x00, 0x20}; // fixlen_word 0x20 = (4<<3)|fp32
 
     float value[1] = {0};
     test_single_field_t test =
