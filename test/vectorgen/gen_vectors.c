@@ -301,6 +301,30 @@ static void emit_requires(FILE *o, uint32_t req)
  * vector needs optional features, so a build compiled without a feature can
  * skip the vectors it cannot handle.
  */
+/*
+ * A leaf field equal to its type default (zero / empty) is omitted by a
+ * sparse-canonical encoder (MESSAGE_SPEC S2). A SEQUENCE is always framed, so
+ * seq_begin/seq_end and any non-default child survive; only default leaves drop.
+ */
+static int is_default_leaf(const op_t *op)
+{
+    switch (op->kind)
+    {
+        case K_UNSIGNED:
+        case K_BOOLEAN:   return op->u == 0;
+        case K_SIGNED:    return op->s == 0;
+        case K_FP32:
+        case K_FP64:      return op->f == 0.0;
+        case K_STRING:    return op->str[0] == '\0';
+        case K_BLOB:
+        case K_ARR_U8:  case K_ARR_U16: case K_ARR_U32: case K_ARR_U64:
+        case K_ARR_I8:  case K_ARR_I16: case K_ARR_I32: case K_ARR_I64:
+        case K_ARR_FP32: case K_ARR_FP64:
+                          return op->count == 0;
+        default:          return 0; /* K_SEQ_BEGIN / K_SEQ_END: never omitted */
+    }
+}
+
 static void emit_vector_skip(FILE *o, const char *name, const char *group,
                              const char *desc, const oplist_t *l,
                              const uint32_t *skip_ids, size_t nskip)
@@ -318,6 +342,26 @@ static void emit_vector_skip(FILE *o, const char *name, const char *group,
         }
     }
     size_t used = sofab_ostream_flush(&os);
+
+    /*
+     * Sparse-canonical form: replay again, omitting every leaf op equal to its
+     * type default; sequences stay framed. This is the byte-exact target for a
+     * sparse encoder (the generated non-C backends), while "serialized" (dense)
+     * remains the primitive-layer ground truth and the decoder's skip input.
+     */
+    uint8_t sbuffer[1024];
+    sofab_ostream_t sos;
+    sofab_ostream_init(&sos, sbuffer, sizeof(sbuffer), 0, NULL, NULL);
+    for (size_t i = 0; i < l->n; ++i)
+    {
+        if (is_default_leaf(&l->ops[i])) continue;
+        if (replay(&sos, &l->ops[i]) != SOFAB_RET_OK)
+        {
+            fprintf(stderr, "sparse encode failed in vector '%s' at op %zu\n", name, i);
+            return;
+        }
+    }
+    size_t sused = sofab_ostream_flush(&sos);
 
     if (!g_first_vector) fputs(",\n", o);
     g_first_vector = 0;
@@ -344,6 +388,9 @@ static void emit_vector_skip(FILE *o, const char *name, const char *group,
     fprintf(o, "      ],\n");
     fprintf(o, "      \"serialized\": { \"length\": %zu, \"hex\": ", used);
     json_hex(o, buffer, used);
+    fprintf(o, " },\n");
+    fprintf(o, "      \"serialized_sparse\": { \"length\": %zu, \"hex\": ", sused);
+    json_hex(o, sbuffer, sused);
     fprintf(o, " }\n");
     fprintf(o, "    }");
 }
@@ -793,7 +840,8 @@ int main(void)
                "and the exact bytes the encoder produced.\",\n");
     fprintf(o, "  \"notes\": {\n");
     fprintf(o, "    \"byte_order\": \"little-endian\",\n");
-    fprintf(o, "    \"serialized.hex\": \"lowercase hex of the full message; authoritative ground truth\",\n");
+    fprintf(o, "    \"serialized.hex\": \"lowercase hex of the full (dense) message; primitive-layer ground truth and the decoder's skip input\",\n");
+    fprintf(o, "    \"serialized_sparse.hex\": \"lowercase hex of the sparse-canonical message (MESSAGE_SPEC S2): every leaf field equal to its type default is omitted, sequences stay framed; byte-exact target for a sparse encoder\",\n");
     fprintf(o, "    \"integers\": \"decimal JSON number literals (full u64/i64 range)\",\n");
     fprintf(o, "    \"floats\": \"finite values as JSON numbers; +/-infinity as the strings 'inf'/'-inf'\",\n");
     fprintf(o, "    \"blob.value_hex\": \"lowercase hex of the blob payload\",\n");
