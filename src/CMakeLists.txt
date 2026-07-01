@@ -14,6 +14,10 @@ endif()
 
 add_library(sofabuffers ${SOFAB_SOURCES})
 
+# Namespaced alias for modern-CMake consumers (matches the vcpkg/Conan port
+# name sofa-buffers-corelib). Additive: the sofabuffers target is unchanged.
+add_library(sofa-buffers::corelib ALIAS sofabuffers)
+
 target_include_directories(sofabuffers PUBLIC include)
 target_compile_options(sofabuffers PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-error=cpp)
 

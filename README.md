@@ -21,6 +21,13 @@ allocator and no third-party dependencies — with an API simple enough to use
 without a code generator, so the same wire format runs from deeply embedded MCUs
 up to IoT-class devices.
 
+### Package name
+
+The library is distributed as the vcpkg/Conan port `sofa-buffers-corelib` and is
+consumed in CMake through the namespaced target `sofa-buffers::corelib` (with
+`#include <sofab/…>`). The code API is unchanged: the C API keeps the `sofab_`
+prefix and the C++ API keeps `namespace sofab`.
+
 ### Supported languages
 
 - **C99** or later
