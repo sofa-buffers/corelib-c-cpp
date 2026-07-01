@@ -95,22 +95,36 @@ extern sofab_ret_t sofab_object_encode (
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
-        if (info->default_values != NULL)
+        /*
+         * A SEQUENCE (nested object) is always framed and recursed into; whether
+         * its children appear is decided per inner field below. It is never
+         * omitted by a whole-object memcmp/_iszero over its raw storage, which
+         * would also compare struct padding and mishandle non-zero nested
+         * defaults (a logically-default child is not all-zero). Only leaf fields
+         * are skipped when they equal their default. When SEQUENCE support is
+         * compiled out this guard vanishes, leaving the original code unchanged.
+         */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+        if (field->type != SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
+#endif
         {
-            if (memcmp(
-                CAST_TO(const void *, info->default_values, field->offset),
-                CAST_TO(const void *, src, field->offset), field->size) == 0)
+            if (info->default_values != NULL)
             {
-                // Field value matches default, skip serialization
-                continue;
+                if (memcmp(
+                    CAST_TO(const void *, info->default_values, field->offset),
+                    CAST_TO(const void *, src, field->offset), field->size) == 0)
+                {
+                    // Field value matches default, skip serialization
+                    continue;
+                }
             }
-        }
-        else
-        {
-            if (_iszero(CAST_TO(const void *, src, field->offset), field->size))
+            else
             {
-                // No default values provided and field is zero, skip serialization
-                continue;
+                if (_iszero(CAST_TO(const void *, src, field->offset), field->size))
+                {
+                    // No default values provided and field is zero, skip serialization
+                    continue;
+                }
             }
         }
 
