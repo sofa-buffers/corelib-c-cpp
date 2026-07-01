@@ -658,19 +658,20 @@ static void test_object_deserialize_invalid_field_type (void)
 //
 
 /*
- * Regression test: omitting a sequence field must not shift the nested-descriptor
- * index of the sequence fields that follow it.
+ * Regression test: consecutive SEQUENCE fields must each select their own nested
+ * descriptor (keyed off the static field->nested_idx), even when a preceding
+ * sequence is empty.
  *
- * The encoder skips any field equal to its default (here: zero). For each SEQUENCE
- * field it DOES emit, it must select that field's own nested descriptor. If a
- * preceding sequence is skipped, a naive running counter would pick the wrong
- * entry of nested_list for the next emitted sequence and corrupt the stream, while
- * the decoder (which keys off the static field->nested_idx) disagrees and the
- * round-trip fails.
+ * A SEQUENCE is always framed and recursed into -- only its leaf fields are
+ * skipped when default, the wrapper itself is not -- so seq_a below is emitted as
+ * an EMPTY wrapper. For each SEQUENCE, encoder and decoder must use that field's
+ * own nested_idx; a naive running counter over emitted sequences would pick the
+ * wrong nested_list entry and corrupt the stream.
  *
- * Layout: seq_a (nested_idx 0) is left zero and skipped; only seq_b (nested_idx 1)
- * carries data. seq_a and seq_b have deliberately different field layouts so a
- * wrong-descriptor encode is detectable. The round-trip must preserve seq_b.
+ * Layout: seq_a (nested_idx 0) is all-default -> emitted empty; seq_b
+ * (nested_idx 1) carries data. seq_a and seq_b have deliberately different field
+ * layouts so a wrong-descriptor encode is detectable. The round-trip must
+ * preserve seq_b.
  */
 typedef struct
 {
@@ -702,7 +703,7 @@ static const sofab_object_descr_t _info_regr_seq_b =
 
 typedef struct
 {
-    regr_seq_a_t a; /* sequence, omitted when zero */
+    regr_seq_a_t a; /* sequence, all-default -> emitted as an empty wrapper */
     regr_seq_b_t b; /* sequence, carries data */
 } regr_msg_t;
 
@@ -727,11 +728,11 @@ typedef struct
     sofab_object_decoder_t decoder[2];
 } regr_msg_decoder_t;
 
-static void test_object_roundtrip_skipped_sequence_before_sequence (void)
+static void test_object_roundtrip_empty_sequence_before_sequence (void)
 {
     regr_msg_t in;
     memset(&in, 0, sizeof(in));
-    /* leave `a` zero so the encoder omits it; only `b` carries data */
+    /* leave `a` all-default -> emitted as an empty wrapper; only `b` carries data */
     strncpy(in.b.s, "hello", sizeof(in.b.s));
     in.b.y = 0xABCD;
 
@@ -754,9 +755,74 @@ static void test_object_roundtrip_skipped_sequence_before_sequence (void)
     sofab_istream_init(&dec.ctx, sofab_object_field_cb, (void *)&dec.decoder[0]);
 
     sofab_ret_t r = sofab_istream_feed(&dec.ctx, buffer, used);
-    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, r, "decode of omitted-sequence-before-sequence failed");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, r, "decode of empty-sequence-before-sequence failed");
     TEST_ASSERT_EQUAL_STRING_MESSAGE("hello", out.b.s, "seq_b.s not preserved");
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(0xABCD, out.b.y, "seq_b.y not preserved");
+}
+
+//
+
+/*
+ * A nested object (SEQUENCE) whose fields are all at their default is emitted as
+ * an EMPTY wrapper sequence, never dropped: presence is decided per inner field,
+ * so the framing is always written and the wrapper is simply empty. Previously a
+ * whole-object memcmp/_iszero could drop the sequence entirely, which diverges
+ * from the per-field model and is sensitive to struct padding.
+ */
+typedef struct
+{
+    uint32_t x;
+    uint32_t y;
+} defseq_inner_t;
+
+static const sofab_object_descr_field_t _info_fields_defseq_inner[] =
+{
+    SOFAB_OBJECT_FIELD(0, defseq_inner_t, x, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+    SOFAB_OBJECT_FIELD(1, defseq_inner_t, y, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+
+static const sofab_object_descr_t _info_defseq_inner =
+    SOFAB_OBJECT_DESCR(_info_fields_defseq_inner, 2, NULL, 0);
+
+typedef struct
+{
+    defseq_inner_t inner;
+} defseq_msg_t;
+
+static const sofab_object_descr_field_t _info_fields_defseq_msg[] =
+{
+    SOFAB_OBJECT_FIELD_SEQUENCE(7, defseq_msg_t, inner, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+
+static const sofab_object_descr_t *const _info_nested_defseq_msg[] =
+{
+    &_info_defseq_inner,
+};
+
+static const sofab_object_descr_t _info_defseq_msg =
+    SOFAB_OBJECT_DESCR(_info_fields_defseq_msg, 1, _info_nested_defseq_msg, 1);
+
+static void test_object_default_sequence_emitted_empty (void)
+{
+    defseq_msg_t in;
+    memset(&in, 0, sizeof(in)); /* inner all-default */
+
+    sofab_ostream_t octx;
+    uint8_t buffer[32];
+    sofab_ostream_init(&octx, buffer, sizeof(buffer), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, &_info_defseq_msg, &in), "encode failed");
+    size_t used = sofab_ostream_flush(&octx);
+
+    /*
+     * Emitted as an empty wrapper sequence for field id 7 -- NOT dropped:
+     * sequence_begin(7) = (7<<3)|0b110 = 0x3e, sequence_end = 0b111 = 0x07.
+     */
+    static const uint8_t expected[] = { 0x3e, 0x07 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "default nested sequence must be emitted as an empty wrapper, not dropped");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used,
+        "default nested sequence bytes mismatch");
 }
 
 //
@@ -775,7 +841,8 @@ int test_object_main (void)
     RUN_TEST(test_object_deserialize_invalid_nested_depth);
     RUN_TEST(test_object_deserialize_invalid_field_type);
 
-    RUN_TEST(test_object_roundtrip_skipped_sequence_before_sequence);
+    RUN_TEST(test_object_default_sequence_emitted_empty);
+    RUN_TEST(test_object_roundtrip_empty_sequence_before_sequence);
 
     return UNITY_END();
 }
