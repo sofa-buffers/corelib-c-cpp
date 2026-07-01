@@ -648,13 +648,15 @@ static void emit_all(FILE *o)
     {
         static const float a[1] = {0};
         EMIT(o, "array_fp32_empty", "array/float",
-             "Zero-count fixlen array — [hdr][count=0], no fixlen_word, no payload (§4.8).",
+             "Zero-count fixlen array — [hdr][count=0][fixlen_word], no payload; the "
+             "fixlen_word is always present so fp32/fp64 stay distinguishable (§4.8).",
              op_arr(&l, K_ARR_FP32, 0, a, 0));
     }
     {
         static const double a[1] = {0};
         EMIT(o, "array_fp64_empty", "array/float",
-             "Zero-count fixlen array (fp64) — [hdr][count=0], no fixlen_word, no payload (§4.8).",
+             "Zero-count fixlen array (fp64) — [hdr][count=0][fixlen_word], no payload; "
+             "the fixlen_word keeps it distinct from an empty fp32 array (§4.8).",
              op_arr(&l, K_ARR_FP64, 0, a, 0));
     }
 
