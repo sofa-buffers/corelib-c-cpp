@@ -908,3 +908,184 @@ TEST_CASE("OStream: FixedString encodes byte-identical to std::string")
     REQUIRE(n == fromStd.bytesUsed());
     REQUIRE(std::equal(fromFixed.data(), fromFixed.data() + n, fromStd.data()));
 }
+
+//
+// FixedBytes<N>: heap-free blob type for encode + decode.
+//
+
+TEST_CASE("FixedBytes: brace-init sets the logical length (no silent zero-length)")
+{
+    // The regression this type guards against: an aggregate with a default-zero
+    // length would let a brace-init fill the storage while leaving size()==0, so
+    // the blob encodes as empty. The initializer_list ctor makes that impossible.
+    sofab::FixedBytes<8> b = {1, 2, 3};
+    REQUIRE(b.size() == 3);
+    REQUIRE_FALSE(b.empty());
+    REQUIRE(b[0] == 1);
+    REQUIRE(b[2] == 3);
+
+    // Brace-assignment goes through operator= and likewise sets the length.
+    b = {9, 8, 7, 6};
+    REQUIRE(b.size() == 4);
+    REQUIRE(b[3] == 6);
+}
+
+TEST_CASE("FixedBytes: capacity, truncation, push_back and set_len")
+{
+    sofab::FixedBytes<3> b = {1, 2, 3, 4, 5};   // excess dropped
+    REQUIRE(b.size() == 3);
+    REQUIRE(b.capacity() == 3);
+
+    b.clear();
+    REQUIRE(b.empty());
+    b.push_back(0xAA);
+    b.push_back(0xBB);
+    REQUIRE(b.size() == 2);
+    b.push_back(0xCC);
+    b.push_back(0xDD);                           // no-op past capacity
+    REQUIRE(b.size() == 3);
+    REQUIRE(b[2] == 0xCC);
+
+    // set_len is the decode hook: it fixes the logical length (clamped to N).
+    b.set_len(1);
+    REQUIRE(b.size() == 1);
+    b.set_len(999);
+    REQUIRE(b.size() == 3);
+}
+
+TEST_CASE("FixedBytes: comparisons")
+{
+    sofab::FixedBytes<8> a = {1, 2, 3};
+    sofab::FixedBytes<8> b = {1, 2, 3};
+    sofab::FixedBytes<8> c = {1, 2};
+    REQUIRE(a == b);
+    REQUIRE(a != c);
+    REQUIRE(a != sofab::FixedBytes<8>{});        // vs default (the omitted-default compare)
+}
+
+//
+// InlineVector<T, N>: heap-free sequence type for encode + decode.
+//
+
+TEST_CASE("InlineVector: brace-assignment sets the logical length (the arena footgun)")
+{
+    // This is the exact miscompile reported against the generated container: an
+    // aggregate InlineVector let `m.field = {"a", "", "b"}` fill buf while leaving
+    // len_ == 0, so size()==0 and the field was silently dropped from the wire.
+    // The initializer_list ctor/operator= below make the brace form set the size.
+    sofab::InlineVector<sofab::FixedString<64>, 5> v = {"a", "", "b"};
+    REQUIRE(v.size() == 3);
+    REQUIRE(v[0] == std::string_view{"a"});
+    REQUIRE(v[1].empty());
+    REQUIRE(v[2] == std::string_view{"b"});
+
+    v = {"x", "y"};                              // via operator=
+    REQUIRE(v.size() == 2);
+    REQUIRE(v[1] == std::string_view{"y"});
+}
+
+TEST_CASE("InlineVector: push_back, emplace_back, iteration and capacity")
+{
+    sofab::InlineVector<int, 3> v;
+    REQUIRE(v.empty());
+    REQUIRE(v.capacity() == 3);
+
+    v.push_back(10);
+    v.push_back(20);
+    v.emplace_back() = 30;
+    REQUIRE(v.size() == 3);
+    REQUIRE(v.back() == 30);
+
+    int sum = 0;
+    for (int x : v) sum += x;
+    REQUIRE(sum == 60);
+
+    sofab::InlineVector<int, 3> w = {10, 20, 30};
+    REQUIRE(v == w);
+    w = {10, 20};
+    REQUIRE(v != w);
+
+    // At capacity the length never grows: emplace_back reuses the last slot
+    // (an OOB-safe clamp for a malformed over-length wire) rather than writing
+    // past N. The logical length stays N.
+    v.push_back(40);
+    REQUIRE(v.size() == 3);
+    REQUIRE(v.back() == 40);
+}
+
+// A message that decodes a scalar blob into a FixedBytes and a string sequence
+// into an InlineVector<FixedString>, mirroring exactly what the generator emits
+// for the corelib: c-cpp (fixed-capacity) profile: a per-element visitor that
+// emplaces into the next inline slot, set_len()s it, then binds the read.
+class FixedContainersObject : public sofab::IStreamMessage
+{
+public:
+    // Mirrors the generator's _FixedStrSeq: fill inline FixedString slots.
+    struct StrSeq : sofab::IStreamMessage
+    {
+        sofab::InlineVector<sofab::FixedString<16>, 5> *out = nullptr;
+        void deserialize(sofab::IStreamImpl &is, sofab::id, size_t size, size_t) noexcept override
+        {
+            auto &s = out->emplace_back();
+            s.set_len(size);
+            if (size) is.read(s);
+        }
+    } strSeq_;
+
+    sofab::FixedBytes<8>                            blob;
+    sofab::InlineVector<sofab::FixedString<16>, 5>  strings;
+
+    void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
+    {
+        switch (id)
+        {
+            case 1:
+                blob.set_len(size);
+                is.read(blob.data(), size);
+                break;
+            case 2:
+                strSeq_.out = &strings;
+                is.read(strSeq_);
+                break;
+        }
+    }
+
+    FixedContainersObject *operator->() noexcept { return this; }
+};
+
+TEST_CASE("IStream: blob + string sequence round-trip into fixed inline containers")
+{
+    const std::vector<uint8_t> blob = {10, 20, 30, 40, 50};
+    const std::vector<std::string> strings = {"a", "", "hello", "world"};
+
+    sofab::OStream ostream{256};
+    ostream.write(1, blob.data(), static_cast<int32_t>(blob.size()));
+    ostream.sequenceBegin(2);
+    for (const auto &s : strings)
+        ostream.write(7, std::string_view{s});
+    ostream.sequenceEnd();
+    const auto used = ostream.bytesUsed();
+
+    auto check = [&](FixedContainersObject &m) {
+        REQUIRE(m.blob.size() == blob.size());
+        REQUIRE(std::equal(m.blob.begin(), m.blob.end(), blob.begin()));
+        REQUIRE(m.strings.size() == strings.size());
+        for (size_t i = 0; i < strings.size(); ++i)
+            REQUIRE(m.strings[i] == std::string_view{strings[i]});
+    };
+
+    SECTION("decode in one shot")
+    {
+        sofab::IStreamObject<FixedContainersObject> istream;
+        REQUIRE(istream.feed(ostream.data(), used).code() == sofab::Error::None);
+        check(*istream);
+    }
+
+    SECTION("decode one byte at a time (address-stable inline targets)")
+    {
+        sofab::IStreamObject<FixedContainersObject> istream;
+        for (size_t i = 0; i < used; i++)
+            REQUIRE(istream.feed(ostream.data() + i, 1).code() == sofab::Error::None);
+        check(*istream);
+    }
+}
