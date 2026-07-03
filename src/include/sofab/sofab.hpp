@@ -99,6 +99,220 @@ namespace sofab
     /*! @brief Field identifier type (alias of @ref sofab_id_t). */
     using id = sofab_id_t;
 
+    /*******************/
+    /*** FixedString ***/
+    /*******************/
+
+    /*!
+     * @brief Fixed-capacity, heap-free string of up to @p N characters.
+     *
+     * A drop-in, embedded-friendly stand-in for @c std::string on both the encode
+     * and decode paths. The characters live in an inline @c std::array, so an
+     * instance allocates nothing, never throws (overflow clamps to @p N), and
+     * compiles cleanly under @c -fno-exceptions / @c -fno-rtti. Because the buffer
+     * never moves, an instance is a valid address-stable decode target for the
+     * deferred @ref IStreamImpl decoder (bytes bound now, filled by a later
+     * @ref IStreamImpl::feed pass).
+     *
+     * The storage is @c N+1 bytes: one extra slot always holds a trailing NUL so
+     * @ref c_str and the @c std::string_view encode path remain valid even at full
+     * length @p N. The buffer is zero-initialised, so the NUL is present from
+     * construction and is re-placed by every length-changing operation.
+     *
+     * @par Generator integration contract
+     * Generated code mirrors the @c std::string path exactly, so this type keeps a
+     * stable surface for it:
+     *   - decode emits @c s.set_len(_size); if (_size) is.read(s); — @ref set_len
+     *     fixes the logical length (and terminating NUL) before the read binds the
+     *     buffer, and @ref IStreamImpl::read fills @c data() over @c size() bytes;
+     *   - encode emits @c os.write(id, s); — the implicit @ref operator std::string_view
+     *     routes it through the existing string encode branch, byte-for-byte
+     *     identical to the same-content @c std::string.
+     *
+     * @tparam N  Maximum number of characters (excluding the reserved NUL slot).
+     */
+    template <std::size_t N>
+    class FixedString
+    {
+        std::array<char, N + 1> buf_{};     //!< Inline storage (+1 for the NUL).
+        std::size_t len_ = 0;               //!< Current logical length (<= N).
+
+    public:
+        /*! @brief Character type (mirrors @c std::string). */
+        using value_type = char;
+        /*! @brief Size type (mirrors @c std::string). */
+        using size_type = std::size_t;
+
+        /*! @brief Construct an empty string. */
+        FixedString() noexcept = default;
+
+        /*!
+         * @brief Construct from a NUL-terminated C string (truncated to @p N).
+         * @param s  Source string, or @c nullptr for an empty string.
+         */
+        FixedString(const char *s) noexcept
+        {
+            assign(s ? std::string_view{s} : std::string_view{});
+        }
+
+        /*!
+         * @brief Construct from a string view (truncated to @p N).
+         * @param sv  Source characters (may contain embedded NULs).
+         */
+        FixedString(std::string_view sv) noexcept
+        {
+            assign(sv);
+        }
+
+        /*!
+         * @brief Construct from a @c std::string (the easy on-ramp; truncated to @p N).
+         * @param s  Source string.
+         */
+        FixedString(const std::string &s) noexcept
+        {
+            assign(std::string_view{s});
+        }
+
+        /*! @brief Assign from a NUL-terminated C string (truncated to @p N). */
+        FixedString &operator=(const char *s) noexcept
+        {
+            assign(s ? std::string_view{s} : std::string_view{});
+            return *this;
+        }
+
+        /*! @brief Assign from a string view (truncated to @p N). */
+        FixedString &operator=(std::string_view sv) noexcept
+        {
+            assign(sv);
+            return *this;
+        }
+
+        /*! @brief Assign from a @c std::string (truncated to @p N). */
+        FixedString &operator=(const std::string &s) noexcept
+        {
+            assign(std::string_view{s});
+            return *this;
+        }
+
+        /*!
+         * @brief Replace the contents with @p sv, truncated to @p N characters.
+         * @param sv  Source characters (may contain embedded NULs).
+         * @return Reference to @c *this.
+         */
+        FixedString &assign(std::string_view sv) noexcept
+        {
+            len_ = sv.size() > N ? N : sv.size();
+            for (std::size_t i = 0; i < len_; ++i)
+            {
+                buf_[i] = sv[i];
+            }
+            buf_[len_] = '\0';
+            return *this;
+        }
+
+        /*!
+         * @brief Decode hook: set the logical length and (re)place the trailing NUL.
+         *
+         * Called by generated decode before binding the buffer: it fixes
+         * @c size() to the field length (clamped to @p N) and writes the NUL at
+         * @c buf_[len_]. The subsequent @ref IStreamImpl::read binds exactly
+         * @c size() bytes via @c sofab_istream_read_string_noterm, which fills
+         * @c [0, size()) and never touches @c buf_[len_], so the NUL survives and
+         * @ref c_str stays valid. Re-decoding a shorter value re-terminates here.
+         *
+         * @param n  Requested logical length (clamped to @p N).
+         */
+        void set_len(std::size_t n) noexcept
+        {
+            len_ = n > N ? N : n;
+            buf_[len_] = '\0';
+        }
+
+        /*! @brief Mutable pointer to the character buffer (decode target). */
+        char *data() noexcept { return buf_.data(); }
+        /*! @brief Const pointer to the character buffer. */
+        const char *data() const noexcept { return buf_.data(); }
+        /*! @brief NUL-terminated view of the contents. */
+        const char *c_str() const noexcept { return buf_.data(); }
+
+        /*! @brief Number of characters currently stored. */
+        std::size_t size() const noexcept { return len_; }
+        /*! @brief Alias of @ref size. */
+        std::size_t length() const noexcept { return len_; }
+        /*! @brief True if the string is empty. */
+        bool empty() const noexcept { return len_ == 0; }
+        /*! @brief Maximum number of characters (the template parameter @p N). */
+        static constexpr std::size_t capacity() noexcept { return N; }
+        /*! @brief Alias of @ref capacity. */
+        static constexpr std::size_t max_size() noexcept { return N; }
+
+        /*! @brief Access the character at @p i (no bounds checking). */
+        char &operator[](std::size_t i) noexcept { return buf_[i]; }
+        /*! @brief Access the character at @p i (no bounds checking). */
+        const char &operator[](std::size_t i) const noexcept { return buf_[i]; }
+
+        /*! @brief Iterator to the first character. */
+        char *begin() noexcept { return buf_.data(); }
+        /*! @brief Iterator past the last character. */
+        char *end() noexcept { return buf_.data() + len_; }
+        /*! @brief Const iterator to the first character. */
+        const char *begin() const noexcept { return buf_.data(); }
+        /*! @brief Const iterator past the last character. */
+        const char *end() const noexcept { return buf_.data() + len_; }
+
+        /*! @brief Reset to an empty string. */
+        void clear() noexcept
+        {
+            len_ = 0;
+            buf_[0] = '\0';
+        }
+
+        /*! @brief Non-owning view over the current characters. */
+        std::string_view view() const noexcept
+        {
+            return std::string_view{buf_.data(), len_};
+        }
+
+        /*!
+         * @brief Implicit conversion to @c std::string_view.
+         *
+         * Gives a cheap non-owning view and makes the existing string encode
+         * branch (@c OStreamImpl::write) match a @c FixedString automatically.
+         */
+        operator std::string_view() const noexcept
+        {
+            return view();
+        }
+
+        /*! @brief Copy the contents into an owning @c std::string (allocates). */
+        std::string str() const
+        {
+            return std::string{buf_.data(), len_};
+        }
+
+        /*! @brief Equality against any string view-like operand. */
+        bool operator==(std::string_view rhs) const noexcept
+        {
+            return view() == rhs;
+        }
+
+        /*! @brief Inequality against any string view-like operand. */
+        bool operator!=(std::string_view rhs) const noexcept
+        {
+            return view() != rhs;
+        }
+    };
+
+    /*! @brief Trait: true only for @ref FixedString specializations. */
+    template <typename>
+    struct is_fixed_string : std::false_type { };
+    template <std::size_t N>
+    struct is_fixed_string<FixedString<N>> : std::true_type { };
+    /*! @brief Convenience value for @ref is_fixed_string. */
+    template <typename T>
+    inline constexpr bool is_fixed_string_v =
+        is_fixed_string<std::remove_cv_t<T>>::value;
+
     /***************/
     /*** OStream ***/
     /***************/
@@ -928,6 +1142,17 @@ namespace sofab
                 else if constexpr (std::is_same_v<T, std::string>)
                 {
                     // std::string doesn't need a null terminator, so we use read_noterm
+                    sofab_istream_read_string_noterm(&ctx_, value.data(), value.size());
+                }
+                else if constexpr (is_fixed_string_v<T>)
+                {
+                    // FixedString<N>: the heap-free counterpart of std::string.
+                    // The caller has already fixed the logical length (and the
+                    // terminating NUL) via set_len(_size), so value.size() is the
+                    // field length and value.data() the inline buffer. read_noterm
+                    // fills [0, size()) and never touches the pre-placed NUL, so
+                    // c_str()/string_view stay valid. Matched before the span
+                    // branch so a char buffer is never treated as an array.
                     sofab_istream_read_string_noterm(&ctx_, value.data(), value.size());
                 }
                 else if constexpr (InputMessage<T>)

@@ -67,6 +67,7 @@ public:
         float                ratio  = 0.0f;
         std::string          name;
         std::vector<uint8_t> blob;
+        sofab::FixedString<16> tag;                  // heap-free string field
     } data_;
 
     void deserialize(sofab::IStreamImpl &istream, sofab::id id, size_t size, size_t) noexcept override
@@ -85,6 +86,14 @@ public:
             case 7:
                 data_.blob.resize(size);
                 istream.read(data_.blob.data(), data_.blob.size());
+                break;
+            case 8:
+                // Mirrors the generator contract for a FixedString field.
+                data_.tag.set_len(size);
+                if (size)
+                {
+                    istream.read(data_.tag);
+                }
                 break;
         }
     }
@@ -107,6 +116,7 @@ int main()
         .write(5, 2.5f)                     // fp32
         .write(6, std::string_view{name});  // string
     ostream.write(7, blobIn, static_cast<int32_t>(sizeof(blobIn)));  // blob
+    ostream.write(8, sofab::FixedString<16>{"tag42"});  // heap-free string
 
     const auto used = ostream.bytesUsed();
     CHECK(used > 0);
@@ -125,6 +135,8 @@ int main()
     CHECK(d.ratio == 2.5f);
     CHECK(d.name == "sofa");
     CHECK(d.blob == std::vector<uint8_t>(blobIn, blobIn + sizeof(blobIn)));
+    CHECK(d.tag == "tag42");
+    CHECK(std::string_view{d.tag.c_str()} == "tag42");
 
     if (g_failures == 0)
     {
