@@ -266,6 +266,15 @@ destination that a later `feed()` fills — `read(std::string&)` must be pre-siz
 and the `std::vector<std::string>` / `std::vector<std::vector<uint8_t>>` overloads
 decode sequences of variable-length elements.
 
+For heap-free string fields, `sofab::FixedString<N>` is a fixed-capacity,
+`noexcept` stand-in for `std::string` (up to `N` characters in an inline buffer,
+one reserved slot for a trailing NUL so `c_str()` stays valid at full length). It
+converts to/from `std::string`, `std::string_view` and `const char*` (truncating
+to `N`), encodes byte-identically to the same-content `std::string`, and decodes
+in place: `s.set_len(size); if (size) is.read(s);` — the same shape as the
+pre-sized `std::string` path. It compiles under `-fno-exceptions -fno-rtti` and
+suits embedded targets that must avoid the heap.
+
 ### Memory handling
 
 **No heap is ever used.** Every context, decoder, and buffer is caller-provided,

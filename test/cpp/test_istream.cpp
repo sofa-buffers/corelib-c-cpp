@@ -16,6 +16,7 @@
 #include <span>
 #include <cstdint>
 #include <limits>
+#include <algorithm>
 
 //
 
@@ -698,4 +699,212 @@ TEST_CASE("IStream: round-trip nested message into object")
         REQUIRE(footer == 99u);
         REQUIRE(seqCalls == 1);                 // only the top-level start fired
     }
+}
+
+//
+// FixedString<N>: heap-free string type for encode + decode.
+//
+
+TEST_CASE("FixedString: construction and conversion to the std world")
+{
+    SECTION("from const char*")
+    {
+        sofab::FixedString<16> s{"sofa"};
+        REQUIRE(s.size() == 4);
+        REQUIRE_FALSE(s.empty());
+        REQUIRE(std::string_view{s} == "sofa");
+        REQUIRE(s.str() == std::string{"sofa"});
+        REQUIRE(std::string_view{s.c_str()} == "sofa");    // NUL-terminated
+    }
+
+    SECTION("from std::string_view")
+    {
+        sofab::FixedString<16> s{std::string_view{"couch"}};
+        REQUIRE(s.view() == "couch");
+    }
+
+    SECTION("from std::string (the easy on-ramp)")
+    {
+        std::string src = "buffers";
+        sofab::FixedString<16> s = src;                    // implicit
+        REQUIRE(s == std::string_view{"buffers"});
+    }
+
+    SECTION("nullptr yields empty")
+    {
+        const char *p = nullptr;
+        sofab::FixedString<8> s{p};
+        REQUIRE(s.empty());
+        REQUIRE(s.c_str()[0] == '\0');
+    }
+
+    SECTION("assignment and clear")
+    {
+        sofab::FixedString<8> s;
+        s = "hi";
+        REQUIRE(s == std::string_view{"hi"});
+        s.assign("longer");
+        REQUIRE(s == std::string_view{"longer"});
+        s.clear();
+        REQUIRE(s.empty());
+        REQUIRE(s.c_str()[0] == '\0');
+    }
+}
+
+TEST_CASE("FixedString: truncation clamps to N and stays NUL-terminated")
+{
+    sofab::FixedString<4> s{"overflowing"};
+    REQUIRE(s.size() == 4);
+    REQUIRE(s.capacity() == 4);
+    REQUIRE(s.max_size() == 4);
+    REQUIRE(s == std::string_view{"over"});
+    // c_str() must terminate even at full length N (the reserved +1 slot).
+    REQUIRE(s.c_str()[4] == '\0');
+    REQUIRE(std::string_view{s.c_str()} == "over");
+}
+
+TEST_CASE("FixedString: comparisons")
+{
+    sofab::FixedString<8> a{"abc"};
+    sofab::FixedString<16> b{"abc"};
+    sofab::FixedString<8> c{"xyz"};
+
+    REQUIRE(a == b);                    // different N, same content
+    REQUIRE(a != c);
+    REQUIRE(a == std::string_view{"abc"});
+    REQUIRE(a == "abc");               // const char*
+    REQUIRE(a != "abcd");
+}
+
+TEST_CASE("FixedString: set_len places a terminator for deferred decode")
+{
+    sofab::FixedString<16> s;
+    // Simulate the generator contract: fix the length, then the decoder fills
+    // the bytes without touching the terminator slot.
+    s.set_len(3);
+    REQUIRE(s.size() == 3);
+    s.data()[0] = 'a';
+    s.data()[1] = 'b';
+    s.data()[2] = 'c';
+    REQUIRE(std::string_view{s.c_str()} == "abc");     // NUL at [3] survived
+
+    // A shorter second decode re-terminates via set_len.
+    s.set_len(1);
+    s.data()[0] = 'z';
+    REQUIRE(std::string_view{s.c_str()} == "z");
+
+    // set_len beyond N clamps.
+    s.set_len(999);
+    REQUIRE(s.size() == 16);
+}
+
+// A message whose string field decodes into a heap-free FixedString, mirroring
+// exactly what the generator will emit: set_len(_size); if(_size) is.read(s);
+class FixedStringObject : public sofab::IStreamMessage
+{
+public:
+    struct Data
+    {
+        uint32_t              id = 0;
+        sofab::FixedString<32> name;
+    } data_;
+
+    void deserialize(sofab::IStreamImpl &istream, sofab::id id, size_t size, size_t) noexcept override
+    {
+        switch (id)
+        {
+            case 1: istream.read(data_.id); break;
+            case 2:
+                data_.name.set_len(size);
+                if (size)
+                {
+                    istream.read(data_.name);
+                }
+                break;
+        }
+    }
+
+    Data* operator ->() noexcept
+    {
+        return &data_;
+    }
+};
+
+TEST_CASE("IStream: round-trip string into FixedString matches std::string")
+{
+    const std::string text = "hello fixed world";
+
+    sofab::OStream ostream{128};
+    ostream
+        .write(1, 7u)
+        .write(2, std::string_view{text});
+
+    const auto used = ostream.bytesUsed();
+
+    SECTION("decode in one shot")
+    {
+        sofab::IStreamObject<FixedStringObject> istream;
+        auto result = istream.feed(ostream.data(), used);
+
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(istream->id == 7u);
+        REQUIRE(istream->name == std::string_view{text});
+        REQUIRE(std::string_view{istream->name.c_str()} == text);
+    }
+
+    SECTION("decode one byte at a time (address-stable target)")
+    {
+        sofab::IStreamObject<FixedStringObject> istream;
+        for (size_t i = 0; i < used; i++)
+        {
+            auto result = istream.feed(ostream.data() + i, 1);
+            REQUIRE(result.code() == sofab::Error::None);
+        }
+        REQUIRE(istream->name == std::string_view{text});
+    }
+
+    SECTION("empty string decodes cleanly")
+    {
+        sofab::OStream os2{64};
+        os2.write(2, std::string_view{""});
+
+        sofab::IStreamObject<FixedStringObject> istream;
+        auto result = istream.feed(os2.data(), os2.bytesUsed());
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(istream->name.empty());
+    }
+
+    SECTION("a field longer than the capacity is rejected, not overrun")
+    {
+        // set_len() clamps the bound length to N, so a wire field that exceeds
+        // the FixedString capacity binds an N-byte target the payload cannot fit
+        // -- the C core rejects it (E_INVALID_MSG) exactly as it would an
+        // undersized std::string, rather than overrunning the inline buffer.
+        const std::string big(100, 'x');    // exceeds FixedString<32>
+        sofab::OStream os2{256};
+        os2.write(2, std::string_view{big});
+
+        sofab::IStreamObject<FixedStringObject> istream;
+        auto result = istream.feed(os2.data(), os2.bytesUsed());
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+    }
+}
+
+TEST_CASE("OStream: FixedString encodes byte-identical to std::string")
+{
+    const char *text = "wire neutral";
+
+    sofab::OStream fromFixed{128};
+    fromFixed
+        .write(1, 42u)
+        .write(2, sofab::FixedString<32>{text});    // via implicit string_view
+
+    sofab::OStream fromStd{128};
+    fromStd
+        .write(1, 42u)
+        .write(2, std::string_view{text});
+
+    const auto n = fromFixed.bytesUsed();
+    REQUIRE(n == fromStd.bytesUsed());
+    REQUIRE(std::equal(fromFixed.data(), fromFixed.data() + n, fromStd.data()));
 }
