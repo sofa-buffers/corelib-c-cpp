@@ -17,8 +17,8 @@ name: "Matrix: C++ features"
 # The full Catch2 unit tests stay max-only (build-gcc-x86_64 / build-clang-x86_64);
 # they use every type and cannot compile in reduced configs by design.
 #
-# Each job installs its toolchain once and loops over the feature configs (the
-# graceful job's matrix axis is the target arch), instead of one job per config.
+# Each job installs its toolchain once and captures the arch-specific CMake flags
+# in $CM_ARGS / $RUN, so every feature configuration is a separate, cheap step.
 
 on:
   push:
@@ -53,58 +53,49 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++-powerpc-linux-gnu cmake make qemu-user-static
 
-      - name: Build and run every graceful config
-        env:
-          ARCH: ${{ matrix.arch }}
+      - name: Arch CMake flags
         run: |
-          set -euo pipefail
+          if [ "${{ matrix.arch }}" = powerpc-be ]; then
+            echo "CM_ARGS=-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=powerpc \
+              -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc -DCMAKE_CXX_COMPILER=powerpc-linux-gnu-g++ \
+              -DCMAKE_BUILD_TYPE=Release -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF \
+              -DSOFAB_ENABLE_CPP_SMOKE=ON -DCMAKE_EXE_LINKER_FLAGS=-static" >> "$GITHUB_ENV"
+            echo "RUN=qemu-ppc-static" >> "$GITHUB_ENV"
+          else
+            echo "CM_ARGS=-DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF \
+              -DSOFAB_ENABLE_CPP_SMOKE=ON" >> "$GITHUB_ENV"
+            echo "RUN=" >> "$GITHUB_ENV"
+          fi
 
-          # name|C/C++ flags
-          configs=(
-            "max|"
-            "no-fp64|-DSOFAB_DISABLE_FP64_SUPPORT"
-            "no-int64|-DSOFAB_DISABLE_INT64_SUPPORT"
-            "no-array|-DSOFAB_DISABLE_ARRAY_SUPPORT"
-            "no-overflow|-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
-          )
+      - name: max
+        run: |
+          cmake -S . -B build/max $CM_ARGS -DCMAKE_C_FLAGS="" -DCMAKE_CXX_FLAGS=""
+          cmake --build build/max --target sofab_cpp_smoke
+          $RUN ./build/max/test/cpp-smoke/sofab_cpp_smoke
 
-          for entry in "${configs[@]}"; do
-            name="${entry%%|*}"; flags="${entry#*|}"
-            echo "::group::$name ($ARCH)"
+      - name: no-fp64
+        run: |
+          cmake -S . -B build/no-fp64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT"
+          cmake --build build/no-fp64 --target sofab_cpp_smoke
+          $RUN ./build/no-fp64/test/cpp-smoke/sofab_cpp_smoke
 
-            if [ "$ARCH" = powerpc-be ]; then
-              cmake -S . -B "build/$name" \
-                -DCMAKE_SYSTEM_NAME=Linux \
-                -DCMAKE_SYSTEM_PROCESSOR=powerpc \
-                -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc \
-                -DCMAKE_CXX_COMPILER=powerpc-linux-gnu-g++ \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DSOFAB_ENABLE_CPP=OFF \
-                -DSOFAB_ENABLE_BENCH=OFF \
-                -DSOFAB_ENABLE_CPP_SMOKE=ON \
-                -DCMAKE_EXE_LINKER_FLAGS="-static" \
-                -DCMAKE_C_FLAGS="$flags" \
-                -DCMAKE_CXX_FLAGS="$flags"
-            else
-              cmake -S . -B "build/$name" \
-                -DCMAKE_BUILD_TYPE=Debug \
-                -DSOFAB_ENABLE_CPP=OFF \
-                -DSOFAB_ENABLE_BENCH=OFF \
-                -DSOFAB_ENABLE_CPP_SMOKE=ON \
-                -DCMAKE_C_FLAGS="$flags" \
-                -DCMAKE_CXX_FLAGS="$flags"
-            fi
+      - name: no-int64
+        run: |
+          cmake -S . -B build/no-int64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT"
+          cmake --build build/no-int64 --target sofab_cpp_smoke
+          $RUN ./build/no-int64/test/cpp-smoke/sofab_cpp_smoke
 
-            cmake --build "build/$name" --target sofab_cpp_smoke
+      - name: no-array
+        run: |
+          cmake -S . -B build/no-array $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT"
+          cmake --build build/no-array --target sofab_cpp_smoke
+          $RUN ./build/no-array/test/cpp-smoke/sofab_cpp_smoke
 
-            if [ "$ARCH" = powerpc-be ]; then
-              qemu-ppc-static "build/$name/test/cpp-smoke/sofab_cpp_smoke"
-            else
-              "build/$name/test/cpp-smoke/sofab_cpp_smoke"
-            fi
-
-            echo "::endgroup::"
-          done
+      - name: no-overflow
+        run: |
+          cmake -S . -B build/no-overflow $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          cmake --build build/no-overflow --target sofab_cpp_smoke
+          $RUN ./build/no-overflow/test/cpp-smoke/sofab_cpp_smoke
 
   # --- configs the wrapper rejects: assert the #error fires at compile time ---
   rejected:
@@ -120,44 +111,42 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
-      - name: Assert every rejected config fails with a clear #error
+      - name: no-fixlen (expect FIXLEN #error)
         run: |
-          set -euo pipefail
+          cmake -S . -B build/no-fixlen \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT"
+          if out=$(cmake --build build/no-fixlen --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires FIXLEN support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
 
-          # name|C/C++ flags|expected #error text
-          configs=(
-            "no-fixlen|-DSOFAB_DISABLE_FIXLEN_SUPPORT|requires FIXLEN support"
-            "no-sequence|-DSOFAB_DISABLE_SEQUENCE_SUPPORT|requires SEQUENCE support"
-            "minimal|-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK|requires FIXLEN support"
-          )
+      - name: no-sequence (expect SEQUENCE #error)
+        run: |
+          cmake -S . -B build/no-sequence \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_SEQUENCE_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
+          if out=$(cmake --build build/no-sequence --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires SEQUENCE support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
 
-          for entry in "${configs[@]}"; do
-            IFS='|' read -r name flags expect <<< "$entry"
-            echo "::group::$name (reject)"
-
-            cmake -S . -B "build/$name" \
-              -DCMAKE_BUILD_TYPE=Debug \
-              -DSOFAB_ENABLE_CPP=OFF \
-              -DSOFAB_ENABLE_BENCH=OFF \
-              -DSOFAB_ENABLE_CPP_SMOKE=ON \
-              -DCMAKE_C_FLAGS="$flags" \
-              -DCMAKE_CXX_FLAGS="$flags"
-
-            set +e
-            out=$(cmake --build "build/$name" --target sofab_cpp_smoke 2>&1)
-            status=$?
-            set -e
-            echo "$out"
-
-            if [ $status -eq 0 ]; then
-              echo "::error::Expected the C++ wrapper build to fail for $name, but it succeeded."
-              exit 1
-            fi
-            if ! echo "$out" | grep -qF "$expect"; then
-              echo "::error::Build failed for $name, but not with the expected #error (\"$expect\")."
-              exit 1
-            fi
-            echo "OK: $name build rejected with the expected #error."
-
-            echo "::endgroup::"
-          done
+      - name: minimal (expect FIXLEN #error)
+        run: |
+          cmake -S . -B build/minimal \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" \
+            -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          if out=$(cmake --build build/minimal --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires FIXLEN support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
