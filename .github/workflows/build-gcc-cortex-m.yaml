@@ -6,63 +6,14 @@ on:
   pull_request:
     branches: [ main ]
 
+# All Cortex-M variants share the one arm-none-eabi toolchain, so this is a
+# single job that installs it once and then builds each target sequentially
+# (GitHub runs steps in order, not in parallel). Every target is wrapped in its
+# own log group and the build uses `set -e`, so a failure points at the target
+# that broke.
 jobs:
   build:
-    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        include:
-          - name: cortex-m0
-            march: armv6-m
-            mtune: cortex-m0
-
-          - name: cortex-m0plus
-            march: armv6-m
-            mtune: cortex-m0plus
-
-          - name: cortex-m3
-            march: armv7-m
-            mtune: cortex-m3
-
-          - name: cortex-m4
-            march: armv7e-m+fp
-            mtune: cortex-m4
-
-          - name: cortex-m7
-            march: armv7e-m+fp.dp
-            mtune: cortex-m7
-
-          - name: cortex-m23
-            march: armv8-m.base
-            mtune: cortex-m23
-
-          - name: cortex-m33
-            march: armv8-m.main+fp
-            mtune: cortex-m33
-
-          - name: cortex-m55
-            march: armv8.1-m.main+mve
-            mtune: cortex-m55
-
-          - name: cortex-m85
-            march: armv8.1-m.main+mve
-            mtune: cortex-m85
-
-          - name: minimal
-            march: armv6-m
-            mtune: cortex-m0
-            minimal: true
-            build_target: sofabuffers
-            cmake_extra: -DSOFAB_DISABLE_OBJECT_API=ON
-            cflags_release: >-
-              -Os -DNDEBUG
-              -DSOFAB_DISABLE_FIXLEN_SUPPORT
-              -DSOFAB_DISABLE_ARRAY_SUPPORT
-              -DSOFAB_DISABLE_SEQUENCE_SUPPORT
-              -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
-              -DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL
 
     steps:
       - name: Checkout repository
@@ -74,30 +25,67 @@ jobs:
           sudo apt-get install -y \
             gcc-arm-none-eabi gdb-arm-none-eabi cmake make
 
-      - name: Configure with CMake
+      - name: Build, verify and size each Cortex-M target
         run: |
-          cmake -S . -B build \
+          set -euo pipefail
+
+          # name march mtune
+          targets=(
+            "cortex-m0      armv6-m               cortex-m0"
+            "cortex-m0plus  armv6-m               cortex-m0plus"
+            "cortex-m3      armv7-m               cortex-m3"
+            "cortex-m4      armv7e-m+fp           cortex-m4"
+            "cortex-m7      armv7e-m+fp.dp        cortex-m7"
+            "cortex-m23     armv8-m.base          cortex-m23"
+            "cortex-m33     armv8-m.main+fp       cortex-m33"
+            "cortex-m55     armv8.1-m.main+mve    cortex-m55"
+            "cortex-m85     armv8.1-m.main+mve    cortex-m85"
+          )
+
+          for t in "${targets[@]}"; do
+            read -r name march mtune <<< "$t"
+            echo "::group::$name ($march / $mtune)"
+
+            cmake -S . -B "build/$name" \
+              -DCMAKE_SYSTEM_PROCESSOR=arm \
+              -DARM_MARCH="$march" \
+              -DARM_MTUNE="$mtune" \
+              -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSOFAB_ENABLE_CPP=OFF \
+              -DSOFAB_ENABLE_BENCH=OFF \
+              -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG"
+
+            cmake --build "build/$name"
+
+            file "build/$name/test/c/sofabtest"
+            readelf -h -A "build/$name/test/c/sofabtest"
+            size "build/$name/src/libsofabuffers.a"
+
+            echo "::endgroup::"
+          done
+
+      - name: Build and size the minimal configuration
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build/minimal \
             -DCMAKE_SYSTEM_PROCESSOR=arm \
-            -DARM_MARCH=${{ matrix.march }} \
-            -DARM_MTUNE=${{ matrix.mtune }} \
+            -DARM_MARCH=armv6-m \
+            -DARM_MTUNE=cortex-m0 \
             -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF \
             -DSOFAB_ENABLE_BENCH=OFF \
-            -DCMAKE_C_FLAGS_RELEASE="${{ matrix.cflags_release || '-O3 -DNDEBUG' }}" \
-            ${{ matrix.cmake_extra }}
+            -DSOFAB_DISABLE_OBJECT_API=ON \
+            -DCMAKE_C_FLAGS_RELEASE="-Os -DNDEBUG \
+              -DSOFAB_DISABLE_FIXLEN_SUPPORT \
+              -DSOFAB_DISABLE_ARRAY_SUPPORT \
+              -DSOFAB_DISABLE_SEQUENCE_SUPPORT \
+              -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK \
+              -DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL"
 
-      - name: Build project
-        run: cmake --build build --target ${{ matrix.build_target || 'all' }}
+          cmake --build build/minimal --target sofabuffers
 
-      - name: Verify C binary (${{ matrix.name }})
-        if: ${{ !matrix.minimal }}
-        working-directory: build/test/c
-        run: |
-          file sofabtest
-          readelf -h -A sofabtest
-
-      - name: Library size (${{ matrix.name }})
-        run: |
-          file build/src/libsofabuffers.a
-          size build/src/libsofabuffers.a
+          file build/minimal/src/libsofabuffers.a
+          size build/minimal/src/libsofabuffers.a
