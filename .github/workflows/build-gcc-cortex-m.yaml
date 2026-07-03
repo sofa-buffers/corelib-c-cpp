@@ -98,7 +98,6 @@ jobs:
           readelf -h -A sofabtest
 
       - name: Library size (${{ matrix.name }})
-        if: ${{ matrix.minimal }}
         run: |
           file build/src/libsofabuffers.a
           size build/src/libsofabuffers.a

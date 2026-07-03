@@ -34,6 +34,9 @@ jobs:
       - name: Build project
         run: cmake --build build
 
+      - name: Library size
+        run: size build/src/libsofabuffers.a
+
       - name: Verify C binary
         working-directory: build/test/c
         run: |
