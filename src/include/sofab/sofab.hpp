@@ -313,6 +313,314 @@ namespace sofab
     inline constexpr bool is_fixed_string_v =
         is_fixed_string<std::remove_cv_t<T>>::value;
 
+    /******************/
+    /*** FixedBytes ***/
+    /******************/
+
+    /*!
+     * @brief Fixed-capacity, heap-free byte blob of up to @p N bytes.
+     *
+     * The embedded-friendly counterpart of @c std::vector<std::uint8_t> for blob
+     * fields, mirroring @ref FixedString for bytes. The payload lives in an inline
+     * @c std::array, so an instance allocates nothing and never throws (overflow
+     * clamps to @p N). Because the buffer never moves, an instance is a valid
+     * address-stable decode target for the deferred @ref IStreamImpl decoder.
+     *
+     * A @b logical @b length (@ref size, @c <= @p N) is tracked separately from the
+     * capacity @p N: a blob shorter than its schema @c maxlen occupies only
+     * @ref size bytes on the wire. This is exactly why the type cannot be a plain
+     * @c std::array<std::uint8_t,N> (always length @p N) and must not reintroduce
+     * the heap of @c std::vector.
+     *
+     * @par Generator integration contract
+     * Generated code mirrors the @c std::vector<std::uint8_t> path:
+     *   - encode passes @ref data / @ref size to the blob write, byte-for-byte
+     *     identical to the same-content vector;
+     *   - decode emits @c b.set_len(_size); is.read(b.data(), _size); — @ref set_len
+     *     fixes the logical length before the read binds the inline buffer.
+     *
+     * @tparam N  Maximum number of bytes.
+     */
+    template <std::size_t N>
+    class FixedBytes
+    {
+        std::array<std::uint8_t, N> buf_{};     //!< Inline storage.
+        std::size_t len_ = 0;                   //!< Current logical length (<= N).
+
+    public:
+        /*! @brief Element type (mirrors @c std::vector). */
+        using value_type = std::uint8_t;
+        /*! @brief Size type (mirrors @c std::vector). */
+        using size_type = std::size_t;
+
+        /*! @brief Construct an empty blob. */
+        FixedBytes() noexcept = default;
+
+        /*!
+         * @brief Construct from a brace-enclosed list of bytes (truncated to @p N).
+         *
+         * Providing this constructor makes @c FixedBytes a non-aggregate, so a
+         * brace-init such as @c b = {1, 2, 3} routes through here and sets
+         * @ref size — it cannot silently fill the buffer while leaving the logical
+         * length at zero.
+         *
+         * @param init  Source bytes (excess beyond @p N is dropped).
+         */
+        FixedBytes(std::initializer_list<std::uint8_t> init) noexcept
+        {
+            assign(init);
+        }
+
+        /*! @brief Replace the contents from a brace-enclosed list (truncated to @p N). */
+        FixedBytes &operator=(std::initializer_list<std::uint8_t> init) noexcept
+        {
+            return assign(init);
+        }
+
+        /*! @brief Replace the contents from a brace-enclosed list (truncated to @p N). */
+        FixedBytes &assign(std::initializer_list<std::uint8_t> init) noexcept
+        {
+            len_ = 0;
+            for (std::uint8_t b : init)
+            {
+                if (len_ >= N)
+                {
+                    break;
+                }
+                buf_[len_++] = b;
+            }
+            return *this;
+        }
+
+        /*! @brief Mutable pointer to the byte buffer (decode target). */
+        std::uint8_t *data() noexcept { return buf_.data(); }
+        /*! @brief Const pointer to the byte buffer. */
+        const std::uint8_t *data() const noexcept { return buf_.data(); }
+
+        /*! @brief Number of bytes currently stored. */
+        std::size_t size() const noexcept { return len_; }
+        /*! @brief True if the blob is empty. */
+        bool empty() const noexcept { return len_ == 0; }
+        /*! @brief Maximum number of bytes (the template parameter @p N). */
+        static constexpr std::size_t capacity() noexcept { return N; }
+        /*! @brief Alias of @ref capacity. */
+        static constexpr std::size_t max_size() noexcept { return N; }
+
+        /*!
+         * @brief Decode hook: set the logical length (clamped to @p N).
+         *
+         * Called by generated decode before binding the buffer, so @ref size
+         * reports the field length and @ref data over that many bytes is the
+         * fill target.
+         *
+         * @param n  Requested logical length (clamped to @p N).
+         */
+        void set_len(std::size_t n) noexcept { len_ = n < N ? n : N; }
+
+        /*! @brief Reset to an empty blob. */
+        void clear() noexcept { len_ = 0; }
+
+        /*! @brief Append one byte (no-op once at capacity @p N). */
+        void push_back(std::uint8_t b) noexcept
+        {
+            if (len_ < N)
+            {
+                buf_[len_++] = b;
+            }
+        }
+
+        /*! @brief Access the byte at @p i (no bounds checking). */
+        std::uint8_t &operator[](std::size_t i) noexcept { return buf_[i]; }
+        /*! @brief Access the byte at @p i (no bounds checking). */
+        const std::uint8_t &operator[](std::size_t i) const noexcept { return buf_[i]; }
+
+        /*! @brief Iterator to the first byte. */
+        std::uint8_t *begin() noexcept { return buf_.data(); }
+        /*! @brief Iterator past the last byte. */
+        std::uint8_t *end() noexcept { return buf_.data() + len_; }
+        /*! @brief Const iterator to the first byte. */
+        const std::uint8_t *begin() const noexcept { return buf_.data(); }
+        /*! @brief Const iterator past the last byte. */
+        const std::uint8_t *end() const noexcept { return buf_.data() + len_; }
+
+        /*! @brief Content equality (same logical length and bytes). */
+        bool operator==(const FixedBytes &o) const noexcept
+        {
+            if (len_ != o.len_)
+            {
+                return false;
+            }
+            for (std::size_t i = 0; i < len_; ++i)
+            {
+                if (buf_[i] != o.buf_[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /*! @brief Negated @ref operator==. */
+        bool operator!=(const FixedBytes &o) const noexcept { return !(*this == o); }
+    };
+
+    /********************/
+    /*** InlineVector ***/
+    /********************/
+
+    /*!
+     * @brief Fixed-capacity, heap-free sequence of up to @p N elements of type @p T.
+     *
+     * The embedded-friendly counterpart of @c std::vector<T> for the sequence
+     * fields the fixed-capacity profile lowers without a heap: arrays of strings,
+     * blobs, structs/unions or nested arrays. Elements live in an inline
+     * @c std::array, so the storage never reallocates and a bound-then-filled
+     * element (the deferred @ref IStreamImpl decoder) stays address-stable —
+     * strictly safer than a @c std::vector + @c reserve.
+     *
+     * A @b logical @b length (@ref size, @c <= @p N) is tracked separately from the
+     * capacity @p N: an array shorter than its schema @c count holds only
+     * @ref size elements. This is why the type is neither a plain
+     * @c std::array<T,N> (always length @p N) nor a heap-backed @c std::vector.
+     *
+     * @warning Historically this was an aggregate with a public, default-zero
+     * length, so a natural brace-init such as @c v = {a, b, c} silently filled the
+     * storage while leaving the logical length at 0 — the field then encoded as
+     * empty. The @c initializer_list constructor/assignment below make the type a
+     * non-aggregate, so that brace-init now sets @ref size correctly instead of
+     * corrupting the wire.
+     *
+     * @tparam T  Element type.
+     * @tparam N  Maximum number of elements.
+     */
+    template <typename T, std::size_t N>
+    class InlineVector
+    {
+        std::array<T, N> buf_{};    //!< Inline storage.
+        std::size_t len_ = 0;       //!< Current logical length (<= N).
+
+    public:
+        /*! @brief Element type (mirrors @c std::vector). */
+        using value_type = T;
+        /*! @brief Size type (mirrors @c std::vector). */
+        using size_type = std::size_t;
+
+        /*! @brief Construct an empty sequence. */
+        InlineVector() noexcept = default;
+
+        /*!
+         * @brief Construct from a brace-enclosed list of elements (truncated to @p N).
+         *
+         * The presence of this constructor makes @c InlineVector a non-aggregate:
+         * @c v = {a, b, c} routes here and sets @ref size, instead of aggregate
+         * brace-init filling the storage while leaving the length at 0.
+         *
+         * @param init  Source elements (excess beyond @p N is dropped).
+         */
+        InlineVector(std::initializer_list<T> init) noexcept
+        {
+            assign(init);
+        }
+
+        /*! @brief Replace the contents from a brace-enclosed list (truncated to @p N). */
+        InlineVector &operator=(std::initializer_list<T> init) noexcept
+        {
+            return assign(init);
+        }
+
+        /*! @brief Replace the contents from a brace-enclosed list (truncated to @p N). */
+        InlineVector &assign(std::initializer_list<T> init) noexcept
+        {
+            len_ = 0;
+            for (const T &v : init)
+            {
+                if (len_ >= N)
+                {
+                    break;
+                }
+                buf_[len_++] = v;
+            }
+            return *this;
+        }
+
+        /*! @brief Number of elements currently stored. */
+        std::size_t size() const noexcept { return len_; }
+        /*! @brief True if the sequence is empty. */
+        bool empty() const noexcept { return len_ == 0; }
+        /*! @brief Maximum number of elements (the template parameter @p N). */
+        static constexpr std::size_t capacity() noexcept { return N; }
+        /*! @brief Alias of @ref capacity. */
+        static constexpr std::size_t max_size() noexcept { return N; }
+
+        /*! @brief No-op (inline storage never reallocates); present for API parity. */
+        void reserve(std::size_t) noexcept {}
+        /*! @brief Reset to an empty sequence (logical length only). */
+        void clear() noexcept { len_ = 0; }
+
+        /*!
+         * @brief Append a default-constructed element and return a reference to it.
+         *
+         * The next inline slot is (re)set to @c T{} and bound; once at capacity
+         * @p N the last slot is reused so a decode never writes out of bounds.
+         * @return Reference to the newly active element.
+         */
+        T &emplace_back() noexcept
+        {
+            std::size_t i = len_ < N ? len_++ : N - 1;
+            buf_[i] = T{};
+            return buf_[i];
+        }
+
+        /*! @brief Append a copy of @p v (no-op growth once at capacity @p N). */
+        void push_back(const T &v) noexcept { emplace_back() = v; }
+        /*! @brief Append @p v by move (no-op growth once at capacity @p N). */
+        void push_back(T &&v) noexcept { emplace_back() = static_cast<T &&>(v); }
+
+        /*! @brief Reference to the last element. */
+        T &back() noexcept { return buf_[len_ - 1]; }
+        /*! @brief Const reference to the last element. */
+        const T &back() const noexcept { return buf_[len_ - 1]; }
+
+        /*! @brief Access the element at @p i (no bounds checking). */
+        T &operator[](std::size_t i) noexcept { return buf_[i]; }
+        /*! @brief Access the element at @p i (no bounds checking). */
+        const T &operator[](std::size_t i) const noexcept { return buf_[i]; }
+
+        /*! @brief Mutable pointer to the underlying storage. */
+        T *data() noexcept { return buf_.data(); }
+        /*! @brief Const pointer to the underlying storage. */
+        const T *data() const noexcept { return buf_.data(); }
+
+        /*! @brief Iterator to the first element. */
+        T *begin() noexcept { return buf_.data(); }
+        /*! @brief Iterator past the last element. */
+        T *end() noexcept { return buf_.data() + len_; }
+        /*! @brief Const iterator to the first element. */
+        const T *begin() const noexcept { return buf_.data(); }
+        /*! @brief Const iterator past the last element. */
+        const T *end() const noexcept { return buf_.data() + len_; }
+
+        /*! @brief Content equality (same logical length and elements). */
+        bool operator==(const InlineVector &o) const noexcept
+        {
+            if (len_ != o.len_)
+            {
+                return false;
+            }
+            for (std::size_t i = 0; i < len_; ++i)
+            {
+                if (!(buf_[i] == o.buf_[i]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /*! @brief Negated @ref operator==. */
+        bool operator!=(const InlineVector &o) const noexcept { return !(*this == o); }
+    };
+
     /***************/
     /*** OStream ***/
     /***************/
