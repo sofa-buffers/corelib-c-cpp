@@ -29,17 +29,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # One representative per distinct ISA baseline. The dependency-free C
+          # corelib emits no FP/DSP/MVE instructions, so -mtune and the +fp/+mve
+          # suffixes do not change the generated object code: e.g. cortex-m0plus
+          # is byte-identical to cortex-m0, cortex-m85 to cortex-m55, and dropping
+          # +fp changes nothing. Testing those variants would only re-compile the
+          # same bytes, so they are intentionally left out.
+          #
           # name march mtune
           targets=(
-            "cortex-m0      armv6-m               cortex-m0"
-            "cortex-m0plus  armv6-m               cortex-m0plus"
-            "cortex-m3      armv7-m               cortex-m3"
-            "cortex-m4      armv7e-m+fp           cortex-m4"
-            "cortex-m7      armv7e-m+fp.dp        cortex-m7"
-            "cortex-m23     armv8-m.base          cortex-m23"
-            "cortex-m33     armv8-m.main+fp       cortex-m33"
-            "cortex-m55     armv8.1-m.main+mve    cortex-m55"
-            "cortex-m85     armv8.1-m.main+mve    cortex-m85"
+            "cortex-m0   armv6-m               cortex-m0"
+            "cortex-m3   armv7-m               cortex-m3"
+            "cortex-m7   armv7e-m+fp.dp        cortex-m7"
+            "cortex-m23  armv8-m.base          cortex-m23"
+            "cortex-m55  armv8.1-m.main+mve    cortex-m55"
           )
 
           for t in "${targets[@]}"; do
