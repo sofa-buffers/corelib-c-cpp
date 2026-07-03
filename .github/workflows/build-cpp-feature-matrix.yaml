@@ -16,6 +16,9 @@ name: "Matrix: C++ features"
 #
 # The full Catch2 unit tests stay max-only (build-gcc-x86_64 / build-clang-x86_64);
 # they use every type and cannot compile in reduced configs by design.
+#
+# Each job installs its toolchain once and loops over the feature configs (the
+# graceful job's matrix axis is the target arch), instead of one job per config.
 
 on:
   push:
@@ -27,18 +30,12 @@ jobs:
   # --- configs the wrapper supports gracefully: build + run the smoke ---
   graceful:
     runs-on: ubuntu-latest
-    name: ${{ matrix.config.name }} (${{ matrix.arch }})
+    name: graceful (${{ matrix.arch }})
 
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, powerpc-be]
-        config:
-          - { name: max,         flags: "" }
-          - { name: no-fp64,     flags: "-DSOFAB_DISABLE_FP64_SUPPORT" }
-          - { name: no-int64,    flags: "-DSOFAB_DISABLE_INT64_SUPPORT" }
-          - { name: no-array,    flags: "-DSOFAB_DISABLE_ARRAY_SUPPORT" }
-          - { name: no-overflow, flags: "-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" }
 
     steps:
       - name: Checkout repository
@@ -56,56 +53,63 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++-powerpc-linux-gnu cmake make qemu-user-static
 
-      - name: Configure (x86_64, ${{ matrix.config.name }})
-        if: matrix.arch == 'x86_64'
+      - name: Build and run every graceful config
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
-            -DSOFAB_ENABLE_CPP_SMOKE=ON \
-            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" \
-            -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}"
+          set -euo pipefail
 
-      - name: Configure (PowerPC big-endian, ${{ matrix.config.name }})
-        if: matrix.arch == 'powerpc-be'
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=powerpc \
-            -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc \
-            -DCMAKE_CXX_COMPILER=powerpc-linux-gnu-g++ \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
-            -DSOFAB_ENABLE_CPP_SMOKE=ON \
-            -DCMAKE_EXE_LINKER_FLAGS="-static" \
-            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" \
-            -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}"
+          # name|C/C++ flags
+          configs=(
+            "max|"
+            "no-fp64|-DSOFAB_DISABLE_FP64_SUPPORT"
+            "no-int64|-DSOFAB_DISABLE_INT64_SUPPORT"
+            "no-array|-DSOFAB_DISABLE_ARRAY_SUPPORT"
+            "no-overflow|-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          )
 
-      - name: Build C++ smoke (${{ matrix.config.name }})
-        run: cmake --build build --target sofab_cpp_smoke
+          for entry in "${configs[@]}"; do
+            name="${entry%%|*}"; flags="${entry#*|}"
+            echo "::group::$name ($ARCH)"
 
-      - name: Run C++ smoke (x86_64, ${{ matrix.config.name }})
-        if: matrix.arch == 'x86_64'
-        run: ./build/test/cpp-smoke/sofab_cpp_smoke
+            if [ "$ARCH" = powerpc-be ]; then
+              cmake -S . -B "build/$name" \
+                -DCMAKE_SYSTEM_NAME=Linux \
+                -DCMAKE_SYSTEM_PROCESSOR=powerpc \
+                -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc \
+                -DCMAKE_CXX_COMPILER=powerpc-linux-gnu-g++ \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSOFAB_ENABLE_CPP=OFF \
+                -DSOFAB_ENABLE_BENCH=OFF \
+                -DSOFAB_ENABLE_CPP_SMOKE=ON \
+                -DCMAKE_EXE_LINKER_FLAGS="-static" \
+                -DCMAKE_C_FLAGS="$flags" \
+                -DCMAKE_CXX_FLAGS="$flags"
+            else
+              cmake -S . -B "build/$name" \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DSOFAB_ENABLE_CPP=OFF \
+                -DSOFAB_ENABLE_BENCH=OFF \
+                -DSOFAB_ENABLE_CPP_SMOKE=ON \
+                -DCMAKE_C_FLAGS="$flags" \
+                -DCMAKE_CXX_FLAGS="$flags"
+            fi
 
-      - name: Run C++ smoke (PowerPC big-endian via qemu, ${{ matrix.config.name }})
-        if: matrix.arch == 'powerpc-be'
-        run: qemu-ppc-static ./build/test/cpp-smoke/sofab_cpp_smoke
+            cmake --build "build/$name" --target sofab_cpp_smoke
+
+            if [ "$ARCH" = powerpc-be ]; then
+              qemu-ppc-static "build/$name/test/cpp-smoke/sofab_cpp_smoke"
+            else
+              "build/$name/test/cpp-smoke/sofab_cpp_smoke"
+            fi
+
+            echo "::endgroup::"
+          done
 
   # --- configs the wrapper rejects: assert the #error fires at compile time ---
   rejected:
     runs-on: ubuntu-latest
-    name: ${{ matrix.config.name }} (reject)
-
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - { name: no-fixlen,   flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT",   expect: "requires FIXLEN support" }
-          - { name: no-sequence, flags: "-DSOFAB_DISABLE_SEQUENCE_SUPPORT", expect: "requires SEQUENCE support" }
-          - { name: minimal,     flags: "-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK", expect: "requires FIXLEN support" }
+    name: rejected
 
     steps:
       - name: Checkout repository
@@ -116,28 +120,44 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
-      - name: Configure (${{ matrix.config.name }})
+      - name: Assert every rejected config fails with a clear #error
         run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
-            -DSOFAB_ENABLE_CPP_SMOKE=ON \
-            -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" \
-            -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}"
+          set -euo pipefail
 
-      - name: Assert C++ build is rejected with a clear #error (${{ matrix.config.name }})
-        run: |
-          set +e
-          out=$(cmake --build build --target sofab_cpp_smoke 2>&1)
-          status=$?
-          echo "$out"
-          if [ $status -eq 0 ]; then
-            echo "::error::Expected the C++ wrapper build to fail for ${{ matrix.config.name }}, but it succeeded."
-            exit 1
-          fi
-          if ! echo "$out" | grep -qF "${{ matrix.config.expect }}"; then
-            echo "::error::Build failed for ${{ matrix.config.name }}, but not with the expected #error (\"${{ matrix.config.expect }}\")."
-            exit 1
-          fi
-          echo "OK: build rejected with the expected #error."
+          # name|C/C++ flags|expected #error text
+          configs=(
+            "no-fixlen|-DSOFAB_DISABLE_FIXLEN_SUPPORT|requires FIXLEN support"
+            "no-sequence|-DSOFAB_DISABLE_SEQUENCE_SUPPORT|requires SEQUENCE support"
+            "minimal|-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK|requires FIXLEN support"
+          )
+
+          for entry in "${configs[@]}"; do
+            IFS='|' read -r name flags expect <<< "$entry"
+            echo "::group::$name (reject)"
+
+            cmake -S . -B "build/$name" \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DSOFAB_ENABLE_CPP=OFF \
+              -DSOFAB_ENABLE_BENCH=OFF \
+              -DSOFAB_ENABLE_CPP_SMOKE=ON \
+              -DCMAKE_C_FLAGS="$flags" \
+              -DCMAKE_CXX_FLAGS="$flags"
+
+            set +e
+            out=$(cmake --build "build/$name" --target sofab_cpp_smoke 2>&1)
+            status=$?
+            set -e
+            echo "$out"
+
+            if [ $status -eq 0 ]; then
+              echo "::error::Expected the C++ wrapper build to fail for $name, but it succeeded."
+              exit 1
+            fi
+            if ! echo "$out" | grep -qF "$expect"; then
+              echo "::error::Build failed for $name, but not with the expected #error (\"$expect\")."
+              exit 1
+            fi
+            echo "OK: $name build rejected with the expected #error."
+
+            echo "::endgroup::"
+          done
