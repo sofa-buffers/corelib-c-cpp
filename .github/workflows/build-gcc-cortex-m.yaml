@@ -7,10 +7,14 @@ on:
     branches: [ main ]
 
 # All Cortex-M variants share the one arm-none-eabi toolchain, so this is a
-# single job that installs it once and then builds each target sequentially
-# (GitHub runs steps in order, not in parallel). Every target is wrapped in its
-# own log group and the build uses `set -e`, so a failure points at the target
-# that broke.
+# single job that installs it once and then builds each target in its own step
+# (GitHub steps are static and run in order — no in-job parallelism). The shared
+# CMake flags live in $CM_COMMON so each target step stays a short invocation.
+#
+# One representative per distinct ISA baseline. The dependency-free C corelib
+# emits no FP/DSP/MVE instructions, so -mtune and the +fp/+mve march suffixes do
+# not change the generated object code (e.g. cortex-m0plus is byte-identical to
+# cortex-m0, cortex-m85 to cortex-m55); those variants are intentionally omitted.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,61 +29,56 @@ jobs:
           sudo apt-get install -y \
             gcc-arm-none-eabi gdb-arm-none-eabi cmake make
 
-      - name: Build, verify and size each Cortex-M target
+      - name: Shared CMake flags
         run: |
-          set -euo pipefail
-
-          # One representative per distinct ISA baseline. The dependency-free C
-          # corelib emits no FP/DSP/MVE instructions, so -mtune and the +fp/+mve
-          # suffixes do not change the generated object code: e.g. cortex-m0plus
-          # is byte-identical to cortex-m0, cortex-m85 to cortex-m55, and dropping
-          # +fp changes nothing. Testing those variants would only re-compile the
-          # same bytes, so they are intentionally left out.
-          #
-          # name march mtune
-          targets=(
-            "cortex-m0   armv6-m               cortex-m0"
-            "cortex-m3   armv7-m               cortex-m3"
-            "cortex-m7   armv7e-m+fp.dp        cortex-m7"
-            "cortex-m23  armv8-m.base          cortex-m23"
-            "cortex-m55  armv8.1-m.main+mve    cortex-m55"
-          )
-
-          for t in "${targets[@]}"; do
-            read -r name march mtune <<< "$t"
-            echo "::group::$name ($march / $mtune)"
-
-            cmake -S . -B "build/$name" \
-              -DCMAKE_SYSTEM_PROCESSOR=arm \
-              -DARM_MARCH="$march" \
-              -DARM_MTUNE="$mtune" \
-              -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DSOFAB_ENABLE_CPP=OFF \
-              -DSOFAB_ENABLE_BENCH=OFF \
-              -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG"
-
-            cmake --build "build/$name"
-
-            file "build/$name/test/c/sofabtest"
-            readelf -h -A "build/$name/test/c/sofabtest"
-            size "build/$name/src/libsofabuffers.a"
-
-            echo "::endgroup::"
-          done
-
-      - name: Build and size the minimal configuration
-        run: |
-          set -euo pipefail
-
-          cmake -S . -B build/minimal \
-            -DCMAKE_SYSTEM_PROCESSOR=arm \
-            -DARM_MARCH=armv6-m \
-            -DARM_MTUNE=cortex-m0 \
+          echo "CM_COMMON=-DCMAKE_SYSTEM_PROCESSOR=arm \
             -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
+            -DCMAKE_BUILD_TYPE=Release -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF" >> "$GITHUB_ENV"
+
+      - name: cortex-m0 (armv6-m)
+        run: |
+          cmake -S . -B build/m0 $CM_COMMON -DARM_MARCH=armv6-m -DARM_MTUNE=cortex-m0
+          cmake --build build/m0
+          file build/m0/test/c/sofabtest
+          readelf -h -A build/m0/test/c/sofabtest
+          size build/m0/src/libsofabuffers.a
+
+      - name: cortex-m3 (armv7-m)
+        run: |
+          cmake -S . -B build/m3 $CM_COMMON -DARM_MARCH=armv7-m -DARM_MTUNE=cortex-m3
+          cmake --build build/m3
+          file build/m3/test/c/sofabtest
+          readelf -h -A build/m3/test/c/sofabtest
+          size build/m3/src/libsofabuffers.a
+
+      - name: cortex-m7 (armv7e-m+fp.dp)
+        run: |
+          cmake -S . -B build/m7 $CM_COMMON -DARM_MARCH=armv7e-m+fp.dp -DARM_MTUNE=cortex-m7
+          cmake --build build/m7
+          file build/m7/test/c/sofabtest
+          readelf -h -A build/m7/test/c/sofabtest
+          size build/m7/src/libsofabuffers.a
+
+      - name: cortex-m23 (armv8-m.base)
+        run: |
+          cmake -S . -B build/m23 $CM_COMMON -DARM_MARCH=armv8-m.base -DARM_MTUNE=cortex-m23
+          cmake --build build/m23
+          file build/m23/test/c/sofabtest
+          readelf -h -A build/m23/test/c/sofabtest
+          size build/m23/src/libsofabuffers.a
+
+      - name: cortex-m55 (armv8.1-m.main+mve)
+        run: |
+          cmake -S . -B build/m55 $CM_COMMON -DARM_MARCH=armv8.1-m.main+mve -DARM_MTUNE=cortex-m55
+          cmake --build build/m55
+          file build/m55/test/c/sofabtest
+          readelf -h -A build/m55/test/c/sofabtest
+          size build/m55/src/libsofabuffers.a
+
+      - name: minimal (armv6-m, object API off)
+        run: |
+          cmake -S . -B build/minimal $CM_COMMON \
+            -DARM_MARCH=armv6-m -DARM_MTUNE=cortex-m0 \
             -DSOFAB_DISABLE_OBJECT_API=ON \
             -DCMAKE_C_FLAGS_RELEASE="-Os -DNDEBUG \
               -DSOFAB_DISABLE_FIXLEN_SUPPORT \
@@ -87,8 +86,6 @@ jobs:
               -DSOFAB_DISABLE_SEQUENCE_SUPPORT \
               -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK \
               -DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL"
-
           cmake --build build/minimal --target sofabuffers
-
           file build/minimal/src/libsofabuffers.a
           size build/minimal/src/libsofabuffers.a

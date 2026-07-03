@@ -10,9 +10,9 @@ name: "Matrix: C features"
 # jobs don't reach. The hand-written unit tests run separately, only in the full
 # (max) build — see build-gcc-x86_64 / build-clang-x86_64.
 #
-# The matrix axis is the target arch (which decides the toolchain); every feature
-# configuration is built and run in a loop inside that one job, so the toolchain
-# is installed once per arch instead of once per (arch, config).
+# The matrix axis is the target arch (which decides the toolchain); the toolchain
+# is installed once and the arch-specific CMake flags are captured in $CM_ARGS /
+# $RUN, so each feature configuration is a separate, cheap step.
 
 on:
   push:
@@ -46,56 +46,65 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-powerpc-linux-gnu cmake make qemu-user-static
 
-      - name: Build and run every feature config
-        env:
-          ARCH: ${{ matrix.arch }}
+      - name: Arch CMake flags
         run: |
-          set -euo pipefail
+          if [ "${{ matrix.arch }}" = powerpc-be ]; then
+            echo "CM_ARGS=-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=powerpc \
+              -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc -DCMAKE_BUILD_TYPE=Release \
+              -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DCMAKE_EXE_LINKER_FLAGS=-static" >> "$GITHUB_ENV"
+            echo "RUN=qemu-ppc-static" >> "$GITHUB_ENV"
+          else
+            echo "CM_ARGS=-DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF" >> "$GITHUB_ENV"
+            echo "RUN=" >> "$GITHUB_ENV"
+          fi
 
-          # name|C flags
-          configs=(
-            "max|"
-            "no-fp64|-DSOFAB_DISABLE_FP64_SUPPORT"
-            "no-int64|-DSOFAB_DISABLE_INT64_SUPPORT"
-            "no-array|-DSOFAB_DISABLE_ARRAY_SUPPORT"
-            "no-sequence|-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
-            "no-fixlen|-DSOFAB_DISABLE_FIXLEN_SUPPORT"
-            "no-overflow-check|-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
-            "minimal|-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
-          )
+      # Build only the flag-tolerant vector runner: the hand-written unit tests
+      # are intentionally max-only and would not compile in reduced configs.
+      - name: max
+        run: |
+          cmake -S . -B build/max $CM_ARGS -DCMAKE_C_FLAGS=""
+          cmake --build build/max --target sofab_vectortest
+          $RUN ./build/max/test/c/sofab_vectortest
 
-          for entry in "${configs[@]}"; do
-            name="${entry%%|*}"; flags="${entry#*|}"
-            echo "::group::$name ($ARCH)"
+      - name: no-fp64
+        run: |
+          cmake -S . -B build/no-fp64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT"
+          cmake --build build/no-fp64 --target sofab_vectortest
+          $RUN ./build/no-fp64/test/c/sofab_vectortest
 
-            if [ "$ARCH" = powerpc-be ]; then
-              cmake -S . -B "build/$name" \
-                -DCMAKE_SYSTEM_NAME=Linux \
-                -DCMAKE_SYSTEM_PROCESSOR=powerpc \
-                -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DSOFAB_ENABLE_CPP=OFF \
-                -DSOFAB_ENABLE_BENCH=OFF \
-                -DCMAKE_EXE_LINKER_FLAGS="-static" \
-                -DCMAKE_C_FLAGS="$flags"
-            else
-              cmake -S . -B "build/$name" \
-                -DCMAKE_BUILD_TYPE=Debug \
-                -DSOFAB_ENABLE_CPP=OFF \
-                -DSOFAB_ENABLE_BENCH=OFF \
-                -DCMAKE_C_FLAGS="$flags"
-            fi
+      - name: no-int64
+        run: |
+          cmake -S . -B build/no-int64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT"
+          cmake --build build/no-int64 --target sofab_vectortest
+          $RUN ./build/no-int64/test/c/sofab_vectortest
 
-            # Build only the flag-tolerant vector runner: the hand-written unit
-            # tests are intentionally max-only and would not compile in reduced
-            # configs.
-            cmake --build "build/$name" --target sofab_vectortest
+      - name: no-array
+        run: |
+          cmake -S . -B build/no-array $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT"
+          cmake --build build/no-array --target sofab_vectortest
+          $RUN ./build/no-array/test/c/sofab_vectortest
 
-            if [ "$ARCH" = powerpc-be ]; then
-              qemu-ppc-static "build/$name/test/c/sofab_vectortest"
-            else
-              "build/$name/test/c/sofab_vectortest"
-            fi
+      - name: no-sequence
+        run: |
+          cmake -S . -B build/no-sequence $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
+          cmake --build build/no-sequence --target sofab_vectortest
+          $RUN ./build/no-sequence/test/c/sofab_vectortest
 
-            echo "::endgroup::"
-          done
+      - name: no-fixlen
+        run: |
+          cmake -S . -B build/no-fixlen $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT"
+          cmake --build build/no-fixlen --target sofab_vectortest
+          $RUN ./build/no-fixlen/test/c/sofab_vectortest
+
+      - name: no-overflow-check
+        run: |
+          cmake -S . -B build/no-overflow-check $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          cmake --build build/no-overflow-check --target sofab_vectortest
+          $RUN ./build/no-overflow-check/test/c/sofab_vectortest
+
+      - name: minimal
+        run: |
+          cmake -S . -B build/minimal $CM_ARGS \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          cmake --build build/minimal --target sofab_vectortest
+          $RUN ./build/minimal/test/c/sofab_vectortest
