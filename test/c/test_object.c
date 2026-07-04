@@ -827,6 +827,84 @@ static void test_object_default_sequence_emitted_empty (void)
 
 //
 
+/*
+ * A STRING field is omitted when its logical, null-terminated value equals its
+ * default -- compared by content, not by raw buffer bytes. The bytes past the
+ * terminator are indeterminate (here a shorter string left behind the tail of a
+ * longer one); a whole-buffer memcmp would wrongly serialise a logically-default
+ * string. Covers both the default-image path (strncmp vs the default) and the
+ * zero-baseline path (empty string == implicit default).
+ */
+typedef struct
+{
+    char label[8];
+} strdef_t;
+
+static const sofab_object_descr_field_t _info_fields_strdef[] =
+{
+    SOFAB_OBJECT_FIELD(0, strdef_t, label, SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+
+static const strdef_t _info_defaults_strdef = { .label = "hi" };
+
+static const sofab_object_descr_t _info_strdef_with_default =
+    SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_info_fields_strdef, 1, NULL, 0, &_info_defaults_strdef);
+
+static const sofab_object_descr_t _info_strdef_zero =
+    SOFAB_OBJECT_DESCR(_info_fields_strdef, 1, NULL, 0);
+
+static size_t strdef_encode (const sofab_object_descr_t *info, const strdef_t *in)
+{
+    sofab_ostream_t octx;
+    uint8_t buffer[32];
+    sofab_ostream_init(&octx, buffer, sizeof(buffer), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, info, in), "encode failed");
+    return sofab_ostream_flush(&octx);
+}
+
+static void test_object_string_default_omission (void)
+{
+    strdef_t in;
+
+    /* default image: value equal to the default is omitted ... */
+    memset(&in, 0, sizeof(in));
+    strcpy(in.label, "hi");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, strdef_encode(&_info_strdef_with_default, &in),
+        "string equal to default must be omitted");
+
+    /* ... even when a longer prior value left indeterminate tail bytes ... */
+    memset(&in, 0, sizeof(in));
+    strcpy(in.label, "hello");
+    strcpy(in.label, "hi"); /* "hi\0lo\0..": logical "hi" == default */
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, strdef_encode(&_info_strdef_with_default, &in),
+        "logically-default string with dirty tail must be omitted");
+
+    /* ... but a genuinely different value is emitted. */
+    memset(&in, 0, sizeof(in));
+    strcpy(in.label, "yo");
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, strdef_encode(&_info_strdef_with_default, &in),
+        "non-default string must be emitted");
+
+    /* zero baseline (no default image): the implicit default is the empty string. */
+    memset(&in, 0, sizeof(in));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, strdef_encode(&_info_strdef_zero, &in),
+        "empty string must be omitted against the zero baseline");
+
+    memset(&in, 0, sizeof(in));
+    strcpy(in.label, "abcdef");
+    strcpy(in.label, ""); /* "\0bcdef\0": logical "" */
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, strdef_encode(&_info_strdef_zero, &in),
+        "logically-empty string with dirty tail must be omitted");
+
+    memset(&in, 0, sizeof(in));
+    strcpy(in.label, "x");
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, strdef_encode(&_info_strdef_zero, &in),
+        "non-empty string must be emitted against the zero baseline");
+}
+
+//
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
@@ -843,6 +921,7 @@ int test_object_main (void)
 
     RUN_TEST(test_object_default_sequence_emitted_empty);
     RUN_TEST(test_object_roundtrip_empty_sequence_before_sequence);
+    RUN_TEST(test_object_string_default_omission);
 
     return UNITY_END();
 }

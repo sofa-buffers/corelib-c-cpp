@@ -44,6 +44,52 @@ static int _iszero (const void *ptr, size_t len)
     return 1;
 }
 
+/*!
+ * @brief Test whether a leaf field currently holds its default value (so it is
+ *        omitted from the sparse encoding).
+ *
+ * Fixed-width fields (integers, floats, blobs, native arrays) compare their raw
+ * storage: against @p defaults when the descriptor carries a default image, else
+ * against all-zero. A STRING is instead compared by its logical, null-terminated
+ * content bounded by the field size: the buffer bytes past the terminator are
+ * indeterminate (e.g. a shorter string overwriting a longer one) and must not
+ * affect the decision, so it matches exactly what @ref sofab_ostream_write_string
+ * serialises. Callers must not pass a SEQUENCE field (never omitted per field).
+ *
+ * @param field    Leaf field descriptor.
+ * @param src      Object being encoded.
+ * @param defaults Default image (@c info->default_values), or NULL for zero.
+ * @return 1 when the field equals its default, 0 otherwise.
+ */
+static int _field_is_default (
+    const sofab_object_descr_field_t *field,
+    const void *src,
+    const void *defaults)
+{
+    const void *val = CAST_TO(const void *, src, field->offset);
+
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    if (field->type == SOFAB_OBJECT_FIELDTYPE_STRING)
+    {
+        const char *s = (const char *)val;
+        if (defaults != NULL)
+        {
+            return strncmp(s, CAST_TO(const char *, defaults, field->offset),
+                           field->size) == 0;
+        }
+        /* No default image: the implicit default is the empty string. */
+        return field->size == 0 || s[0] == '\0';
+    }
+#endif
+
+    if (defaults != NULL)
+    {
+        return memcmp(CAST_TO(const void *, defaults, field->offset),
+                      val, field->size) == 0;
+    }
+    return _iszero(val, field->size);
+}
+
 extern sofab_ret_t sofab_object_init (
     const sofab_object_descr_t *info,
     void *obj)
@@ -108,23 +154,10 @@ extern sofab_ret_t sofab_object_encode (
         if (field->type != SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
 #endif
         {
-            if (info->default_values != NULL)
+            if (_field_is_default(field, src, info->default_values))
             {
-                if (memcmp(
-                    CAST_TO(const void *, info->default_values, field->offset),
-                    CAST_TO(const void *, src, field->offset), field->size) == 0)
-                {
-                    // Field value matches default, skip serialization
-                    continue;
-                }
-            }
-            else
-            {
-                if (_iszero(CAST_TO(const void *, src, field->offset), field->size))
-                {
-                    // No default values provided and field is zero, skip serialization
-                    continue;
-                }
+                // Field value matches its default, skip serialization
+                continue;
             }
         }
 
