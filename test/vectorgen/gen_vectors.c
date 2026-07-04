@@ -765,6 +765,57 @@ static void emit_all(FILE *o)
                     sizeof(skip) / sizeof(skip[0]));
     }
 
+    /* --- wrapper-array string elements: per-element sparse omission ---------
+     * A wrapper-sequence array (array of string) is itself a sequence, so its
+     * elements (id = index) follow the per-field rule (MESSAGE_SPEC S2): a
+     * string element equal to its element default (empty) is omitted, leaving an
+     * id gap the decoder restores; trailing default elements collapse. The
+     * `serialized_sparse` here is auto-derived (is_default_leaf drops the empty
+     * string ops), so these pin the element-level sparse wire the non-C backends
+     * must produce. The sequence is always framed even when fully default. */
+    {
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_str(&l, 0, "a");
+            op_str(&l, 1, "");   /* default -> dropped, leaves an id gap  */
+            op_str(&l, 2, "c");
+        op_seqe(&l);
+        emit_vector(o, "array_string_gap", "array/string",
+                    "Array of string with a default (empty) element in the middle: "
+                    "sparse omits id 1, leaving a gap the decoder restores.", &l);
+    }
+    {
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_str(&l, 0, "a");
+            op_str(&l, 1, "");   /* trailing default -> collapses  */
+        op_seqe(&l);
+        emit_vector(o, "array_string_trailing_default", "array/string",
+                    "Array of string with a trailing default element: sparse drops "
+                    "it, so [\"a\",\"\"] encodes exactly like [\"a\"].", &l);
+    }
+    {
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_str(&l, 0, "");
+            op_str(&l, 1, "");
+        op_seqe(&l);
+        emit_vector(o, "array_string_all_default", "array/string",
+                    "Array of only default (empty) string elements: every element "
+                    "drops, so it encodes as the empty wrapper sequence.", &l);
+    }
+    {
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_str(&l, 0, "");   /* leading default -> gap at id 0  */
+            op_str(&l, 1, "x");
+            op_str(&l, 2, "");   /* trailing default -> collapses    */
+        op_seqe(&l);
+        emit_vector(o, "array_string_leading_default", "array/string",
+                    "Array of string with leading and trailing default elements: "
+                    "the leading one leaves an id gap, the trailing one collapses.", &l);
+    }
+
     /* --- full scale composite message (test_write_full_scale_example) --- */
     {
         static const uint8_t  blob[]  = {0xDE, 0xAD, 0xBE, 0xEF};
