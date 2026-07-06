@@ -26,7 +26,18 @@ if(SOFAB_ENABLE_COVERAGE)
     endif()
 else()
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-        add_compile_options(-Os -fno-asynchronous-unwind-tables -fno-exceptions)
+        # -fno-exceptions keeps the C++ wrapper free of the libstdc++
+        # exception/unwinder runtime, whose static state (emergency pool, DWARF
+        # frame tables + mutexes, terminate handler) otherwise lands in .bss.
+        # -fno-rtti additionally drops the RTTI type_info the wrapper's virtual
+        # bases emit; that lives in .data.rel.ro (not .bss), so it is a small
+        # rodata/code saving, not a .bss reduction. -fno-rtti is C++-only, so
+        # scope it to CXX to avoid a "not valid for C" warning on the C sources.
+        # Catch2-based C++ tests re-enable exceptions via -fexceptions in their
+        # own CMakeLists (Catch2 builds fine with RTTI off, so -fno-rtti is left
+        # inherited there).
+        add_compile_options(-Os -fno-asynchronous-unwind-tables -fno-exceptions
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
     endif()
 endif()
 
