@@ -93,18 +93,21 @@ extern "C" {
  * never reaches the wire. This is the C counterpart of C++ @c sofab::FixedBytes,
  * and it produces byte-identical wire to a plain blob of the same actual length.
  *
- * @warning @p lfield @b must immediately follow @p dfield in @p obj, i.e.
- * @c offsetof(obj,lfield) @c == @c offsetof(obj,dfield)+sizeof(dfield); declare
- * them adjacently as @c { uint8_t dfield[N]; uintX lfield; } (use a @p lfield
- * width that avoids padding after the buffer). The companion width
- * @c sizeof(lfield) (one of 1/2/4/8) is stored in the descriptor's @c nested_idx
- * slot, which also flags the blob as sized: a plain @ref SOFAB_OBJECT_FIELD blob
- * keeps @c nested_idx @c == @c 0 and its original fixed full-capacity behaviour.
+ * @warning @p lfield @b must immediately precede @p dfield in @p obj, i.e.
+ * @c offsetof(obj,dfield) @c == @c offsetof(obj,lfield)+sizeof(lfield); declare
+ * them adjacently as @c { uintX lfield; uint8_t dfield[N]; }. Placing the length
+ * @b before the buffer is alignment-robust: a byte buffer (alignment 1) always
+ * abuts the length with no padding, for any @p lfield width and any @c N (a
+ * length placed after the buffer could be padded away from @c offset+size). The
+ * companion width @c sizeof(lfield) (one of 1/2/4/8) is stored in the
+ * descriptor's @c nested_idx slot, which also flags the blob as sized: a plain
+ * @ref SOFAB_OBJECT_FIELD blob keeps @c nested_idx @c == @c 0 and its original
+ * fixed full-capacity behaviour.
  *
  * @param id      Field ID on the wire.
  * @param obj     Enclosing struct type.
  * @param dfield  Blob buffer member within @p obj (its size is the capacity).
- * @param lfield  Used-length member, declared immediately after @p dfield.
+ * @param lfield  Used-length member, declared immediately before @p dfield.
  */
 #define SOFAB_OBJECT_FIELD_BLOB_SIZED(id, obj, dfield, lfield) \
     { id, offsetof(obj, dfield), sizeof(((obj *)0)->dfield), \
