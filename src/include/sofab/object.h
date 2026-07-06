@@ -59,7 +59,7 @@ extern "C" {
 #define SOFAB_OBJECT_FIELDTYPE_FP32     		0x2 /*!< 32-bit floating point (float). */
 #define SOFAB_OBJECT_FIELDTYPE_FP64     		0x3 /*!< 64-bit floating point (double). */
 #define SOFAB_OBJECT_FIELDTYPE_STRING   		0x4 /*!< Null-terminated string. */
-#define SOFAB_OBJECT_FIELDTYPE_BLOB     		0x5 /*!< Raw binary blob (sized by the field). */
+#define SOFAB_OBJECT_FIELDTYPE_BLOB     		0x5 /*!< Raw binary blob. Fixed full-capacity by default; a variable used-length variant is built with @ref SOFAB_OBJECT_FIELD_BLOB_SIZED (flagged via a non-zero @c nested_idx). */
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED	0x6 /*!< Array of unsigned integers. */
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED   	0x7 /*!< Array of signed integers. */
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32     	0x8 /*!< Array of 32-bit floats. */
@@ -82,6 +82,34 @@ extern "C" {
  */
 #define SOFAB_OBJECT_FIELD(id, obj, field, type) \
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field) & 0xF) }
+
+/*!
+ * @brief Build a variable-length blob field descriptor (reuses the BLOB type).
+ *
+ * A sized blob pairs a fixed-capacity buffer @p dfield (@c sizeof(dfield) bytes)
+ * with a companion length member @p lfield holding how many bytes are actually
+ * used (@c 0..sizeof(dfield)). On encode only @p lfield bytes reach the wire; on
+ * decode the received length is stored back into @p lfield. The buffer capacity
+ * never reaches the wire. This is the C counterpart of C++ @c sofab::FixedBytes,
+ * and it produces byte-identical wire to a plain blob of the same actual length.
+ *
+ * @warning @p lfield @b must immediately follow @p dfield in @p obj, i.e.
+ * @c offsetof(obj,lfield) @c == @c offsetof(obj,dfield)+sizeof(dfield); declare
+ * them adjacently as @c { uint8_t dfield[N]; uintX lfield; } (use a @p lfield
+ * width that avoids padding after the buffer). The companion width
+ * @c sizeof(lfield) (one of 1/2/4/8) is stored in the descriptor's @c nested_idx
+ * slot, which also flags the blob as sized: a plain @ref SOFAB_OBJECT_FIELD blob
+ * keeps @c nested_idx @c == @c 0 and its original fixed full-capacity behaviour.
+ *
+ * @param id      Field ID on the wire.
+ * @param obj     Enclosing struct type.
+ * @param dfield  Blob buffer member within @p obj (its size is the capacity).
+ * @param lfield  Used-length member, declared immediately after @p dfield.
+ */
+#define SOFAB_OBJECT_FIELD_BLOB_SIZED(id, obj, dfield, lfield) \
+    { id, offsetof(obj, dfield), sizeof(((obj *)0)->dfield), \
+      (uint8_t)sizeof(((obj *)0)->lfield), SOFAB_OBJECT_FIELDTYPE_BLOB, \
+      (sizeof(((obj *)0)->dfield) & 0xF) }
 
 /*!
  * @brief Build a nested-object (sequence) field descriptor.

@@ -986,6 +986,93 @@ static void test_object_array_count_full_partial_empty (void)
 
 //
 
+/*
+ * A sized blob (SOFAB_OBJECT_FIELD_BLOB_SIZED) is a fixed-capacity buffer paired
+ * with an adjacent used-length member. Only used_len bytes are written to the
+ * wire (byte-identical to a plain blob of that length); the decoded length is
+ * stored back into used_len; and an empty blob (used_len == 0) is omitted by the
+ * sparse rule -- exactly like the STRING content path above.
+ */
+typedef struct
+{
+    uint8_t data[8];
+    uint8_t used_len;
+} blobsized_t;
+
+static const sofab_object_descr_field_t _info_fields_blobsized[] =
+{
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(0, blobsized_t, data, used_len),
+};
+
+static const sofab_object_descr_t _info_blobsized =
+    SOFAB_OBJECT_DESCR(_info_fields_blobsized, 1, NULL, 0);
+
+static size_t blobsized_encode (const blobsized_t *in, uint8_t *buf, size_t buflen)
+{
+    sofab_ostream_t octx;
+    sofab_ostream_init(&octx, buf, buflen, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, &_info_blobsized, in), "encode failed");
+    return sofab_ostream_flush(&octx);
+}
+
+static void test_object_blob_sized (void)
+{
+    uint8_t buf[32];
+
+    /* 1. a blob shorter than its buffer serialises with its actual length; the
+     *    dirty tail past used_len must not reach the wire. */
+    blobsized_t in;
+    memset(&in, 0, sizeof(in));
+    in.data[0] = 0xAA; in.data[1] = 0xBB; in.data[2] = 0xCC;
+    in.data[3] = 0xDD; in.data[4] = 0xEE; /* tail beyond used_len */
+    in.used_len = 3;
+
+    size_t used = blobsized_encode(&in, buf, sizeof(buf));
+    /* id 0 | FIXLEN(2) = 0x02 ; (3 << 3) | BLOB(3) = 0x1B ; then 3 payload bytes */
+    const uint8_t expected[] = { 0x02, 0x1B, 0xAA, 0xBB, 0xCC };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used, "sized blob wire length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buf, used, "sized blob wire bytes");
+
+    /* 2. round-trips losslessly: both the bytes and used_len are restored. */
+    blobsized_t out;
+    memset(&out, 0, sizeof(out));
+
+    sofab_istream_t ictx;
+    sofab_object_decoder_t dec;
+    memset(&dec, 0, sizeof(dec));
+    dec.info = &_info_blobsized;
+    dec.dst = (uint8_t *)&out;
+    dec.depth = 0;
+    sofab_istream_init(&ictx, sofab_object_field_cb, &dec);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_istream_feed(&ictx, buf, used), "decode failed");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, out.used_len, "used_len not restored");
+    const uint8_t expect_data[3] = { 0xAA, 0xBB, 0xCC };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_data, out.data, 3);
+
+    /* 3. an empty sized blob (used_len == 0) is omitted, regardless of buffer
+     *    content -- length-driven, not content-driven. */
+    memset(&in, 0, sizeof(in));
+    in.data[0] = 0x11; /* content present but logical length zero */
+    in.used_len = 0;
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, blobsized_encode(&in, buf, sizeof(buf)),
+        "empty sized blob must be omitted");
+
+    /* 4. a full-capacity blob emits all N bytes. */
+    memset(&in, 0, sizeof(in));
+    for (uint8_t i = 0; i < 8; i++) in.data[i] = (uint8_t)(0xF0 + i);
+    in.used_len = 8;
+    used = blobsized_encode(&in, buf, sizeof(buf));
+    /* (8 << 3) | BLOB(3) = 0x43 */
+    const uint8_t expected_full[] = {
+        0x02, 0x43, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected_full), used, "full sized blob length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_full, buf, used, "full sized blob bytes");
+}
+
+//
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
@@ -1004,6 +1091,7 @@ int test_object_main (void)
     RUN_TEST(test_object_default_sequence_emitted_empty);
     RUN_TEST(test_object_roundtrip_empty_sequence_before_sequence);
     RUN_TEST(test_object_string_default_omission);
+    RUN_TEST(test_object_blob_sized);
 
     return UNITY_END();
 }

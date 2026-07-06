@@ -44,6 +44,44 @@ static int _iszero (const void *ptr, size_t len)
     return 1;
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+/*!
+ * @brief Load a host-endian unsigned integer of @p width (1/2/4/8) bytes.
+ *
+ * Reads a sized blob's companion used-length member, whose C type (and thus
+ * width) the caller chooses; @p width comes from the descriptor's @c nested_idx.
+ * An unsupported width yields 0 (treated as an empty blob).
+ */
+static uint64_t _load_uint (const void *p, uint8_t width)
+{
+    switch (width)
+    {
+        case 1: return *(const uint8_t *)p;
+        case 2: return *(const uint16_t *)p;
+        case 4: return *(const uint32_t *)p;
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+        case 8: return *(const uint64_t *)p;
+#endif
+        default: return 0;
+    }
+}
+
+/*! @brief Store @p val as a host-endian unsigned integer of @p width bytes. */
+static void _store_uint (void *p, uint8_t width, uint64_t val)
+{
+    switch (width)
+    {
+        case 1: *(uint8_t *)p  = (uint8_t)val;  break;
+        case 2: *(uint16_t *)p = (uint16_t)val; break;
+        case 4: *(uint32_t *)p = (uint32_t)val; break;
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+        case 8: *(uint64_t *)p = val;           break;
+#endif
+        default: break;
+    }
+}
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
 /*!
  * @brief Test whether a leaf field currently holds its default value (so it is
  *        omitted from the sparse encoding).
@@ -79,6 +117,15 @@ static int _field_is_default (
         }
         /* No default image: the implicit default is the empty string. */
         return field->size == 0 || s[0] == '\0';
+    }
+
+    if (field->type == SOFAB_OBJECT_FIELDTYPE_BLOB && field->nested_idx != 0)
+    {
+        /* Sized blob: the logical default is an empty blob (used_len == 0),
+         * mirroring the empty-string rule above. The buffer bytes are
+         * indeterminate and must not influence the decision. */
+        return _load_uint(CAST_TO(const void *, src, field->offset + field->size),
+                          field->nested_idx) == 0;
     }
 #endif
 
@@ -219,8 +266,20 @@ extern sofab_ret_t sofab_object_encode (
                 break;
 
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
-                ret = sofab_ostream_write_blob(ctx, field->id, CAST_TO(uint8_t *, src, field->offset), field->size);
+            {
+                size_t blob_len = field->size;
+                if (field->nested_idx != 0)
+                {
+                    /* Sized blob: emit only used_len bytes (clamped to capacity). */
+                    uint64_t used = _load_uint(
+                        CAST_TO(const uint8_t *, src, field->offset + field->size),
+                        field->nested_idx);
+                    blob_len = used < field->size ? (size_t)used : field->size;
+                }
+                ret = sofab_ostream_write_blob(ctx, field->id,
+                    CAST_TO(uint8_t *, src, field->offset), blob_len);
                 break;
+            }
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
@@ -285,7 +344,9 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
     sofab_object_decoder_t *decoder = (sofab_object_decoder_t *)usrptr;
     const sofab_object_descr_t *info = decoder->info;
 
-    (void)size;
+#if defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    (void)size;   /* consumed only by the sized-blob branch (fixlen) below */
+#endif
     (void)count;
 
     for (size_t i = 0; i < info->field_count; i++)
@@ -325,6 +386,13 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
                 sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
+                if (field->nested_idx != 0)
+                {
+                    /* Sized blob: record the actual received length in used_len. */
+                    size_t used = size < field->size ? size : field->size;
+                    _store_uint(decoder->dst + field->offset + field->size,
+                                field->nested_idx, (uint64_t)used);
+                }
                 break;
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
