@@ -123,8 +123,9 @@ static int _field_is_default (
     {
         /* Sized blob: the logical default is an empty blob (used_len == 0),
          * mirroring the empty-string rule above. The buffer bytes are
-         * indeterminate and must not influence the decision. */
-        return _load_uint(CAST_TO(const void *, src, field->offset + field->size),
+         * indeterminate and must not influence the decision. used_len sits
+         * immediately before the buffer (nested_idx bytes wide). */
+        return _load_uint(CAST_TO(const void *, src, field->offset - field->nested_idx),
                           field->nested_idx) == 0;
     }
 #endif
@@ -270,9 +271,10 @@ extern sofab_ret_t sofab_object_encode (
                 size_t blob_len = field->size;
                 if (field->nested_idx != 0)
                 {
-                    /* Sized blob: emit only used_len bytes (clamped to capacity). */
+                    /* Sized blob: emit only used_len bytes (clamped to capacity).
+                     * used_len sits immediately before the buffer. */
                     uint64_t used = _load_uint(
-                        CAST_TO(const uint8_t *, src, field->offset + field->size),
+                        CAST_TO(const uint8_t *, src, field->offset - field->nested_idx),
                         field->nested_idx);
                     blob_len = used < field->size ? (size_t)used : field->size;
                 }
@@ -388,9 +390,10 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
                 if (field->nested_idx != 0)
                 {
-                    /* Sized blob: record the actual received length in used_len. */
+                    /* Sized blob: record the actual received length in used_len,
+                     * which sits immediately before the buffer. */
                     size_t used = size < field->size ? size : field->size;
-                    _store_uint(decoder->dst + field->offset + field->size,
+                    _store_uint(decoder->dst + field->offset - field->nested_idx,
                                 field->nested_idx, (uint64_t)used);
                 }
                 break;

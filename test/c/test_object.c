@@ -995,8 +995,8 @@ static void test_object_array_count_full_partial_empty (void)
  */
 typedef struct
 {
+    uint8_t used_len;   /* length precedes the buffer (alignment-robust) */
     uint8_t data[8];
-    uint8_t used_len;
 } blobsized_t;
 
 static const sofab_object_descr_field_t _info_fields_blobsized[] =
@@ -1006,6 +1006,26 @@ static const sofab_object_descr_field_t _info_fields_blobsized[] =
 
 static const sofab_object_descr_t _info_blobsized =
     SOFAB_OBJECT_DESCR(_info_fields_blobsized, 1, NULL, 0);
+
+/*
+ * Alignment regression: a wide (uint16) length in front of an odd-sized buffer.
+ * With the length placed before the buffer there is never padding between them,
+ * so the descriptor locates used_len correctly for any width/size. (A length
+ * placed *after* an odd buffer would be padded away and silently corrupted.)
+ */
+typedef struct
+{
+    uint16_t used_len;
+    uint8_t  data[7];
+} blobsized_wide_t;
+
+static const sofab_object_descr_field_t _info_fields_blobsized_wide[] =
+{
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(0, blobsized_wide_t, data, used_len),
+};
+
+static const sofab_object_descr_t _info_blobsized_wide =
+    SOFAB_OBJECT_DESCR(_info_fields_blobsized_wide, 1, NULL, 0);
 
 static size_t blobsized_encode (const blobsized_t *in, uint8_t *buf, size_t buflen)
 {
@@ -1069,6 +1089,40 @@ static void test_object_blob_sized (void)
         0x02, 0x43, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7 };
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected_full), used, "full sized blob length");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_full, buf, used, "full sized blob bytes");
+
+    /* 5. alignment regression: uint16 used_len before an odd (7-byte) buffer
+     *    round-trips losslessly -- the length is located correctly despite the
+     *    struct's natural 2-byte alignment. */
+    blobsized_wide_t win;
+    memset(&win, 0, sizeof(win));
+    win.data[0] = 0x10; win.data[1] = 0x20; win.data[2] = 0x30; win.data[3] = 0x40;
+    win.used_len = 4;
+    used = 0;
+    {
+        sofab_ostream_t wos;
+        sofab_ostream_init(&wos, buf, sizeof(buf), 0, NULL, NULL);
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+            sofab_object_encode(&wos, &_info_blobsized_wide, &win), "wide encode failed");
+        used = sofab_ostream_flush(&wos);
+    }
+    const uint8_t expected_wide[] = { 0x02, 0x23, 0x10, 0x20, 0x30, 0x40 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected_wide), used, "wide sized blob length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_wide, buf, used, "wide sized blob bytes");
+
+    blobsized_wide_t wout;
+    memset(&wout, 0, sizeof(wout));
+    sofab_istream_t wis;
+    sofab_object_decoder_t wdec;
+    memset(&wdec, 0, sizeof(wdec));
+    wdec.info = &_info_blobsized_wide;
+    wdec.dst = (uint8_t *)&wout;
+    wdec.depth = 0;
+    sofab_istream_init(&wis, sofab_object_field_cb, &wdec);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_istream_feed(&wis, buf, used), "wide decode failed");
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(4, wout.used_len, "wide used_len not restored");
+    const uint8_t expect_wide_data[4] = { 0x10, 0x20, 0x30, 0x40 };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_wide_data, wout.data, 4);
 }
 
 //
