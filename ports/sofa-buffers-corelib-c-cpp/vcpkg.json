@@ -20,6 +20,24 @@
   "features": {
     "no-object-api": {
       "description": "Exclude the optional object-descriptor API (object.c) to shrink the library to the bare stream corelib."
+    },
+    "no-array": {
+      "description": "Exclude array (wrapper) field support from the wire format."
+    },
+    "no-sequence": {
+      "description": "Exclude sequence field support from the wire format."
+    },
+    "no-fixlen": {
+      "description": "Exclude fixed-length field support from the wire format."
+    },
+    "no-fp64": {
+      "description": "Exclude 64-bit floating-point (double) support from the wire format."
+    },
+    "no-int64": {
+      "description": "Exclude 64-bit integer support from the wire format."
+    },
+    "no-overflow-check": {
+      "description": "Exclude the decoder integer-overflow checks."
     }
   }
 }

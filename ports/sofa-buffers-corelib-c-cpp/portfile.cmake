@@ -12,11 +12,19 @@ vcpkg_from_github(
     HEAD_REF main
 )
 
-# Map the port feature onto the upstream CMake option.
+# Map the port features onto the upstream CMake feature-toggle options. Each
+# option applies a PUBLIC compile definition, so it is carried in the installed
+# CMake config and inherited by consumers of sofa-buffers::corelib.
 vcpkg_check_features(
     OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
-        no-object-api SOFAB_DISABLE_OBJECT_API
+        no-object-api     SOFAB_DISABLE_OBJECT_API
+        no-array          SOFAB_DISABLE_ARRAY_SUPPORT
+        no-sequence       SOFAB_DISABLE_SEQUENCE_SUPPORT
+        no-fixlen         SOFAB_DISABLE_FIXLEN_SUPPORT
+        no-fp64           SOFAB_DISABLE_FP64_SUPPORT
+        no-int64          SOFAB_DISABLE_INT64_SUPPORT
+        no-overflow-check SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
 )
 
 vcpkg_cmake_configure(

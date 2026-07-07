@@ -6,6 +6,25 @@ import os
 
 required_conan_version = ">=2.0"
 
+# Optional feature toggles: Conan option name -> upstream SOFAB_DISABLE_* macro.
+# Each option is positive-sense (True = feature present); a False value disables
+# the feature by defining the corresponding macro. Object-API selects a source
+# file; the rest are compile-time guards that also appear in the public headers,
+# so they are re-exported as cpp_info.defines below.
+_SOFAB_FEATURES = {
+    "object_api": "SOFAB_DISABLE_OBJECT_API",
+    "array": "SOFAB_DISABLE_ARRAY_SUPPORT",
+    "sequence": "SOFAB_DISABLE_SEQUENCE_SUPPORT",
+    "fixlen": "SOFAB_DISABLE_FIXLEN_SUPPORT",
+    "fp64": "SOFAB_DISABLE_FP64_SUPPORT",
+    "int64": "SOFAB_DISABLE_INT64_SUPPORT",
+    "overflow_check": "SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK",
+}
+
+# Macros consumed only by the .c sources (not the public headers); no need to
+# propagate these to downstream compilations.
+_SOFAB_SOURCE_ONLY_MACROS = {"SOFAB_DISABLE_OBJECT_API"}
+
 
 class SofaBuffersCorelibConan(ConanFile):
     name = "sofa-buffers-corelib-c-cpp"
@@ -27,12 +46,25 @@ class SofaBuffersCorelibConan(ConanFile):
     options = {
         "shared": [True, False],
         "fPIC": [True, False],
+        # Feature toggles (all default to on / full wire format).
         "object_api": [True, False],
+        "array": [True, False],
+        "sequence": [True, False],
+        "fixlen": [True, False],
+        "fp64": [True, False],
+        "int64": [True, False],
+        "overflow_check": [True, False],
     }
     default_options = {
         "shared": False,
         "fPIC": True,
         "object_api": True,
+        "array": True,
+        "sequence": True,
+        "fixlen": True,
+        "fp64": True,
+        "int64": True,
+        "overflow_check": True,
     }
 
     # Only the pieces needed to build the library are exported; the test and
@@ -64,7 +96,9 @@ class SofaBuffersCorelibConan(ConanFile):
         tc.variables["SOFAB_INSTALL"] = True
         tc.variables["SOFAB_BUILD_TESTS"] = False
         tc.variables["SOFAB_ENABLE_BENCH"] = False
-        tc.variables["SOFAB_DISABLE_OBJECT_API"] = not self.options.object_api
+        # A disabled feature (option False) sets its SOFAB_DISABLE_* CMake option.
+        for opt, macro in _SOFAB_FEATURES.items():
+            tc.variables[macro] = not getattr(self.options, opt)
         tc.generate()
 
     def build(self):
@@ -91,3 +125,12 @@ class SofaBuffersCorelibConan(ConanFile):
         #   find_package(sofa-buffers-corelib-c-cpp) -> sofa-buffers::corelib
         self.cpp_info.set_property("cmake_file_name", "sofa-buffers-corelib-c-cpp")
         self.cpp_info.set_property("cmake_target_name", "sofa-buffers::corelib")
+        # Re-export the header-guard macros for every disabled feature so a
+        # consumer's headers match the compiled library. (Conan builds its own
+        # CMake config from cpp_info, so the library's exported PUBLIC defines
+        # are not otherwise visible downstream.)
+        for opt, macro in _SOFAB_FEATURES.items():
+            if macro in _SOFAB_SOURCE_ONLY_MACROS:
+                continue
+            if not getattr(self.options, opt):
+                self.cpp_info.defines.append(macro)
