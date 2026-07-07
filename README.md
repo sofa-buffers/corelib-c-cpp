@@ -291,9 +291,7 @@ For a callback-only decode without subclassing, `sofab::IStreamInline` takes a
 
 ## API summary
 
-The full reference is generated from the headers (see
-[Documentation](https://sofa-buffers.github.io/corelib-c-cpp/)); this is the
-high-level surface. There are two layers over one wire format: the **C object
+There are two layers over one wire format: the **C object
 API** (`sofab/ostream.h`, `sofab/istream.h`, `sofab/object.h`) and the
 header-only **C++ wrapper** (`sofab/sofab.hpp`).
 
