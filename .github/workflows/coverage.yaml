@@ -19,11 +19,11 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          # Drop the pre-installed third-party apt repos (microsoft, google) whose
+          # Remove the pre-installed third-party apt sources (microsoft, google) whose
           # InRelease signatures intermittently break `apt-get update` on the runner.
-          # They live in sources.list.d; the base Ubuntu archive (sources.list) — which
-          # every package below comes from — is untouched.
-          sudo rm -f /etc/apt/sources.list.d/*
+          # Match by content so the base Ubuntu archive (ubuntu.sources) is kept — every
+          # package below comes from it.
+          sudo grep -rlE 'packages\.microsoft\.com|dl\.google\.com' /etc/apt/sources.list.d/ | sudo xargs -r rm -f
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake gcovr jq
