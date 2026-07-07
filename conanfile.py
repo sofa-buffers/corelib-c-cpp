@@ -121,7 +121,7 @@ class SofaBuffersCorelibConan(ConanFile):
 
     def package_info(self):
         self.cpp_info.libs = ["sofabuffers"]
-        # Consumers get the same names as the upstream CMake / vcpkg port:
+        # Consumers get the same names as the upstream CMake project:
         #   find_package(sofa-buffers-corelib-c-cpp) -> sofa-buffers::corelib
         self.cpp_info.set_property("cmake_file_name", "sofa-buffers-corelib-c-cpp")
         self.cpp_info.set_property("cmake_target_name", "sofa-buffers::corelib")

@@ -68,7 +68,7 @@ endif()
 
 # --- compilation flags ---
 # GCC/Clang-only size flags; skipped on other toolchains (e.g. MSVC) so the
-# library still configures cleanly when built as a vcpkg/Conan package.
+# library still configures cleanly when built as a Conan package.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffunction-sections -fdata-sections)
     add_link_options(-Wl,--gc-sections -Wl,-Map=mapfile.map)
@@ -81,7 +81,7 @@ add_subdirectory(src)
 
 # --- tests ---
 # The test suites pull in Unity/Catch2 via FetchContent, so package builds
-# (vcpkg/Conan) turn them off with -DSOFAB_BUILD_TESTS=OFF to keep the build
+# (Conan) turn them off with -DSOFAB_BUILD_TESTS=OFF to keep the build
 # dependency-free.
 option(SOFAB_BUILD_TESTS "Build the C/C++ test suites" ON)
 if(SOFAB_BUILD_TESTS)
