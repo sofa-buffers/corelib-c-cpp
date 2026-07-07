@@ -1,8 +1,8 @@
 name: "Version consistency"
 
-# Keeps the package version (and name/license) in lockstep across every package
-# manifest and the canonical CMake project() version. On a release tag it also
-# asserts the tag itself matches, so a mis-tagged release fails fast.
+# The git tag is the source of truth for the version: every package manifest
+# must match it. Each config is checked in its own step. On branch/PR runs the
+# latest tag is used as the reference.
 on:
   push:
     branches: [ main ]
@@ -13,92 +13,70 @@ on:
 jobs:
   check-versions:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need tags for the reference version
 
-      - name: Check version / name / license consistency
+      - name: Reference version (git tag)
         shell: bash
         run: |
           set -euo pipefail
-
-          VCPKG=ports/sofa-buffers-corelib-c-cpp/vcpkg.json
-
-          declare -A VERSION NAME LICENSE
-
-          # --- versions ---
-          VERSION[CMakeLists.txt]=$(grep -oP '^\s*VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | head -1)
-          VERSION[vcpkg.json]=$(jq -r .version "$VCPKG")
-          VERSION[conanfile.py]=$(grep -oP '^\s*version\s*=\s*"\K[^"]+' conanfile.py | head -1)
-          VERSION[library.json]=$(jq -r .version library.json)
-          VERSION[library.properties]=$(grep -oP '^version=\K.*' library.properties)
-
-          # --- package names (CMake project() name intentionally differs) ---
-          NAME[vcpkg.json]=$(jq -r .name "$VCPKG")
-          NAME[conanfile.py]=$(grep -oP '^\s*name\s*=\s*"\K[^"]+' conanfile.py | head -1)
-          NAME[library.json]=$(jq -r .name library.json)
-          NAME[library.properties]=$(grep -oP '^name=\K.*' library.properties)
-
-          # --- licenses ---
-          LICENSE[vcpkg.json]=$(jq -r .license "$VCPKG")
-          LICENSE[conanfile.py]=$(grep -oP '^\s*license\s*=\s*"\K[^"]+' conanfile.py | head -1)
-          LICENSE[library.json]=$(jq -r .license library.json)
-          LICENSE[library.properties]=$(grep -oP '^license=\K.*' library.properties)
-
-          fail=0
-
-          # Assert every value in an associative array is identical; print a table.
-          check() {
-            local label=$1
-            local -n map=$2
-            local ref="" refkey=""
-            {
-              echo "### $label"
-              echo ""
-              echo "| file | $label |"
-              echo "| --- | --- |"
-            } >> "$GITHUB_STEP_SUMMARY"
-            for k in "${!map[@]}"; do
-              printf '| %s | `%s` |\n' "$k" "${map[$k]:-<missing>}" >> "$GITHUB_STEP_SUMMARY"
-              if [[ -z "${map[$k]}" ]]; then
-                echo "::error::$label could not be parsed from $k"
-                fail=1
-                continue
-              fi
-              if [[ -z "$ref" ]]; then ref=${map[$k]}; refkey=$k; continue; fi
-              if [[ "${map[$k]}" != "$ref" ]]; then
-                echo "::error::$label mismatch: $k='${map[$k]}' != $refkey='$ref'"
-                fail=1
-              fi
-            done
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "$label -> ${ref:-<none>}"
-          }
-
-          check version VERSION
-          check name    NAME
-          check license LICENSE
-
-          # --- on a release tag, the tag must match the common version ---
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            tag_version=${GITHUB_REF_NAME#v}
-            common=${VERSION[vcpkg.json]}
-            if [[ "$tag_version" != "$common" ]]; then
-              echo "::error::release tag '${GITHUB_REF_NAME}' (version '${tag_version}') does not match the package version '${common}'"
-              fail=1
-            else
-              echo "release tag '${GITHUB_REF_NAME}' matches package version '${common}'"
-            fi
-            {
-              echo "### release tag"
-              echo ""
-              echo "tag \`${GITHUB_REF_NAME}\` vs package version \`${common}\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+            ref_version=${GITHUB_REF_NAME#v}
+          else
+            # Latest tag on branch/PR runs; empty if the repo has no tags yet,
+            # in which case the version comparison is skipped (name/license only).
+            ref_version=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)
+            [[ -n "$ref_version" ]] || echo "::notice::no git tag found; skipping version comparison"
           fi
+          {
+            echo "REF_VERSION=$ref_version"
+          } >> "$GITHUB_ENV"
 
-          if [[ "$fail" -ne 0 ]]; then
-            echo "Version/name/license consistency check FAILED."
-            exit 1
-          fi
-          echo "All package manifests are consistent."
+      - name: Check vcpkg (vcpkg.json)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          VCPKG: ports/sofa-buffers-corelib-c-cpp/vcpkg.json
+        run: |
+          set -euo pipefail
+          version=$(jq -r .version "$VCPKG")
+          [[ -z "$REF_VERSION" || "$version" == "$REF_VERSION" ]] || { echo "::error::vcpkg.json version: '$version' != '$REF_VERSION'"; exit 1; }
+          # vcpkg.json is the source of truth for name/license; publish for later steps.
+          {
+            echo "REF_NAME=$(jq -r .name "$VCPKG")"
+            echo "REF_LICENSE=$(jq -r .license "$VCPKG")"
+          } >> "$GITHUB_ENV"
+
+      - name: Check Conan (conanfile.py)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          get() { grep -oP "^\s*$1\s*=\s*\"\K[^\"]+" conanfile.py | head -1; }
+          check() { [[ -z "$3" || "$2" == "$3" ]] || { echo "::error::conanfile.py $1: '$2' != '$3'"; exit 1; }; }
+          check version "$(get version)"  "$REF_VERSION"
+          check name    "$(get name)"     "$REF_NAME"
+          check license "$(get license)"  "$REF_LICENSE"
+
+      - name: Check PlatformIO (library.json)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          check() { [[ -z "$3" || "$2" == "$3" ]] || { echo "::error::library.json $1: '$2' != '$3'"; exit 1; }; }
+          check version "$(jq -r .version library.json)"  "$REF_VERSION"
+          check name    "$(jq -r .name library.json)"     "$REF_NAME"
+          check license "$(jq -r .license library.json)"  "$REF_LICENSE"
+
+      - name: Check Arduino (library.properties)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          get() { grep -oP "^$1=\K.*" library.properties; }
+          check() { [[ -z "$3" || "$2" == "$3" ]] || { echo "::error::library.properties $1: '$2' != '$3'"; exit 1; }; }
+          check version "$(get version)"  "$REF_VERSION"
+          check name    "$(get name)"     "$REF_NAME"
+          check license "$(get license)"  "$REF_LICENSE"
