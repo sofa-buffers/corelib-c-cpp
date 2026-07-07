@@ -62,6 +62,7 @@ endif()
 
 # --- build SofaBuffers core library ---
 add_subdirectory(src)
+add_library(sofa-buffers::corelib ALIAS sofabbuffers)
 
 # --- tests ---
 # The test suites pull in Unity/Catch2 via FetchContent, so package builds
