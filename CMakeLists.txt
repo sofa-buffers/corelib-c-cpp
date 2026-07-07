@@ -61,8 +61,9 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # --- build SofaBuffers core library ---
+# The namespaced sofa-buffers::corelib alias is defined in src/CMakeLists.txt,
+# next to the target it aliases.
 add_subdirectory(src)
-add_library(sofa-buffers::corelib ALIAS sofabbuffers)
 
 # --- tests ---
 # The test suites pull in Unity/Catch2 via FetchContent, so package builds
