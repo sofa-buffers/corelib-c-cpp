@@ -28,46 +28,6 @@ For desktop/server C++ where raw throughput matters more than code size, see the
 sibling pure-C++20 port — [`corelib-cpp`](https://github.com/sofa-buffers/corelib-cpp)
 — and [Choosing between the two C++ corelibs](#choosing-between-the-two-cc-corelibs).
 
-### Package name
-
-The library is distributed as the vcpkg/Conan port `sofa-buffers-corelib-c-cpp`
-and is consumed in CMake through the namespaced target `sofa-buffers::corelib`:
-
-```cmake
-find_package(sofa-buffers-corelib-c-cpp CONFIG REQUIRED)
-target_link_libraries(my_app PRIVATE sofa-buffers::corelib)
-```
-
-with `#include <sofab/…>`. The code API is unchanged: the C API keeps the
-`sofab_` prefix and the C++ API keeps `namespace sofab`.
-
-### PlatformIO / Arduino
-
-For embedded targets the same corelib ships with a [PlatformIO](https://platformio.org/)
-manifest (`library.json`) and an [Arduino](https://arduino.cc/) library manifest
-(`library.properties`), carrying the same package name, version, license and
-description as the vcpkg/Conan ports.
-
-Depend on it from a PlatformIO project:
-
-```ini
-# platformio.ini
-[env:my_board]
-lib_deps = sofa-buffers-corelib-c-cpp
-```
-
-then `#include <sofab/sofab.h>` (C) or `#include <sofab/sofab.hpp>` (C++). The
-object-descriptor API is compiled in by default (as with the vcpkg/Conan default);
-the [feature flags](#feature-flags) are selected the usual way, by adding the
-`SOFAB_DISABLE_*` defines to your build — e.g. `build_flags = -DSOFAB_DISABLE_INT64_SUPPORT`
-in `platformio.ini`.
-
-> **Note:** PlatformIO points its include path at `src/include` via the manifest's
-> `build.includeDir`. The Arduino IDE's Library Manager instead fixes the include
-> root at `src/`, so consuming this repo straight from the Arduino IDE needs the
-> public headers reachable as `src/sofab/…` — use PlatformIO (which also builds the
-> Arduino framework) until that layout lands.
-
 ### Requirements
 
 - A **C99** (or later) and/or **C++20** (or later) compiler — GCC or Clang.
@@ -85,7 +45,7 @@ library (`<array>`, `<span>`, `<string>`, `<vector>`, `<memory>`,
 `FixedString`, `FixedBytes`, `InlineVector`) compiles under `-fno-exceptions`
 `-fno-rtti`.
 
-### Tested targets
+### Built with the following compilers
 
 CI builds the corelib across a range of architectures and endiannesses:
 
@@ -100,6 +60,43 @@ CI builds the corelib across a range of architectures and endiannesses:
 | MIPS (GCC, big endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-mips.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-mips.yaml) |
 | PowerPC (GCC, big endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml) |
 | RISC-V 64 (GCC, little endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml) |
+
+> The non-native targets above are built and run under [QEMU](https://www.qemu.org/) user-mode emulation in CI, so you can reproduce any of them locally without the real hardware.
+
+### Packaging
+
+Distributed as the port `sofa-buffers-corelib-c-cpp`; every route exposes the
+same target `sofa-buffers::corelib` and `#include <sofab/…>`.
+
+#### CMake
+
+Pull it straight from the repo with `FetchContent`:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+  sofa-buffers-corelib-c-cpp
+  GIT_REPOSITORY https://github.com/sofa-buffers/corelib-c-cpp.git
+  GIT_TAG        <tag or branch>
+)
+FetchContent_MakeAvailable(sofa-buffers-corelib-c-cpp)
+target_link_libraries(my_app PRIVATE sofa-buffers::corelib)
+```
+
+#### Conan / vcpkg
+
+Install the port, then in CMake:
+
+```cmake
+find_package(sofa-buffers-corelib-c-cpp CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE sofa-buffers::corelib)
+```
+
+#### Arduino / PlatformIO
+
+For embedded targets the corelib ships an [Arduino](https://arduino.cc/) manifest
+(`library.properties`) and a [PlatformIO](https://platformio.org/) manifest
+(`library.json`).
 
 ## Why this design
 
