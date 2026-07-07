@@ -37,12 +37,20 @@ jobs:
       - name: Install dependencies (x86_64)
         if: matrix.arch == 'x86_64'
         run: |
+          # Drop pre-installed third-party apt repos (microsoft/azure) whose
+          # InRelease signatures intermittently break `apt-get update` on the runner;
+          # every package below comes from the standard Ubuntu archive.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
       - name: Install dependencies (PowerPC big-endian + qemu)
         if: matrix.arch == 'powerpc-be'
         run: |
+          # Drop pre-installed third-party apt repos (microsoft/azure) whose
+          # InRelease signatures intermittently break `apt-get update` on the runner;
+          # every package below comes from the standard Ubuntu archive.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
           sudo apt-get update
           sudo apt-get install -y gcc-powerpc-linux-gnu cmake make qemu-user-static
 

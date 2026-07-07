@@ -16,6 +16,10 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          # Drop pre-installed third-party apt repos (microsoft/azure) whose
+          # InRelease signatures intermittently break `apt-get update` on the runner;
+          # every package below comes from the standard Ubuntu archive.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
           sudo apt-get update
           sudo apt-get install -y \
             gcc-powerpc-linux-gnu g++-powerpc-linux-gnu cmake make \
