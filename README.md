@@ -83,9 +83,9 @@ FetchContent_MakeAvailable(sofa-buffers-corelib-c-cpp)
 target_link_libraries(my_app PRIVATE sofa-buffers::corelib)
 ```
 
-#### Conan / vcpkg
+#### Conan
 
-Install the port, then in CMake:
+Install the package, then in CMake:
 
 ```cmake
 find_package(sofa-buffers-corelib-c-cpp CONFIG REQUIRED)

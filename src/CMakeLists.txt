@@ -14,8 +14,8 @@ endif()
 
 add_library(sofabuffers ${SOFAB_SOURCES})
 
-# Namespaced alias for modern-CMake consumers (matches the vcpkg/Conan port
-# name sofa-buffers-corelib-c-cpp). Additive: the sofabuffers target is unchanged.
+# Namespaced alias for modern-CMake consumers (matches the Conan package name
+# sofa-buffers-corelib-c-cpp). Additive: the sofabuffers target is unchanged.
 add_library(sofa-buffers::corelib ALIAS sofabuffers)
 
 # BUILD_INTERFACE points at the in-tree headers; INSTALL_INTERFACE at the
@@ -30,7 +30,7 @@ target_compile_options(sofabuffers PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno
 # Each option drops a slice of the wire format to shrink the build. The matching
 # SOFAB_DISABLE_* macro also appears in the *public* headers, so it is applied
 # PUBLIC: it is baked into the installed INTERFACE and every downstream consumer
-# (in-tree, find_package, vcpkg, Conan) compiles the headers with the same
+# (in-tree, find_package, Conan) compiles the headers with the same
 # configuration. Without this the library and a consumer's headers could
 # disagree on which fields exist. Default OFF keeps the full feature set.
 #
@@ -62,8 +62,8 @@ endif()
 # ----------------------------------------------------------------------------
 # Install / export rules
 # ----------------------------------------------------------------------------
-# These make the library consumable via find_package() and drive the vcpkg and
-# Conan ports (see ports/sofa-buffers-corelib and conanfile.py). Guarded so the
+# These make the library consumable via find_package() and drive the Conan
+# recipe (see conanfile.py). Guarded so the
 # rules stay out of the way when this project is embedded via add_subdirectory.
 option(SOFAB_INSTALL "Generate install and CMake package-config rules" ON)
 if(SOFAB_INSTALL)
