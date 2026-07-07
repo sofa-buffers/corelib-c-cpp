@@ -1,0 +1,104 @@
+name: "Version consistency"
+
+# Keeps the package version (and name/license) in lockstep across every package
+# manifest and the canonical CMake project() version. On a release tag it also
+# asserts the tag itself matches, so a mis-tagged release fails fast.
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check version / name / license consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VCPKG=ports/sofa-buffers-corelib-c-cpp/vcpkg.json
+
+          declare -A VERSION NAME LICENSE
+
+          # --- versions ---
+          VERSION[CMakeLists.txt]=$(grep -oP '^\s*VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | head -1)
+          VERSION[vcpkg.json]=$(jq -r .version "$VCPKG")
+          VERSION[conanfile.py]=$(grep -oP '^\s*version\s*=\s*"\K[^"]+' conanfile.py | head -1)
+          VERSION[library.json]=$(jq -r .version library.json)
+          VERSION[library.properties]=$(grep -oP '^version=\K.*' library.properties)
+
+          # --- package names (CMake project() name intentionally differs) ---
+          NAME[vcpkg.json]=$(jq -r .name "$VCPKG")
+          NAME[conanfile.py]=$(grep -oP '^\s*name\s*=\s*"\K[^"]+' conanfile.py | head -1)
+          NAME[library.json]=$(jq -r .name library.json)
+          NAME[library.properties]=$(grep -oP '^name=\K.*' library.properties)
+
+          # --- licenses ---
+          LICENSE[vcpkg.json]=$(jq -r .license "$VCPKG")
+          LICENSE[conanfile.py]=$(grep -oP '^\s*license\s*=\s*"\K[^"]+' conanfile.py | head -1)
+          LICENSE[library.json]=$(jq -r .license library.json)
+          LICENSE[library.properties]=$(grep -oP '^license=\K.*' library.properties)
+
+          fail=0
+
+          # Assert every value in an associative array is identical; print a table.
+          check() {
+            local label=$1
+            local -n map=$2
+            local ref="" refkey=""
+            {
+              echo "### $label"
+              echo ""
+              echo "| file | $label |"
+              echo "| --- | --- |"
+            } >> "$GITHUB_STEP_SUMMARY"
+            for k in "${!map[@]}"; do
+              printf '| %s | `%s` |\n' "$k" "${map[$k]:-<missing>}" >> "$GITHUB_STEP_SUMMARY"
+              if [[ -z "${map[$k]}" ]]; then
+                echo "::error::$label could not be parsed from $k"
+                fail=1
+                continue
+              fi
+              if [[ -z "$ref" ]]; then ref=${map[$k]}; refkey=$k; continue; fi
+              if [[ "${map[$k]}" != "$ref" ]]; then
+                echo "::error::$label mismatch: $k='${map[$k]}' != $refkey='$ref'"
+                fail=1
+              fi
+            done
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "$label -> ${ref:-<none>}"
+          }
+
+          check version VERSION
+          check name    NAME
+          check license LICENSE
+
+          # --- on a release tag, the tag must match the common version ---
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            common=${VERSION[vcpkg.json]}
+            if [[ "$tag_version" != "$common" ]]; then
+              echo "::error::release tag '${GITHUB_REF_NAME}' (version '${tag_version}') does not match the package version '${common}'"
+              fail=1
+            else
+              echo "release tag '${GITHUB_REF_NAME}' matches package version '${common}'"
+            fi
+            {
+              echo "### release tag"
+              echo ""
+              echo "tag \`${GITHUB_REF_NAME}\` vs package version \`${common}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [[ "$fail" -ne 0 ]]; then
+            echo "Version/name/license consistency check FAILED."
+            exit 1
+          fi
+          echo "All package manifests are consistent."
