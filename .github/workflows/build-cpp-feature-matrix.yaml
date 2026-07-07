@@ -44,20 +44,22 @@ jobs:
       - name: Install dependencies (x86_64)
         if: matrix.arch == 'x86_64'
         run: |
-          # Drop pre-installed third-party apt repos (microsoft/azure) whose
-          # InRelease signatures intermittently break `apt-get update` on the runner;
-          # every package below comes from the standard Ubuntu archive.
-          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
+          # Drop the pre-installed third-party apt repos (microsoft, google) whose
+          # InRelease signatures intermittently break `apt-get update` on the runner.
+          # They live in sources.list.d; the base Ubuntu archive (sources.list) — which
+          # every package below comes from — is untouched.
+          sudo rm -f /etc/apt/sources.list.d/*
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
       - name: Install dependencies (PowerPC big-endian + qemu)
         if: matrix.arch == 'powerpc-be'
         run: |
-          # Drop pre-installed third-party apt repos (microsoft/azure) whose
-          # InRelease signatures intermittently break `apt-get update` on the runner;
-          # every package below comes from the standard Ubuntu archive.
-          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
+          # Drop the pre-installed third-party apt repos (microsoft, google) whose
+          # InRelease signatures intermittently break `apt-get update` on the runner.
+          # They live in sources.list.d; the base Ubuntu archive (sources.list) — which
+          # every package below comes from — is untouched.
+          sudo rm -f /etc/apt/sources.list.d/*
           sudo apt-get update
           sudo apt-get install -y g++-powerpc-linux-gnu cmake make qemu-user-static
 
@@ -116,10 +118,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Drop pre-installed third-party apt repos (microsoft/azure) whose
-          # InRelease signatures intermittently break `apt-get update` on the runner;
-          # every package below comes from the standard Ubuntu archive.
-          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
+          # Drop the pre-installed third-party apt repos (microsoft, google) whose
+          # InRelease signatures intermittently break `apt-get update` on the runner.
+          # They live in sources.list.d; the base Ubuntu archive (sources.list) — which
+          # every package below comes from — is untouched.
+          sudo rm -f /etc/apt/sources.list.d/*
           sudo apt-get update
           sudo apt-get install -y build-essential cmake
 
