@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
-project(sofabuffers LANGUAGES C CXX)
+# The project VERSION feeds the installed CMake package-config version file
+# (src/CMakeLists.txt) and is kept in lockstep with the package manifests by the
+# "Version consistency" workflow. Keep VERSION on its own line for that check.
+project(sofabuffers
+    VERSION 0.8.0
+    LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)

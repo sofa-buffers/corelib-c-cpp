@@ -2,3 +2,6 @@ build
 
 # Local secrets — never commit
 .env
+
+# Claude Code tooling (worktrees, local settings)
+.claude/
