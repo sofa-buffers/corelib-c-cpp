@@ -53,32 +53,43 @@ if(SOFAB_ENABLE_FUZZ)
 endif()
 
 # --- compilation flags ---
-add_compile_options(-ffunction-sections -fdata-sections)
-add_link_options(-Wl,--gc-sections -Wl,-Map=mapfile.map)
+# GCC/Clang-only size flags; skipped on other toolchains (e.g. MSVC) so the
+# library still configures cleanly when built as a vcpkg/Conan package.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-ffunction-sections -fdata-sections)
+    add_link_options(-Wl,--gc-sections -Wl,-Map=mapfile.map)
+endif()
 
 # --- build SofaBuffers core library ---
 add_subdirectory(src)
 
-# --- enable cmake testing ---
-enable_testing()
+# --- tests ---
+# The test suites pull in Unity/Catch2 via FetchContent, so package builds
+# (vcpkg/Conan) turn them off with -DSOFAB_BUILD_TESTS=OFF to keep the build
+# dependency-free.
+option(SOFAB_BUILD_TESTS "Build the C/C++ test suites" ON)
+if(SOFAB_BUILD_TESTS)
+    # --- enable cmake testing ---
+    enable_testing()
 
-# --- build C tests ---
-add_subdirectory(test/c)
+    # --- build C tests ---
+    add_subdirectory(test/c)
 
-# --- build C++ tests ---
-option(SOFAB_ENABLE_CPP "Enable C++ test build" ON)
-if(SOFAB_ENABLE_CPP)
-    add_subdirectory(test/cpp)
-endif()
+    # --- build C++ tests ---
+    option(SOFAB_ENABLE_CPP "Enable C++ test build" ON)
+    if(SOFAB_ENABLE_CPP)
+        add_subdirectory(test/cpp)
+    endif()
 
-# --- build C++ wrapper smoke test ---
-# A Catch2-free single-TU round-trip used to compile (and run) the C++ wrapper
-# under reduced SOFAB_DISABLE_* configs, where the full Catch2 unit tests cannot
-# build. Kept separate so the feature matrix can enable it without pulling in
-# Catch2 (and with SOFAB_ENABLE_CPP=OFF).
-option(SOFAB_ENABLE_CPP_SMOKE "Build the C++ wrapper smoke test" OFF)
-if(SOFAB_ENABLE_CPP_SMOKE)
-    add_subdirectory(test/cpp-smoke)
+    # --- build C++ wrapper smoke test ---
+    # A Catch2-free single-TU round-trip used to compile (and run) the C++
+    # wrapper under reduced SOFAB_DISABLE_* configs, where the full Catch2 unit
+    # tests cannot build. Kept separate so the feature matrix can enable it
+    # without pulling in Catch2 (and with SOFAB_ENABLE_CPP=OFF).
+    option(SOFAB_ENABLE_CPP_SMOKE "Build the C++ wrapper smoke test" OFF)
+    if(SOFAB_ENABLE_CPP_SMOKE)
+        add_subdirectory(test/cpp-smoke)
+    endif()
 endif()
 
 # --- build throughput benchmarks ---

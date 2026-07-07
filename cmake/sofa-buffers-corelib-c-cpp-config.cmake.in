@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+# SofaBuffers corelib CMake package configuration.
+#
+# Provides the imported target:
+#   sofa-buffers::corelib   (#include <sofab/...>)
+#
+# Typical consumer usage:
+#   find_package(sofa-buffers-corelib-c-cpp CONFIG REQUIRED)
+#   target_link_libraries(my_app PRIVATE sofa-buffers::corelib)
+
+include("${CMAKE_CURRENT_LIST_DIR}/sofa-buffers-corelib-c-cpp-targets.cmake")
+
+check_required_components(sofa-buffers-corelib-c-cpp)

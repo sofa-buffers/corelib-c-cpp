@@ -30,10 +30,16 @@ sibling pure-C++20 port — [`corelib-cpp`](https://github.com/sofa-buffers/core
 
 ### Package name
 
-The library is distributed as the vcpkg/Conan port `sofa-buffers-corelib` and is
-consumed in CMake through the namespaced target `sofa-buffers::corelib` (with
-`#include <sofab/…>`). The code API is unchanged: the C API keeps the `sofab_`
-prefix and the C++ API keeps `namespace sofab`.
+The library is distributed as the vcpkg/Conan port `sofa-buffers-corelib-c-cpp`
+and is consumed in CMake through the namespaced target `sofa-buffers::corelib`:
+
+```cmake
+find_package(sofa-buffers-corelib-c-cpp CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE sofa-buffers::corelib)
+```
+
+with `#include <sofab/…>`. The code API is unchanged: the C API keeps the
+`sofab_` prefix and the C++ API keeps `namespace sofab`.
 
 ### Requirements
 

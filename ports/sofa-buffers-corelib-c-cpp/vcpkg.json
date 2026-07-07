@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "sofa-buffers-corelib-c-cpp",
+  "version": "0.8.0",
+  "description": "Dependency-free, heap-free, streaming C99/C++20 implementation of the SofaBuffers (Sofab) serialization format. Packs structured fields into a caller-owned buffer and decodes them through a callback-driven decoder, with no allocator and no third-party dependencies.",
+  "homepage": "https://github.com/sofa-buffers/corelib-c-cpp",
+  "documentation": "https://sofa-buffers.github.io/corelib-c-cpp/",
+  "license": "MIT",
+  "supports": "!uwp",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "no-object-api": {
+      "description": "Exclude the optional object-descriptor API (object.c) to shrink the library to the bare stream corelib."
+    }
+  }
+}
