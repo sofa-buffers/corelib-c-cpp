@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/schema/library.json",
+  "name": "sofa-buffers-corelib-c-cpp",
+  "version": "0.8.0",
+  "description": "Dependency-free, heap-free, streaming C99/C++20 implementation of the SofaBuffers (Sofab) serialization format. Packs structured fields into a caller-owned buffer and decodes them through a callback-driven decoder, with no allocator and no third-party dependencies.",
+  "keywords": "serialization, embedded, streaming, no-alloc, c99, cpp20",
+  "license": "MIT",
+  "homepage": "https://sofa-buffers.github.io/corelib-c-cpp/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sofa-buffers/corelib-c-cpp.git"
+  },
+  "authors": [
+    {
+      "name": "andste82",
+      "email": "andreas.steinbart@web.de",
+      "url": "https://github.com/sofa-buffers",
+      "maintainer": true
+    }
+  ],
+  "headers": [
+    "sofab/sofab.h",
+    "sofab/sofab.hpp"
+  ],
+  "frameworks": "*",
+  "platforms": "*",
+  "export": {
+    "include": [
+      "src/**",
+      "cmake/**",
+      "CMakeLists.txt",
+      "LICENSE",
+      "README.md"
+    ]
+  },
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src/include",
+    "srcFilter": "+<*.c>",
+    "libArchive": true
+  }
+}

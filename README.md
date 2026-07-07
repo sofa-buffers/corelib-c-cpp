@@ -41,6 +41,33 @@ target_link_libraries(my_app PRIVATE sofa-buffers::corelib)
 with `#include <sofab/…>`. The code API is unchanged: the C API keeps the
 `sofab_` prefix and the C++ API keeps `namespace sofab`.
 
+### PlatformIO / Arduino
+
+For embedded targets the same corelib ships with a [PlatformIO](https://platformio.org/)
+manifest (`library.json`) and an [Arduino](https://arduino.cc/) library manifest
+(`library.properties`), carrying the same package name, version, license and
+description as the vcpkg/Conan ports.
+
+Depend on it from a PlatformIO project:
+
+```ini
+# platformio.ini
+[env:my_board]
+lib_deps = sofa-buffers-corelib-c-cpp
+```
+
+then `#include <sofab/sofab.h>` (C) or `#include <sofab/sofab.hpp>` (C++). The
+object-descriptor API is compiled in by default (as with the vcpkg/Conan default);
+the [feature flags](#feature-flags) are selected the usual way, by adding the
+`SOFAB_DISABLE_*` defines to your build — e.g. `build_flags = -DSOFAB_DISABLE_INT64_SUPPORT`
+in `platformio.ini`.
+
+> **Note:** PlatformIO points its include path at `src/include` via the manifest's
+> `build.includeDir`. The Arduino IDE's Library Manager instead fixes the include
+> root at `src/`, so consuming this repo straight from the Arduino IDE needs the
+> public headers reachable as `src/sofab/…` — use PlatformIO (which also builds the
+> Arduino framework) until that layout lands.
+
 ### Requirements
 
 - A **C99** (or later) and/or **C++20** (or later) compiler — GCC or Clang.
