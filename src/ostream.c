@@ -36,7 +36,11 @@
 static inline sofab_unsigned_t _zigzag_encode (sofab_signed_t v)
 {
     const int bits = sizeof(v) * 8;
-    return ((sofab_unsigned_t)(v << 1)) ^ (sofab_unsigned_t)(v >> (bits - 1));
+    // Cast to unsigned before shifting: left-shifting a negative signed value
+    // is undefined behavior (C11 6.5.7/4) and trips -fsanitize=undefined. The
+    // sign-extending right shift below is implementation-defined on two's-
+    // complement targets, which is what SofaBuffers assumes.
+    return (((sofab_unsigned_t)v) << 1) ^ (sofab_unsigned_t)(v >> (bits - 1));
 }
 
 /*!
