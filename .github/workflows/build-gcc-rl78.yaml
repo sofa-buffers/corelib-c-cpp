@@ -30,7 +30,7 @@ jobs:
 
       - name: Cache RL78 toolchain
         id: cache-rl78
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.TOOLCHAIN_PATH }}
           key: rl78-toolchain-${{ env.LLVM_VERSION }}
