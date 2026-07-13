@@ -354,10 +354,23 @@ TEST_CASE("IStream: inline feed buffer stream")
 
     const uint8_t buffer[] = {0x02, 0x62, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x43, 0x6F, 0x75, 0x63, 0x68, 0x21};
 
+    // Fed one byte at a time, every byte before the last ends mid-field, so the
+    // decoder reports Incomplete (a valid partial decode, not an error). The
+    // final byte lands on the field boundary and is complete (ok).
     for (size_t i = 0; i < sizeof(buffer); i++)
     {
         auto result = istream.feed(&buffer[i], 1);
-        REQUIRE(result.code() == sofab::Error::None);
+        if (i + 1 < sizeof(buffer))
+        {
+            REQUIRE(result.incomplete());
+            REQUIRE(result.code() == sofab::Error::Incomplete);
+            REQUIRE_FALSE(result);
+        }
+        else
+        {
+            REQUIRE(result.code() == sofab::Error::None);
+            REQUIRE(result.ok());
+        }
     }
 
     REQUIRE(value == "Hello Couch!");
@@ -542,7 +555,12 @@ TEST_CASE("IStream: round-trip blob and variable-length-element arrays")
         for (size_t i = 0; i < used; i++)
         {
             auto result = istream.feed(ostream.data() + i, 1);
-            REQUIRE(result.code() == sofab::Error::None);
+            // Never an error mid-stream. Each byte lands either on a field
+            // boundary (ok) or inside a field (incomplete, a valid partial
+            // decode); the final byte completes the whole message (ok).
+            REQUIRE((result.ok() || result.incomplete()));
+            if (i + 1 == used)
+                REQUIRE(result.ok());
         }
 
         REQUIRE(istream->blob == blob);
@@ -626,6 +644,73 @@ TEST_CASE("IStream: malformed input is rejected")
     }
 }
 
+// Three-valued decode outcome (MESSAGE_SPEC §7): truncated input ends Incomplete
+// (a valid but partial decode), distinct from a complete message (ok / None) and
+// from a malformed one (InvalidMessage). The wrapper never silently accepts a
+// partial tail and never rejects it.
+TEST_CASE("IStream: truncated input is incomplete, not complete or invalid")
+{
+    SECTION("lone 0x80 dangling varint -> Incomplete")
+    {
+        const uint8_t buffer[] = {0x80};
+
+        int calls = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { calls++; }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.incomplete());
+        REQUIRE(result.code() == sofab::Error::Incomplete);
+        REQUIRE(result != sofab::Error::None);
+        REQUIRE(result != sofab::Error::InvalidMessage);
+        REQUIRE_FALSE(result);                      // not a complete message
+        REQUIRE_FALSE(result.ok());
+        REQUIRE(calls == 0);                        // header never completed
+    }
+
+    SECTION("truncated fixlen payload -> Incomplete")
+    {
+        // string field declares 12 payload bytes but only 3 are provided
+        const uint8_t buffer[] = {0x02, 0x62, 0x48, 0x65, 0x6C};
+
+        std::string value;
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t size, size_t) noexcept
+            {
+                if (id == 0) { value.resize(size); istream.read(value); }
+            }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.incomplete());
+        REQUIRE(result.code() == sofab::Error::Incomplete);
+    }
+
+    SECTION(">64-bit varint is still invalid, not incomplete")
+    {
+        // ten 0x80 groups carry 70 bits with the continuation bit set: the value
+        // overflows the type width and is malformed regardless of what follows.
+        const uint8_t buffer[] = {
+            0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01};
+
+        uint64_t value = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t, size_t) noexcept
+            {
+                if (id == 0) { istream.read(value); }
+            }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        REQUIRE_FALSE(result.incomplete());
+    }
+}
+
 //
 // Nested-message round-trip: a parent with a scalar before and after a nested
 // child sequence. Exercises the IStreamImpl::read<T> InputMessage branch both in
@@ -668,7 +753,12 @@ TEST_CASE("IStream: round-trip nested message into object")
         for (size_t i = 0; i < used; i++)
         {
             auto result = istream.feed(ostream.data() + i, 1);
-            REQUIRE(result.code() == sofab::Error::None);
+            // Never an error mid-stream. Each byte lands either on a field
+            // boundary (ok) or inside a field (incomplete, a valid partial
+            // decode); the final byte completes the whole message (ok).
+            REQUIRE((result.ok() || result.incomplete()));
+            if (i + 1 == used)
+                REQUIRE(result.ok());
         }
 
         const auto &d = (*istream).data_;
@@ -858,7 +948,12 @@ TEST_CASE("IStream: round-trip string into FixedString matches std::string")
         for (size_t i = 0; i < used; i++)
         {
             auto result = istream.feed(ostream.data() + i, 1);
-            REQUIRE(result.code() == sofab::Error::None);
+            // Never an error mid-stream. Each byte lands either on a field
+            // boundary (ok) or inside a field (incomplete, a valid partial
+            // decode); the final byte completes the whole message (ok).
+            REQUIRE((result.ok() || result.incomplete()));
+            if (i + 1 == used)
+                REQUIRE(result.ok());
         }
         REQUIRE(istream->name == std::string_view{text});
     }
@@ -1085,7 +1180,14 @@ TEST_CASE("IStream: blob + string sequence round-trip into fixed inline containe
     {
         sofab::IStreamObject<FixedContainersObject> istream;
         for (size_t i = 0; i < used; i++)
-            REQUIRE(istream.feed(ostream.data() + i, 1).code() == sofab::Error::None);
+        {
+            auto result = istream.feed(ostream.data() + i, 1);
+            // never an error mid-stream: each byte is on a field boundary (ok)
+            // or inside a field (incomplete); the final byte completes the message
+            REQUIRE((result.ok() || result.incomplete()));
+            if (i + 1 == used)
+                REQUIRE(result.ok());
+        }
         check(*istream);
     }
 }

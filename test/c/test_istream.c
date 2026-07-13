@@ -224,10 +224,16 @@ static void test_feed_buffer_stream (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
 
+    // Fed one byte at a time, every byte before the last ends mid-field, so the
+    // decoder reports INCOMPLETE (a valid partial decode, not an error). The
+    // final byte lands on the field boundary and returns OK.
     for (size_t i = 0; i < sizeof(buffer); i++)
     {
         ret = sofab_istream_feed(&ctx, &buffer[i], 1);
-        TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+        if (i + 1 < sizeof(buffer))
+            TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+        else
+            TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     }
     TEST_ASSERT_EQUAL_STRING("Hello Couch!", value);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
@@ -747,6 +753,108 @@ static void test_msg_invalid_target_array_count_too_big (void)
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
         .target_size = 10, // larger than the 5 elements in the message
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+/*****************************************************************************/
+/* three-valued decode outcome (MESSAGE_SPEC §7)                             */
+/*                                                                           */
+/* Truncated input ends INCOMPLETE - a valid but partial decode, distinct    */
+/* from a complete message (OK) and from a malformed one (INVALID_MSG). The  */
+/* decoder never silently accepts a partial tail, and never rejects it.      */
+/*****************************************************************************/
+
+static void test_msg_incomplete_dangling_varint (void)
+{
+    // A lone 0x80: the field-header varint has its continuation bit set but no
+    // terminating byte follows. The header is still open -> INCOMPLETE (neither
+    // a complete boundary nor a malformed message).
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x80};
+
+    sofab_istream_init(&ctx, _single_field_callback, NULL);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+}
+
+static void test_msg_incomplete_partial_value_varint (void)
+{
+    // header 0x00 (id 0, unsigned varint) completes, then a value byte 0x80
+    // whose continuation bit is set with no terminator -> mid-value INCOMPLETE.
+    // The field callback has already fired for the completed header.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x00, 0x80};
+
+    uint64_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+static void test_msg_incomplete_truncated_fixlen (void)
+{
+    // A string field declares 12 payload bytes (fixlen_word 0x62 = (12<<3)|string)
+    // but only 3 are provided: the fixlen payload is shorter than declared, so
+    // the decode ends inside the field -> INCOMPLETE.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x02, 0x62, 0x48, 0x65, 0x6C}; // hdr, len|string, "Hel"
+
+    char value[16] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_STRING,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+static void test_msg_invalid_varint_over_64bit (void)
+{
+    // A varint wider than the 64-bit value type is malformed regardless of what
+    // follows: it must be INVALID, never INCOMPLETE. Ten 0x80 groups carry 70
+    // bits with the continuation bit still set, so the value overflows the type
+    // width. (Contrast test_msg_incomplete_dangling_varint: same open-continuation
+    // shape, but there the accumulated width still fits.)
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x00,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, /* 70 bits */
+        0x01};
+
+    uint64_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
         .calls = 0
     };
 
@@ -1730,6 +1838,24 @@ static void test_read_nested_sequence (void)
     TEST_ASSERT_EQUAL_INT8(-42, value.i8);
 }
 
+static void test_msg_incomplete_open_sequence (void)
+{
+    // A sequence we descend into but never close (no matching SEQUENCE_END):
+    // an open sequence at end-of-input -> INCOMPLETE, not OK and not INVALID.
+    // Its sibling before the sequence still decodes.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    // 0: u8 = 42 ; 1: SEQUENCE_START (left open, no end)
+    const uint8_t buffer[] = {0x00, 0x2A, 0x0E};
+
+    test_sequence_t value = {0};
+
+    sofab_istream_init(&ctx, _fields_with_nested_sequence, &value);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+    TEST_ASSERT_EQUAL_UINT8(42, value.u8);
+}
+
 static void test_read_nested_sequence_skip (void)
 {
     sofab_istream_t ctx;
@@ -2323,6 +2449,11 @@ int test_istream_main (void)
     RUN_TEST(test_msg_invalid_target_array_count_too_small);
     RUN_TEST(test_msg_invalid_target_array_count_too_big);
 
+    RUN_TEST(test_msg_incomplete_dangling_varint);
+    RUN_TEST(test_msg_incomplete_partial_value_varint);
+    RUN_TEST(test_msg_incomplete_truncated_fixlen);
+    RUN_TEST(test_msg_invalid_varint_over_64bit);
+
     RUN_TEST(test_read_unsigned_min);
     RUN_TEST(test_read_unsigned_max);
     RUN_TEST(test_read_signed_min);
@@ -2360,6 +2491,7 @@ int test_istream_main (void)
     RUN_TEST(test_read_array_of_fp64_specials);
 
     RUN_TEST(test_read_nested_sequence);
+    RUN_TEST(test_msg_incomplete_open_sequence);
     RUN_TEST(test_read_nested_sequence_skip);
     RUN_TEST(test_read_nested_sequence_skip_with_array);
     RUN_TEST(test_read_nested_sequence_skip_multilevel);

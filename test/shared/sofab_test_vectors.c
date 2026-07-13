@@ -683,8 +683,15 @@ static int decode_bytes(const op_t *ops, size_t nops, const uint8_t *bytes, size
     sofab_ret_t r = SOFAB_RET_OK;
     if (one_byte)
     {
-        for (size_t i = 0; i < nbytes && r == SOFAB_RET_OK; i++)
+        // Feeding one byte at a time, every intermediate byte legitimately ends
+        // mid-field: SOFAB_RET_INCOMPLETE is expected and not an error, so keep
+        // going. A hard error stops the loop. The final byte of a valid vector
+        // lands on a field boundary and returns SOFAB_RET_OK.
+        for (size_t i = 0; i < nbytes; i++)
+        {
             r = sofab_istream_feed(&is, &bytes[i], 1);
+            if (r != SOFAB_RET_OK && r != SOFAB_RET_INCOMPLETE) break;
+        }
     }
     else
     {
