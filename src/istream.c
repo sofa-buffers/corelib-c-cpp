@@ -306,34 +306,13 @@ static sofab_ret_t _call_field_callback (
  */
 static bool _at_message_boundary (const sofab_istream_t *ctx)
 {
-    // mid-varint: a header/length/count/value with the continuation bit set but
-    // no terminating byte yet
-    if (ctx->varint_shift != 0)
-    {
-        return false;
-    }
-
-    // active decoder suspended inside a field (fixlen/array payload, pending
-    // array elements, ...)
-    if (ctx->decoder->state != _DECODER_STATE_IDLE)
-    {
-        return false;
-    }
-
-    // inside an open sequence we descended into (a child decoder is pushed)
-    if (ctx->decoder->parent != NULL)
-    {
-        return false;
-    }
-
-    // inside an open sequence we chose to ignore (no child decoder is pushed;
-    // the skip is tracked on the top-level decoder)
-    if (ctx->decoder->skip_depth != 0)
-    {
-        return false;
-    }
-
-    return true;
+    // A field boundary means all four positional state fields are at rest.
+    // _DECODER_STATE_IDLE is 0, so the three uint8 counters (varint_shift,
+    // state, skip_depth) OR-reduce to a single zero test; parent stays a
+    // plain (portable) null-pointer check — equivalent to four separate
+    // guards, one branch instead of four.
+    return (ctx->varint_shift | ctx->decoder->state | ctx->decoder->skip_depth) == 0
+        && ctx->decoder->parent == NULL;
 }
 
 //

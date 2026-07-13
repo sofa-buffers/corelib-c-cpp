@@ -88,16 +88,19 @@ namespace sofab
     /*! @brief Result/error code returned by the stream APIs (wraps @ref sofab_ret_t). */
     enum class Error
     {
+        // Non-error outcomes first — kept low-numbered and contiguous, ahead of
+        // the error codes. Incomplete is a valid (partial) result, not a failure.
         None = SOFAB_RET_OK,                    //!< Success (a complete message boundary).
-        UsageError = SOFAB_RET_E_USAGE,         //!< Invalid usage (e.g. type mismatch on read).
-        BufferFull = SOFAB_RET_E_BUFFER_FULL,   //!< Output buffer overflowed during encoding.
-        InvalidArgument = SOFAB_RET_E_ARGUMENT, //!< Invalid argument (e.g. field id out of range).
-        InvalidMessage = SOFAB_RET_E_INVALID_MSG,//!< Malformed message encountered while decoding.
-        Incomplete = SOFAB_RET_INCOMPLETE       //!< Consumed bytes end inside a field or with an
+        Incomplete = SOFAB_RET_INCOMPLETE,      //!< Consumed bytes end inside a field or with an
                                                 //!< open sequence: a valid but partial decode. NOT
                                                 //!< an error — the caller owns end-of-input and may
                                                 //!< feed more bytes. Distinct from @c None (complete)
                                                 //!< and @c InvalidMessage (malformed).
+        // Error codes follow.
+        UsageError = SOFAB_RET_E_USAGE,         //!< Invalid usage (e.g. type mismatch on read).
+        BufferFull = SOFAB_RET_E_BUFFER_FULL,   //!< Output buffer overflowed during encoding.
+        InvalidArgument = SOFAB_RET_E_ARGUMENT, //!< Invalid argument (e.g. field id out of range).
+        InvalidMessage = SOFAB_RET_E_INVALID_MSG //!< Malformed message encountered while decoding.
     };
 
 

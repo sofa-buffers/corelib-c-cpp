@@ -37,16 +37,19 @@ extern "C" {
 /*! @brief Return status codes */
 typedef enum
 {
+    /* Non-error outcomes first — kept low-numbered and contiguous, ahead of the
+     * error codes. INCOMPLETE is a valid (partial) result, not a failure. */
     SOFAB_RET_OK,                //!< OK
-    SOFAB_RET_E_ARGUMENT,        //!< Invalid argument
-    SOFAB_RET_E_USAGE,           //!< Invalid usage
-    SOFAB_RET_E_BUFFER_FULL,     //!< Sofab serialization failed due to buffer overflow
-    SOFAB_RET_E_INVALID_MSG,     //!< Sofab deserialization failed due to invalid message
     SOFAB_RET_INCOMPLETE,        //!< Consumed bytes end inside a field or with an open
                                  //!< sequence: a valid but partial decode. NOT an error —
                                  //!< the caller owns end-of-input and may feed more bytes.
                                  //!< Distinct from SOFAB_RET_OK (a complete message
                                  //!< boundary) and SOFAB_RET_E_INVALID_MSG (malformed).
+    /* Error codes follow. */
+    SOFAB_RET_E_ARGUMENT,        //!< Invalid argument
+    SOFAB_RET_E_USAGE,           //!< Invalid usage
+    SOFAB_RET_E_BUFFER_FULL,     //!< Sofab serialization failed due to buffer overflow
+    SOFAB_RET_E_INVALID_MSG,     //!< Sofab deserialization failed due to invalid message
 } sofab_ret_t;
 
 /*! @brief SofaBuffers 3bit field data types */
