@@ -145,11 +145,24 @@ extern void sofab_istream_init (
  * when field headers are parsed. If the callback binds a destination buffer
  * via a sofab_istream_read_* function, subsequent bytes are written there.
  *
+ * The decoder is resumable, so a call may end mid-field. The outcome is
+ * three-valued (there is no separate finalize step):
+ *  - @ref SOFAB_RET_OK: the consumed bytes end exactly on a field boundary — a
+ *    complete message so far.
+ *  - @ref SOFAB_RET_INCOMPLETE: the consumed bytes end inside a field (a partial
+ *    varint, a fixlen/array payload shorter than declared) or with an open
+ *    sequence. This is a valid but partial decode, NOT an error: the caller owns
+ *    end-of-input and may feed more bytes to continue. Truncated input is
+ *    reported here — it is neither accepted as complete nor rejected as invalid.
+ *  - @ref SOFAB_RET_E_INVALID_MSG: the bytes are malformed regardless of what
+ *    follows (varint too wide, length/count/id over the limit, bad type, ...).
+ *
  * @param ctx       Pointer to the input stream context.
  * @param data      Pointer to the raw serialized data.
  * @param datalen   Length of @p data in bytes.
  *
- * @return SOFAB_RET_OK on success, or another sofab_ret_t error code.
+ * @return SOFAB_RET_OK on a complete boundary, SOFAB_RET_INCOMPLETE on a partial
+ *         (mid-field / open-sequence) decode, or another sofab_ret_t error code.
  */
 extern sofab_ret_t sofab_istream_feed (
     sofab_istream_t *ctx, const void *data, size_t datalen);

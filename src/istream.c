@@ -280,6 +280,41 @@ static sofab_ret_t _call_field_callback (
     return _call_field_callback_masked(ctx, 0x3F);
 }
 
+/*!
+ * @brief Test whether the decoder is parked exactly on a field boundary.
+ *
+ * The decoder is a resumable state machine: after a feed consumes all its input
+ * it is either sitting on a clean field boundary (a complete message so far) or
+ * suspended mid-field / inside an open sequence, waiting for more bytes. This
+ * predicate distinguishes the two so @ref sofab_istream_feed can surface a
+ * three-valued outcome (COMPLETE vs INCOMPLETE) instead of silently accepting a
+ * truncated tail. It is a pure inspection — nothing is finalized or rejected.
+ *
+ * Not-at-boundary covers every "ends inside a field" case:
+ *   - a partial varint (continuation bit was set, terminating byte not yet seen)
+ *     leaves @c varint_shift non-zero, even while the active state is IDLE
+ *     (a lone 0x80 header byte);
+ *   - a fixlen/array payload shorter than declared, or an array with elements
+ *     still pending, leaves the active decoder in a non-IDLE state;
+ *   - an open (unclosed) sequence leaves either a pushed child decoder
+ *     (@c parent != NULL) or, for an ignored sequence, a non-zero @c skip_depth
+ *     on the top-level decoder.
+ *
+ * @param ctx  Input stream context.
+ * @return true if consumed bytes end exactly at a field boundary (COMPLETE),
+ *         false if they end mid-field or with an open sequence (INCOMPLETE).
+ */
+static bool _at_message_boundary (const sofab_istream_t *ctx)
+{
+    // A field boundary means all four positional state fields are at rest.
+    // _DECODER_STATE_IDLE is 0, so the three uint8 counters (varint_shift,
+    // state, skip_depth) OR-reduce to a single zero test; parent stays a
+    // plain (portable) null-pointer check — equivalent to four separate
+    // guards, one branch instead of four.
+    return (ctx->varint_shift | ctx->decoder->state | ctx->decoder->skip_depth) == 0
+        && ctx->decoder->parent == NULL;
+}
+
 //
 
 extern void sofab_istream_init (
@@ -804,7 +839,12 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
         }
     }
 
-    return SOFAB_RET_OK;
+    // All input consumed without an error. Distinguish a complete message
+    // (consumed bytes end exactly on a field boundary) from a partial one
+    // (consumed bytes end mid-field or with an open sequence). INCOMPLETE is a
+    // valid but partial decode, NOT a rejection: the caller owns end-of-input
+    // and may resume by feeding more bytes. There is no finalize step.
+    return _at_message_boundary(ctx) ? SOFAB_RET_OK : SOFAB_RET_INCOMPLETE;
 }
 
 extern void sofab_istream_read_field (

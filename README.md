@@ -198,6 +198,19 @@ for (size_t i = 0; i < used; i++)   /* feed whatever arrives — here one byte a
 /* a field split across feeds is buffered internally and resumed */
 ```
 
+The feed outcome is **three-valued**, with no separate finalize step:
+
+| return | meaning |
+|---|---|
+| `SOFAB_RET_OK` | the bytes consumed so far end exactly on a field boundary — a complete message |
+| `SOFAB_RET_INCOMPLETE` | the bytes end inside a field (a partial varint, or a fixlen/array payload shorter than declared) or with an open sequence — a **valid but partial** decode, not an error. Feed more bytes to continue; the caller owns end-of-input |
+| `SOFAB_RET_E_INVALID_MSG` | the bytes are malformed regardless of what follows (varint too wide, length/count/id over the limit, bad type/subtype, …) |
+
+Truncated input is therefore reported as `SOFAB_RET_INCOMPLETE` — it is neither
+silently accepted as complete nor rejected as invalid. In the C++ wrapper the same
+three outcomes are surfaced by `IStream::feed`'s `Result`: `ok()` (complete),
+`incomplete()` (partial), and `code() == Error::InvalidMessage` (malformed).
+
 ### Code generator
 
 `sofabgen` is the schema compiler. For **C** it targets the descriptor-driven
@@ -314,8 +327,10 @@ ctest --test-dir build --output-on-failure
 Tests come in two layers:
 
 - **Unit tests** (`test_c` / `test_cpp`) — hand-written C (Unity) and C++ (Catch2)
-  tests covering encoder, decoder and object API, including error paths (truncated
-  varints, unbalanced sequences, overflow). Run in the full-feature ("max") build.
+  tests covering encoder, decoder and object API, including the three-valued decode
+  outcome (truncation → `SOFAB_RET_INCOMPLETE`) and error paths (over-wide varints,
+  unbalanced sequences, overflow → `SOFAB_RET_E_INVALID_MSG`). Run in the
+  full-feature ("max") build.
 - **Conformance-vector suite** (`test_vectors_c`) — a language-agnostic set of
   vectors in [`assets/test_vectors.json`](assets/test_vectors.json), each pairing
   a message with its exact serialized bytes (format in

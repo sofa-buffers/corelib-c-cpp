@@ -88,11 +88,19 @@ namespace sofab
     /*! @brief Result/error code returned by the stream APIs (wraps @ref sofab_ret_t). */
     enum class Error
     {
-        None = SOFAB_RET_OK,                    //!< Success.
+        // Non-error outcomes first — kept low-numbered and contiguous, ahead of
+        // the error codes. Incomplete is a valid (partial) result, not a failure.
+        None = SOFAB_RET_OK,                    //!< Success (a complete message boundary).
+        Incomplete = SOFAB_RET_INCOMPLETE,      //!< Consumed bytes end inside a field or with an
+                                                //!< open sequence: a valid but partial decode. NOT
+                                                //!< an error — the caller owns end-of-input and may
+                                                //!< feed more bytes. Distinct from @c None (complete)
+                                                //!< and @c InvalidMessage (malformed).
+        // Error codes follow.
         UsageError = SOFAB_RET_E_USAGE,         //!< Invalid usage (e.g. type mismatch on read).
         BufferFull = SOFAB_RET_E_BUFFER_FULL,   //!< Output buffer overflowed during encoding.
         InvalidArgument = SOFAB_RET_E_ARGUMENT, //!< Invalid argument (e.g. field id out of range).
-        InvalidMessage = SOFAB_RET_E_INVALID_MSG//!< Malformed message encountered while decoding.
+        InvalidMessage = SOFAB_RET_E_INVALID_MSG //!< Malformed message encountered while decoding.
     };
 
 
@@ -1336,7 +1344,10 @@ namespace sofab
             }
 
         public:
-            /*! @brief True if decoding succeeded (same as ok()). */
+            /*! @brief True if the feed reached a complete message boundary
+             *  (same as ok()). An @ref Error::Incomplete partial decode is
+             *  neither complete nor an error, so this is false — use
+             *  @ref incomplete() to tell it apart from a genuine error. */
             explicit operator bool() const noexcept
             {
                 return ok();
@@ -1354,10 +1365,21 @@ namespace sofab
                 return !(*this == e);
             }
 
-            /*! @brief True if no decode error occurred. */
+            /*! @brief True if the consumed bytes end exactly on a field boundary
+             *  (a complete message so far). False for both a partial decode
+             *  (@ref incomplete()) and a genuine decode error. */
             bool ok() const noexcept
             {
                 return error_ == Error::None;
+            }
+
+            /*! @brief True if the consumed bytes end mid-field or with an open
+             *  sequence: a valid but partial decode (@ref Error::Incomplete).
+             *  Not an error — the caller owns end-of-input and may feed more
+             *  bytes to continue. Distinct from both ok() and a decode error. */
+            bool incomplete() const noexcept
+            {
+                return error_ == Error::Incomplete;
             }
 
             /*! @brief The @ref Error result of the feed. */
@@ -1383,9 +1405,15 @@ namespace sofab
          * May be called repeatedly with arbitrary chunk boundaries; field
          * callbacks fire as complete field headers are parsed.
          *
+         * The outcome is three-valued (no separate finalize step): the returned
+         * @ref Result is @c ok() when the consumed bytes end on a field boundary
+         * (a complete message), @ref Result::incomplete() when they end mid-field
+         * or with an open sequence (a valid but partial decode — feed more bytes
+         * to continue), and carries @ref Error::InvalidMessage when malformed.
+         *
          * @param buffer  Pointer to the bytes to decode.
          * @param buflen  Number of bytes at @p buffer.
-         * @return @ref Result indicating success or a decode error.
+         * @return @ref Result: complete (ok), incomplete, or a decode error.
          */
         Result feed(const uint8_t *buffer, size_t buflen) noexcept
         {
