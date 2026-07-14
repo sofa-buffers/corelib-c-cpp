@@ -315,6 +315,42 @@ static bool _at_message_boundary (const sofab_istream_t *ctx)
         && ctx->decoder->parent == NULL;
 }
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+/*!
+ * @brief Reconcile the wire element count with the destination the callback bound.
+ *
+ * On the wire an array carries its @b actual length (@c 0..N per MESSAGE_SPEC §3
+ * / CORELIB_PLAN §4.7); a bound destination declares its @b capacity N in
+ * @c target_count. A wire count within capacity is accepted and becomes the
+ * number of elements the decoder reads — any remaining destination slots keep
+ * their init/default values (MESSAGE_SPEC §5.1's pre-sized-destination model). A
+ * wire count that would overflow the destination is rejected. When the callback
+ * bound no destination (@c target_ptr is NULL) the field is skipped and the wire
+ * count already sitting in @c target_count drives the read, so nothing changes.
+ *
+ * @param ctx         Input stream context (@c target_count holds the capacity).
+ * @param wire_count  Element count decoded from the wire.
+ * @return SOFAB_RET_OK, or SOFAB_RET_E_INVALID_MSG if @p wire_count exceeds the
+ *         destination capacity.
+ */
+static sofab_ret_t _bind_array_count (sofab_istream_t *ctx, size_t wire_count)
+{
+    if (ctx->target_ptr)
+    {
+        if (wire_count > ctx->target_count)
+        {
+            // wire array longer than the destination buffer capacity
+            return SOFAB_RET_E_INVALID_MSG;
+        }
+
+        // read exactly what the wire carries; trailing slots keep their defaults
+        ctx->target_count = (uint32_t)wire_count;
+    }
+
+    return SOFAB_RET_OK;
+}
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+
 //
 
 extern void sofab_istream_init (
@@ -648,6 +684,22 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     return ret;
                 }
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+                // A fixlen array binds its destination only here (its element
+                // subtype is unknown until the fixlen_word above is read).
+                // Reconcile the wire count preserved in _DECODER_STATE_ARRAY_COUNT
+                // with the destination capacity: this sets target_count to the
+                // number of elements to read and lets the empty-array early-out
+                // below see the true (0) wire count instead of the capacity.
+                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
+                {
+                    if ((ret = _bind_array_count(ctx, ctx->array_wire_count)) != SOFAB_RET_OK)
+                    {
+                        return ret;
+                    }
+                }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+
                 if (ctx->target_ptr)
                 {
                     if (_OPT_STRINGTERM(ctx->target_opt))
@@ -768,9 +820,16 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     return SOFAB_RET_E_INVALID_MSG;
                 }
 
-                // store array element count
+                // The wire carries the ACTUAL element count (0..N per
+                // MESSAGE_SPEC §3); a bound destination declares its capacity N.
+                // Seed target_count with the wire count, and preserve that count
+                // in array_wire_count so it survives both the field callback
+                // (which overwrites target_count with the destination capacity)
+                // and, for fixlen arrays, the hop to _DECODER_STATE_FIXLEN_LEN
+                // where the destination is actually bound.
                 size_t count = (size_t)(array_count);
-                ctx->target_count = count;
+                ctx->target_count = (uint32_t)count;
+                ctx->array_wire_count = (uint32_t)count;
 
                 // read array elements (see IDLE state for type check)
                 uint8_t type = _OPT_FIELDTYPE(ctx->target_opt);
@@ -797,10 +856,10 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         return ret;
                     }
 
-                    if (ctx->target_ptr && count != ctx->target_count)
+                    // An empty array is valid against any capacity >= 0.
+                    if ((ret = _bind_array_count(ctx, count)) != SOFAB_RET_OK)
                     {
-                        // array size missmatch
-                        return SOFAB_RET_E_INVALID_MSG;
+                        return ret;
                     }
 
                     ctx->decoder->state = _DECODER_STATE_IDLE;
@@ -813,14 +872,13 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     {
                         return ret;
                     }
-                }
 
-                if (ctx->target_ptr)
-                {
-                    if (count != ctx->target_count)
+                    // A varint array is fully bound now: accept a wire count up to
+                    // the destination capacity, reading exactly that many. (Fixlen
+                    // arrays bind later, in _DECODER_STATE_FIXLEN_LEN.)
+                    if ((ret = _bind_array_count(ctx, count)) != SOFAB_RET_OK)
                     {
-                        // array size missmatch
-                        return SOFAB_RET_E_INVALID_MSG;
+                        return ret;
                     }
                 }
 

@@ -116,7 +116,8 @@ struct sofab_istream
     uint32_t id;                                /*!< Current field ID being processed */
     uint32_t fixlen_remaining;                  /*!< Remaining bytes to read for a fixed-length field */
     uint32_t target_len;                        /*!< Target element size or total buffer length */
-    uint32_t target_count;                      /*!< Number of elements expected for array reads */
+    uint32_t target_count;                      /*!< Number of elements to read into the target array */
+    uint32_t array_wire_count;                  /*!< Element count declared on the wire (0..capacity) */
     uint8_t *target_ptr;                        /*!< Pointer to output buffer for field data */
     sofab_istream_decoder_t *decoder;           /*!< Currently active decoder (may be nested) */
     uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */

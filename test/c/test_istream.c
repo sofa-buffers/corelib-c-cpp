@@ -740,19 +740,155 @@ static void test_msg_invalid_target_array_count_too_small (void)
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
-static void test_msg_invalid_target_array_count_too_big (void)
+static void test_msg_target_array_partial_fill (void)
 {
+    // §3 / §4.7: the wire carries the ACTUAL element count (0..N); a bound
+    // destination declares its capacity N. A wire count below capacity is a
+    // valid partial array: it decodes into the leading slots and the trailing
+    // slots keep their pre-set values (here a 0xAA sentinel).
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {0x04, 0x05, 0x01, 0x03, 0x05, 0xFF, 0x01, 0xFE, 0x01};
 
-    int8_t value[5] = {0};
+    int8_t value[10];
+    memset(value, (int)0xAA, sizeof(value));
     test_single_field_t test =
     {
         .expected_id = 0,
         .target_type = FIELD_TYPE_ARRAY_INT8,
         .target_ptr = &value,
-        .target_size = 10, // larger than the 5 elements in the message
+        .target_size = 10, // capacity larger than the 5 elements on the wire
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL(5, test.field_count); // the wire count, not the capacity
+
+    // leading 5 slots hold the decoded values ...
+    const int8_t expected[] = {-1, -2, -3, INT8_MIN, INT8_MAX};
+    TEST_ASSERT_EQUAL_INT8_ARRAY(expected, value, 5);
+    // ... the remaining 5 keep their sentinel (untouched by the decoder)
+    for (size_t i = 5; i < 10; i++)
+    {
+        TEST_ASSERT_EQUAL_INT8((int8_t)0xAA, value[i]);
+    }
+}
+
+static void test_msg_target_array_empty_into_sized_buffer (void)
+{
+    // An explicit empty integer array (wire count 0) is valid against a
+    // non-empty destination: nothing is written, every slot keeps its value.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x03, 0x00}; // unsigned array id=0, count=0
+
+    uint8_t value[4];
+    memset(value, 0xAA, sizeof(value));
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_INT8U,
+        .target_ptr = &value,
+        .target_size = sizeof(value), // capacity 4, wire count 0
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL(0, test.field_count);
+    for (size_t i = 0; i < sizeof(value); i++)
+    {
+        TEST_ASSERT_EQUAL_UINT8(0xAA, value[i]);
+    }
+}
+
+static void test_msg_target_array_fixlen_empty_into_sized_buffer (void)
+{
+    // §4.8: an explicit empty fixlen array (wire count 0) still carries its
+    // fixlen_word, then no payload. It is valid against a non-empty fp32
+    // destination, which is left untouched.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x05, 0x00, 0x20}; // fp32 array id=0, count=0, fixlen_word
+
+    float value[3] = {1.0f, 2.0f, 3.0f};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_FP32,
+        .target_ptr = &value,
+        .target_size = 3, // capacity 3, wire count 0
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL(0, test.field_count);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, value[0]);
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, value[1]);
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, value[2]);
+}
+
+static void test_msg_target_array_fixlen_partial_fill (void)
+{
+    // A partially filled fixlen array (wire count 2 < capacity 4) decodes into
+    // the leading slots; the trailing slots keep their pre-set values.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    // fp32 array id=0, count=2, fixlen_word 0x20, then 1.0f and 2.0f (little-endian)
+    const uint8_t buffer[] = {
+        0x05, 0x02, 0x20,
+        0x00, 0x00, 0x80, 0x3F,  // 1.0f
+        0x00, 0x00, 0x00, 0x40}; // 2.0f
+
+    float value[4] = {9.0f, 9.0f, 9.0f, 9.0f};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_FP32,
+        .target_ptr = &value,
+        .target_size = 4, // capacity 4, wire count 2
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL(2, test.field_count);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, value[0]);
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, value[1]);
+    TEST_ASSERT_EQUAL_FLOAT(9.0f, value[2]); // untouched
+    TEST_ASSERT_EQUAL_FLOAT(9.0f, value[3]); // untouched
+}
+
+static void test_msg_invalid_target_array_fixlen_count_too_small (void)
+{
+    // Over-count is still rejected on the fixlen path: a wire count larger than
+    // the destination capacity would overflow the buffer (generator#100 direction).
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    // fp32 array id=0, count=3, fixlen_word 0x20, then three fp32 values
+    const uint8_t buffer[] = {
+        0x05, 0x03, 0x20,
+        0x00, 0x00, 0x80, 0x3F,
+        0x00, 0x00, 0x00, 0x40,
+        0x00, 0x00, 0x40, 0x40};
+
+    float value[2] = {0}; // capacity 2, smaller than the 3 elements on the wire
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_FP32,
+        .target_ptr = &value,
+        .target_size = 2,
         .calls = 0
     };
 
@@ -2447,7 +2583,11 @@ int test_istream_main (void)
     RUN_TEST(test_msg_invalid_target_len_fixlen);
     RUN_TEST(test_msg_invalid_target_len_fixlen_string);
     RUN_TEST(test_msg_invalid_target_array_count_too_small);
-    RUN_TEST(test_msg_invalid_target_array_count_too_big);
+    RUN_TEST(test_msg_target_array_partial_fill);
+    RUN_TEST(test_msg_target_array_empty_into_sized_buffer);
+    RUN_TEST(test_msg_target_array_fixlen_empty_into_sized_buffer);
+    RUN_TEST(test_msg_target_array_fixlen_partial_fill);
+    RUN_TEST(test_msg_invalid_target_array_fixlen_count_too_small);
 
     RUN_TEST(test_msg_incomplete_dangling_varint);
     RUN_TEST(test_msg_incomplete_partial_value_varint);
