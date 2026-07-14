@@ -344,7 +344,7 @@ static sofab_ret_t _bind_array_count (sofab_istream_t *ctx, size_t wire_count)
         }
 
         // read exactly what the wire carries; trailing slots keep their defaults
-        ctx->target_count = (uint32_t)wire_count;
+        ctx->target_count = wire_count;
     }
 
     return SOFAB_RET_OK;
@@ -828,8 +828,8 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 // and, for fixlen arrays, the hop to _DECODER_STATE_FIXLEN_LEN
                 // where the destination is actually bound.
                 size_t count = (size_t)(array_count);
-                ctx->target_count = (uint32_t)count;
-                ctx->array_wire_count = (uint32_t)count;
+                ctx->target_count = count;
+                ctx->array_wire_count = count;
 
                 // read array elements (see IDLE state for type check)
                 uint8_t type = _OPT_FIELDTYPE(ctx->target_opt);
