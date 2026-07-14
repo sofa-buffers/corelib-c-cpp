@@ -111,15 +111,25 @@ typedef struct sofab_istream_decoder
  */
 struct sofab_istream
 {
+    /* Members are grouped by alignment (widest first: value-word / pointers /
+     * size_t, then the 32-bit id, then the 8-bit flags) so the context packs
+     * without internal padding — the struct is opaque, so field order carries no
+     * meaning and this keeps its footprint minimal on every target.
+     *
+     * The length/count members are size_t: they hold byte lengths and element
+     * counts bounded by SOFAB_FIXLEN_MAX / SOFAB_ARRAY_MAX (both derived from
+     * SIZE_MAX) and are fed straight from the size_t read-function arguments, so
+     * they mirror that width exactly and need no narrowing cast — smaller than a
+     * fixed uint32_t on 16-bit-size_t targets. */
     sofab_unsigned_t varint_value;              /*!< Accumulated varint value under construction */
     sofab_istream_decoder_t default_decoder;    /*!< Top-level decoder instance */
-    uint32_t id;                                /*!< Current field ID being processed */
-    uint32_t fixlen_remaining;                  /*!< Remaining bytes to read for a fixed-length field */
-    uint32_t target_len;                        /*!< Target element size or total buffer length */
-    uint32_t target_count;                      /*!< Number of elements to read into the target array */
-    uint32_t array_wire_count;                  /*!< Element count declared on the wire (0..capacity) */
     uint8_t *target_ptr;                        /*!< Pointer to output buffer for field data */
     sofab_istream_decoder_t *decoder;           /*!< Currently active decoder (may be nested) */
+    size_t fixlen_remaining;                    /*!< Remaining bytes to read for a fixed-length field */
+    size_t target_len;                          /*!< Target element size or total buffer length */
+    size_t target_count;                        /*!< Number of elements to read into the target array */
+    size_t array_wire_count;                    /*!< Element count declared on the wire (0..capacity) */
+    sofab_id_t id;                              /*!< Current field ID being processed */
     uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */
     uint8_t varint_shift;                       /*!< Current shift offset for varint decoding */
 };
