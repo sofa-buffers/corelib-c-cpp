@@ -30,17 +30,35 @@
 # define _FITS_SIGNED_CHECK(val, bits)     do {} while (0)
 #endif /* !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK) */
 
+/*!
+ * @brief Keep a shared helper out of line so its one copy is reused.
+ *
+ * Forcing the shared decode helper out of line makes the toolchain emit a
+ * single copy instead of inlining (and thus duplicating) it into every caller
+ * state — a net size win on the small targets this corelib targets. Falls back
+ * to nothing on compilers without the attribute (still correct).
+ */
+#if defined(__GNUC__)
+# define SOFAB_NOINLINE __attribute__((noinline))
+#else
+# define SOFAB_NOINLINE
+#endif
+
 /* types **********************************************************************/
 typedef enum
 {
+    /* Varint-decoding states come first and stay contiguous: each one begins by
+     * pulling a single LEB128 varint from the stream, so they share one decode
+     * preamble in sofab_istream_feed (state <= _DECODER_STATE_ARRAY_COUNT). The
+     * raw-byte states, which consume payload bytes directly, follow after. */
     _DECODER_STATE_IDLE,
     _DECODER_STATE_VARINT_UNSIGNED,
     _DECODER_STATE_VARINT_SIGNED,
     _DECODER_STATE_FIXLEN_LEN,
+    _DECODER_STATE_ARRAY_COUNT,
+    /* raw-byte (non-varint-decoding) states follow _DECODER_STATE_ARRAY_COUNT */
     _DECODER_STATE_FIXLEN_VAL,
     _DECODER_STATE_FIXLEN_RAW,
-    _DECODER_STATE_ARRAY_COUNT,
-    _DECODER_STATE_ARRAY_FIXLEN,
 } _decoder_state_t;
 
 /* prototypes *****************************************************************/
@@ -142,6 +160,37 @@ static int _fits_signed_n (sofab_signed_t x, int n)
     return (x >> (n - 1)) == (x >> (bits - 1));
 }
 #endif /* !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK) */
+
+/*!
+ * @brief Store a decoded scalar's low @p len bytes into the target buffer.
+ *
+ * The 1/2/4/8-byte store truncates to the width's low bytes, whose bit pattern
+ * is identical for the signed and unsigned varint paths — so a single helper
+ * serves both (the signed path passes its value reinterpreted as unsigned).
+ *
+ * @param p      Destination buffer.
+ * @param len    Target width in bytes (1, 2, 4 or 8).
+ * @param value  Value whose low @p len bytes are written.
+ * @return 0 on success, -1 if @p len is not a supported width.
+ */
+SOFAB_NOINLINE
+static int _store_scalar (uint8_t *p, size_t len, sofab_unsigned_t value)
+{
+    if (len == 1)
+        *((uint8_t *)p) = (uint8_t)(value);
+    else if (len == 2)
+        *((uint16_t *)p) = (uint16_t)(value);
+    else if (len == 4)
+        *((uint32_t *)p) = (uint32_t)(value);
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+    else if (len == 8)
+        *((uint64_t *)p) = (uint64_t)(value);
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
+    else
+        return -1;
+
+    return 0;
+}
 
 /*!
  * @brief Split a 3-bit type tag off a decoded header word.
@@ -378,23 +427,31 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     const uint8_t *p;
     for (p = (const uint8_t *)data; datalen > 0; p++, datalen--)
     {
+        // The varint-decoding states (state <= _DECODER_STATE_ARRAY_COUNT) all
+        // start by pulling one LEB128 varint and reject an over-wide value the
+        // same way, so that shared preamble lives here once instead of in each
+        // state. The raw-byte states (FIXLEN_VAL/RAW) skip it and read *p
+        // directly. `decoded` holds the completed varint for the state below.
+        sofab_unsigned_t decoded = 0;
+        if (ctx->decoder->state <= _DECODER_STATE_ARRAY_COUNT)
+        {
+            if ((dec = _varint_decode(ctx, *p, &decoded)) == -1)
+            {
+                // need more data
+                continue;
+            }
+            if (dec < 0)
+            {
+                // varint overflow
+                return SOFAB_RET_E_INVALID_MSG;
+            }
+        }
+
         switch (ctx->decoder->state)
         {
             case _DECODER_STATE_IDLE:
             {
-                sofab_unsigned_t id;
-
-                // read field id + type
-                if ((dec = _varint_decode(ctx, *p, &id)) == -1)
-                {
-                    // need more data
-                    continue;
-                }
-                else if (dec < 0)
-                {
-                    // varint overflow
-                    return SOFAB_RET_E_INVALID_MSG;
-                }
+                sofab_unsigned_t id = decoded;
 
                 // extract type from id
                 uint8_t type = _type_decode(&id);
@@ -514,32 +571,12 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
             case _DECODER_STATE_VARINT_UNSIGNED:
             {
-                sofab_unsigned_t unsigned_value;
-
-                // read varint value
-                if ((dec = _varint_decode(ctx, *p, &unsigned_value)) == -1)
-                {
-                    // need more data
-                    continue;
-                }
-                else if (dec < 0)
-                {
-                    // varint overflow
-                    return SOFAB_RET_E_INVALID_MSG;
-                }
+                sofab_unsigned_t unsigned_value = decoded;
 
                 if (ctx->target_ptr)
                 {
                     // store unsigned value in target buffer
-                    if (ctx->target_len == 1)
-                        *((uint8_t *)ctx->target_ptr) = (uint8_t)(unsigned_value);
-                    else if (ctx->target_len == 2)
-                        *((uint16_t *)ctx->target_ptr) = (uint16_t)(unsigned_value);
-                    else if (ctx->target_len == 4)
-                        *((uint32_t *)ctx->target_ptr) = (uint32_t)(unsigned_value);
-                    else if (ctx->target_len == 8)
-                        *((uint64_t *)ctx->target_ptr) = (uint64_t)(unsigned_value);
-                    else
+                    if (_store_scalar(ctx->target_ptr, ctx->target_len, unsigned_value) != 0)
                     {
                         // invalid target length
                         return SOFAB_RET_E_USAGE;
@@ -570,34 +607,17 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
             case _DECODER_STATE_VARINT_SIGNED:
             {
-                sofab_unsigned_t zigzag_value;
-
-                if ((dec = _varint_decode(ctx, *p, &zigzag_value)) == -1)
-                {
-                    // need more data
-                    continue;
-                }
-                else if (dec < 0)
-                {
-                    // varint overflow
-                    return SOFAB_RET_E_INVALID_MSG;
-                }
+                sofab_unsigned_t zigzag_value = decoded;
 
                 if (ctx->target_ptr)
                 {
                     // zigzag decode
                     sofab_signed_t signed_value = _zigzag_decode(zigzag_value);
 
-                    // store signed value in target buffer
-                    if (ctx->target_len == 1)
-                        *((int8_t *)ctx->target_ptr) = (int8_t)(signed_value);
-                    else if (ctx->target_len == 2)
-                        *((int16_t *)ctx->target_ptr) = (int16_t)(signed_value);
-                    else if (ctx->target_len == 4)
-                        *((int32_t *)ctx->target_ptr) = (int32_t)(signed_value);
-                    else if (ctx->target_len == 8)
-                        *((int64_t *)ctx->target_ptr) = (int64_t)(signed_value);
-                    else
+                    // store signed value in target buffer (low bytes are shared
+                    // with the unsigned path once reinterpreted as unsigned)
+                    if (_store_scalar(ctx->target_ptr, ctx->target_len,
+                            (sofab_unsigned_t)signed_value) != 0)
                     {
                         // invalid target length
                         return SOFAB_RET_E_USAGE;
@@ -630,19 +650,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
             case _DECODER_STATE_FIXLEN_LEN:
             {
                 sofab_ret_t ret;
-                sofab_unsigned_t fixlen_length;
-
-                // read fixlen length + type
-                if ((dec = _varint_decode(ctx, *p, &fixlen_length)) == -1)
-                {
-                    // need more data
-                    continue;
-                }
-                else if (dec < 0)
-                {
-                    // varint overflow
-                    return SOFAB_RET_E_INVALID_MSG;
-                }
+                sofab_unsigned_t fixlen_length = decoded;
 
                 // extract type from length
                 uint8_t fixlen_type = _type_decode(&fixlen_length);
@@ -800,19 +808,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
             case _DECODER_STATE_ARRAY_COUNT:
             {
                 sofab_ret_t ret;
-                sofab_unsigned_t array_count;
-
-                // read array element count
-                if ((dec = _varint_decode(ctx, *p, &array_count)) == -1)
-                {
-                    // need more data
-                    continue;
-                }
-                else if (dec < 0)
-                {
-                    // varint overflow
-                    return SOFAB_RET_E_INVALID_MSG;
-                }
+                sofab_unsigned_t array_count = decoded;
 
                 if (array_count > SOFAB_ARRAY_MAX)
                 {
