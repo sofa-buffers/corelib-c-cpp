@@ -905,12 +905,94 @@ static void test_object_string_default_omission (void)
 
 //
 
+/*
+ * Object-path array decode: the wire carries the ACTUAL element count (0..N per
+ * MESSAGE_SPEC §3 / CORELIB_PLAN §4.7), not necessarily the descriptor capacity.
+ * The C object encoder always emits all capacity slots, but heap targets
+ * (Go/Python/TS/...) legitimately encode the real stored length, which may be
+ * < N. A C receiver must accept such a message: decode the leading elements and
+ * leave the trailing slots at their init/default values. Over-count (wire > N)
+ * stays rejected (generator#100 direction).
+ */
+typedef struct
+{
+    uint8_t vals[4];
+} arr_count_msg_t;
+
+static const sofab_object_descr_field_t _info_fields_arr_count[] =
+{
+    SOFAB_OBJECT_FIELD_ARRAY(0, arr_count_msg_t, vals, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+
+static const sofab_object_descr_t _info_arr_count =
+    SOFAB_OBJECT_DESCR(_info_fields_arr_count, 1, NULL, 0);
+
+static sofab_ret_t arr_count_decode (arr_count_msg_t *msg, const uint8_t *buf, size_t len)
+{
+    sofab_istream_t ctx;
+    sofab_object_decoder_t dec[2];
+    memset(dec, 0, sizeof(dec));
+    dec[0].info = &_info_arr_count;
+    dec[0].dst = (uint8_t *)msg;
+    dec[0].depth = (uint8_t)(sizeof(dec) / sizeof(dec[0]) - 1);
+    sofab_istream_init(&ctx, sofab_object_field_cb, (void *)&dec[0]);
+    return sofab_istream_feed(&ctx, buf, len);
+}
+
+static void test_object_array_count_full_partial_empty (void)
+{
+    /* full: wire count == capacity -> all four slots filled */
+    {
+        const uint8_t full[] = {0x03, 0x04, 1, 2, 3, 4};
+        arr_count_msg_t msg;
+        memset(msg.vals, 0xAA, sizeof(msg.vals));
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, arr_count_decode(&msg, full, sizeof(full)),
+            "full array must decode");
+        const uint8_t expected[] = {1, 2, 3, 4};
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, msg.vals, 4);
+    }
+
+    /* partial: wire count 2 < capacity 4 -> leading two set, tail untouched */
+    {
+        const uint8_t partial[] = {0x03, 0x02, 1, 2};
+        arr_count_msg_t msg;
+        memset(msg.vals, 0xAA, sizeof(msg.vals));
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, arr_count_decode(&msg, partial, sizeof(partial)),
+            "partial array must decode (spec: 0..N)");
+        const uint8_t expected[] = {1, 2, 0xAA, 0xAA};
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, msg.vals, 4);
+    }
+
+    /* empty: wire count 0 -> nothing written, every slot untouched */
+    {
+        const uint8_t empty[] = {0x03, 0x00};
+        arr_count_msg_t msg;
+        memset(msg.vals, 0xAA, sizeof(msg.vals));
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, arr_count_decode(&msg, empty, sizeof(empty)),
+            "explicit-empty array must decode (spec: 0..N)");
+        const uint8_t expected[] = {0xAA, 0xAA, 0xAA, 0xAA};
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, msg.vals, 4);
+    }
+
+    /* over-count: wire count 5 > capacity 4 -> rejected */
+    {
+        const uint8_t over[] = {0x03, 0x05, 1, 2, 3, 4, 5};
+        arr_count_msg_t msg;
+        memset(msg.vals, 0xAA, sizeof(msg.vals));
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG, arr_count_decode(&msg, over, sizeof(over)),
+            "over-count array must be rejected");
+    }
+}
+
+//
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(test_object_serialize);
     RUN_TEST(test_object_deserialize);
+    RUN_TEST(test_object_array_count_full_partial_empty);
 
     RUN_TEST(test_object_serialize_invalid_unsigned_size);
     RUN_TEST(test_object_serialize_invalid_signed_size);
