@@ -657,11 +657,27 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 switch (fixlen_type)
                 {
                     case SOFAB_FIXLENTYPE_FP32:
-#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
-                    case SOFAB_FIXLENTYPE_FP64:
-#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+                        // A fp32 field is always exactly 4 bytes on the wire; a
+                        // wrong declared width can never become valid, so reject
+                        // it here (INVALID takes precedence over INCOMPLETE, even
+                        // when the payload is truncated) - see MESSAGE_SPEC §7.
+                        if (fixlen_length != 4)
+                        {
+                            return SOFAB_RET_E_INVALID_MSG;
+                        }
                         ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
                         break;
+
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+                    case SOFAB_FIXLENTYPE_FP64:
+                        // Likewise, a fp64 field is always exactly 8 bytes.
+                        if (fixlen_length != 8)
+                        {
+                            return SOFAB_RET_E_INVALID_MSG;
+                        }
+                        ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
+                        break;
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 
                     case SOFAB_FIXLENTYPE_STRING:
                     case SOFAB_FIXLENTYPE_BLOB:

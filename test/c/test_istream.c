@@ -1000,6 +1000,120 @@ static void test_msg_invalid_varint_over_64bit (void)
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
+static void test_msg_invalid_fixlen_fp32_wrong_width_truncated (void)
+{
+    // A fp32 field is always exactly 4 bytes on the wire. A declared width that is
+    // not 4 can never become valid no matter what bytes follow, so it must be
+    // INVALID - never INCOMPLETE - even when the payload is truncated (issue #82).
+    // Header 0x02 = FIXLEN, id 0; fixlen_word = (declared_len << 3) | fp32(0).
+    const uint8_t wrong_lengths[] = {1, 2, 3, 5, 6, 7};
+
+    for (size_t i = 0; i < sizeof(wrong_lengths); i++)
+    {
+        sofab_istream_t ctx;
+        sofab_ret_t ret;
+        const uint8_t buffer[] = {0x02, (uint8_t)(wrong_lengths[i] << 3)};
+
+        float value = 0.0f;
+        test_single_field_t test =
+        {
+            .expected_id = 0,
+            .target_type = FIELD_TYPE_FP32,
+            .target_ptr = &value,
+            .target_size = sizeof(value),
+            .calls = 0
+        };
+
+        sofab_istream_init(&ctx, _single_field_callback, &test);
+        ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+        TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+        // width is rejected at the field header, before the callback fires
+        TEST_ASSERT_EQUAL_UINT8(0, test.calls);
+    }
+}
+
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+static void test_msg_invalid_fixlen_fp64_wrong_width_truncated (void)
+{
+    // Same as above for fp64, which is always exactly 8 bytes on the wire (#82).
+    // fixlen_word = (declared_len << 3) | fp64(1).
+    const uint8_t wrong_lengths[] = {1, 2, 3, 4, 5, 6, 7, 9, 10, 11};
+
+    for (size_t i = 0; i < sizeof(wrong_lengths); i++)
+    {
+        sofab_istream_t ctx;
+        sofab_ret_t ret;
+        const uint8_t buffer[] = {0x02, (uint8_t)((wrong_lengths[i] << 3) | 1)};
+
+        double value = 0.0;
+        test_single_field_t test =
+        {
+            .expected_id = 0,
+            .target_type = FIELD_TYPE_FP64,
+            .target_ptr = &value,
+            .target_size = sizeof(value),
+            .calls = 0
+        };
+
+        sofab_istream_init(&ctx, _single_field_callback, &test);
+        ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+        TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+        TEST_ASSERT_EQUAL_UINT8(0, test.calls);
+    }
+}
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+
+static void test_msg_incomplete_fixlen_fp32_correct_width_truncated (void)
+{
+    // Control: a fp32 with the CORRECT declared width (4) but a truncated payload
+    // is genuinely INCOMPLETE - the exact-width fix must not steal this case (#82).
+    // fixlen_word 0x20 = (4 << 3) | fp32(0), then only 2 of 4 payload bytes.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x02, 0x20, 0x00, 0x00};
+
+    float value = 0.0f;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_FP32,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+static void test_msg_incomplete_fixlen_fp64_correct_width_truncated (void)
+{
+    // Control: a fp64 with the CORRECT declared width (8) but a truncated payload
+    // stays INCOMPLETE (#82). fixlen_word 0x41 = (8 << 3) | fp64(1), then 3 of 8.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {0x02, 0x41, 0x00, 0x00, 0x00};
+
+    double value = 0.0;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_FP64,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+
 static void test_read_unsigned_min (void)
 {
     sofab_istream_t ctx;
@@ -2593,6 +2707,14 @@ int test_istream_main (void)
     RUN_TEST(test_msg_incomplete_partial_value_varint);
     RUN_TEST(test_msg_incomplete_truncated_fixlen);
     RUN_TEST(test_msg_invalid_varint_over_64bit);
+    RUN_TEST(test_msg_invalid_fixlen_fp32_wrong_width_truncated);
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+    RUN_TEST(test_msg_invalid_fixlen_fp64_wrong_width_truncated);
+#endif
+    RUN_TEST(test_msg_incomplete_fixlen_fp32_correct_width_truncated);
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+    RUN_TEST(test_msg_incomplete_fixlen_fp64_correct_width_truncated);
+#endif
 
     RUN_TEST(test_read_unsigned_min);
     RUN_TEST(test_read_unsigned_max);
