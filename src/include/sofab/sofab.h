@@ -128,6 +128,16 @@ typedef int32_t sofab_signed_t;
 # define SOFAB_ARRAY_MAX (INT32_MAX)
 #endif
 
+/*! @brief Maximum sequence nesting depth.
+ *
+ * A message may nest sequences at most @c SOFAB_MAX_DEPTH levels deep; a decode
+ * that would exceed this bound is rejected with @ref SOFAB_RET_E_INVALID_MSG.
+ * The limit governs the skip path — nested sequences the caller does not bind
+ * with @c sofab_istream_read_sequence() — where the depth counter is a
+ * @c uint8_t. Actively-decoded nesting is instead bounded by the number of
+ * caller-provided decoder handles (see @c sofab_object_decoder_t::depth). */
+#define SOFAB_MAX_DEPTH (UINT8_MAX)
+
 // disable double support automatically on platforms where double is not 8 bytes
 #if defined(__SIZEOF_DOUBLE__) && __SIZEOF_DOUBLE__ != 8
 # define SOFAB_DISABLE_FP64_SUPPORT
