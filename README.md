@@ -211,6 +211,13 @@ silently accepted as complete nor rejected as invalid. In the C++ wrapper the sa
 three outcomes are surfaced by `IStream::feed`'s `Result`: `ok()` (complete),
 `incomplete()` (partial), and `code() == Error::InvalidMessage` (malformed).
 
+Sequences may nest at most `SOFAB_MAX_DEPTH` (255) levels deep; a message that
+exceeds this is rejected with `SOFAB_RET_E_INVALID_MSG`. The limit is enforced on
+the skip path — nested sequences the caller does not bind with
+`sofab_istream_read_sequence()` — where the depth counter is a `uint8_t`.
+Actively-decoded nesting is instead bounded by the number of caller-provided
+decoder handles.
+
 ### Code generator
 
 `sofabgen` is the schema compiler. For **C** it targets the descriptor-driven

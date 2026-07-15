@@ -476,9 +476,9 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     // if not interested in sequence ...
                     if (!ctx->target_ptr)
                     {
-                        if (ctx->decoder->skip_depth == UINT8_MAX)
+                        if (ctx->decoder->skip_depth == SOFAB_MAX_DEPTH)
                         {
-                            // skip depth overflow
+                            // nesting > MAX_DEPTH → INVALID
                             return SOFAB_RET_E_INVALID_MSG;
                         }
 
