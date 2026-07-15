@@ -454,9 +454,9 @@ only within a language):
 
 | Use case | Library | vs. | Throughput | Bare-metal Cortex-M flash |
 | - | - | - | - | - |
-| Embedded **C** | `corelib-c-cpp` (C API) | nanopb | ~2× | ~3.5&nbsp;KB vs ~6.6&nbsp;KB |
-| Embedded **C++** | `corelib-c-cpp` (C++ wrapper) | EmbeddedProto | ~2.1× | ~6.8&nbsp;KB vs ~9.4&nbsp;KB |
-| Throughput **C++** | `corelib-cpp` (pure C++20) | protobuf | ~1.5× (~434-byte wire) | — (desktop/server) |
+| Embedded **C** | `corelib-c-cpp` (C API) | nanopb | ~2.1× | ~3.6&nbsp;KB vs ~6.6&nbsp;KB |
+| Embedded **C++** | `corelib-c-cpp` (C++ wrapper) | EmbeddedProto | ~2.3× | ~6.5&nbsp;KB vs ~9.3&nbsp;KB |
+| Throughput **C++** | `corelib-cpp` (pure C++20) | protobuf | ~1.3× (434 vs 494-byte wire) | — (desktop/server) |
 
 Both C++ ports share the `sofab::` API; the practical differences show up in the
 decode-buffer contract:
