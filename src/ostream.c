@@ -15,6 +15,21 @@
 /* constants ******************************************************************/
 
 /* macros *********************************************************************/
+/*!
+ * @brief Keep a shared helper out of line so its one copy is reused.
+ *
+ * Several writers share a common prefix (header + varint) or body (the varint
+ * array loop). Forcing those helpers out of line makes the toolchain emit a
+ * single copy instead of inlining — and thus duplicating — them into every
+ * caller, which is a net size win on the small targets this corelib targets.
+ * Falls back to nothing on compilers without the attribute (the code stays
+ * correct, just potentially inlined).
+ */
+#if defined(__GNUC__)
+# define SOFAB_NOINLINE __attribute__((noinline))
+#else
+# define SOFAB_NOINLINE
+#endif
 
 /* types **********************************************************************/
 
@@ -125,6 +140,7 @@ static sofab_unsigned_t _type_encode (sofab_unsigned_t var, int type)
  * @return SOFAB_RET_OK on success, SOFAB_RET_E_ARGUMENT for an out-of-range id,
  *         or SOFAB_RET_E_BUFFER_FULL on overflow.
  */
+SOFAB_NOINLINE
 static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_type_t type)
 {
     if (id > SOFAB_ID_MAX)
@@ -133,6 +149,40 @@ static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_ty
     }
 
     if (_varint_encode(ctx, _type_encode(id, type)) < 0)
+    {
+        return SOFAB_RET_E_BUFFER_FULL;
+    }
+
+    return SOFAB_RET_OK;
+}
+
+/*!
+ * @brief Emit a field's (id, type) header followed by one varint payload.
+ *
+ * This id/type header + trailing varint is the common prefix of every writer:
+ * for a scalar the payload is the (possibly ZigZag-encoded) value; for a fixlen
+ * field it is the length/subtype word; for an array it is the element count.
+ * Factoring it here (a single out-of-line copy) keeps that prefix — and its
+ * overflow handling — from being duplicated across all the writers.
+ *
+ * @param ctx      Output stream context.
+ * @param id       Field identifier.
+ * @param type     Wire type tag.
+ * @param payload  Varint payload to append after the header.
+ * @return SOFAB_RET_OK on success, or an sofab_ret_t error code.
+ */
+SOFAB_NOINLINE
+static sofab_ret_t _write_id_varint (
+    sofab_ostream_t *ctx, sofab_id_t id, sofab_type_t type, sofab_unsigned_t payload)
+{
+    sofab_ret_t ret;
+
+    if ((ret = _write_id_type(ctx, id, type)) != SOFAB_RET_OK)
+    {
+        return ret;
+    }
+
+    if (_varint_encode(ctx, payload) < 0)
     {
         return SOFAB_RET_E_BUFFER_FULL;
     }
@@ -247,41 +297,17 @@ extern void sofab_ostream_buffer_set	(
 extern sofab_ret_t sofab_ostream_write_unsigned (
     sofab_ostream_t *ctx, sofab_id_t id, sofab_unsigned_t value)
 {
-    sofab_ret_t ret;
-
     assert(ctx != NULL);
 
-    if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_VARINT_UNSIGNED)) != SOFAB_RET_OK)
-    {
-        return ret;
-    }
-
-    if (_varint_encode(ctx, value) < 0)
-    {
-        return SOFAB_RET_E_BUFFER_FULL;
-    }
-
-    return SOFAB_RET_OK;
+    return _write_id_varint(ctx, id, SOFAB_TYPE_VARINT_UNSIGNED, value);
 }
 
 extern sofab_ret_t sofab_ostream_write_signed (
     sofab_ostream_t *ctx, sofab_id_t id, sofab_signed_t value)
 {
-    sofab_ret_t ret;
-
     assert(ctx != NULL);
 
-    if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_VARINT_SIGNED)) != SOFAB_RET_OK)
-    {
-        return ret;
-    }
-
-    if (_varint_encode(ctx, _zigzag_encode(value)) < 0)
-    {
-        return SOFAB_RET_E_BUFFER_FULL;
-    }
-
-    return SOFAB_RET_OK;
+    return _write_id_varint(ctx, id, SOFAB_TYPE_VARINT_SIGNED, _zigzag_encode(value));
 }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
@@ -294,14 +320,10 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
     assert(ctx != NULL);
     assert(datalen == 0 || data != NULL);
 
-    if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_FIXLEN)) != SOFAB_RET_OK)
+    if ((ret = _write_id_varint(ctx, id, SOFAB_TYPE_FIXLEN,
+            _type_encode(datalen, type))) != SOFAB_RET_OK)
     {
         return ret;
-    }
-
-    if (_varint_encode(ctx, _type_encode(datalen, type)) < 0)
-    {
-        return SOFAB_RET_E_BUFFER_FULL;
     }
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -331,49 +353,79 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
+/*!
+ * @brief Shared body for the unsigned/signed varint array writers.
+ *
+ * Emits the field header, the element count, then each element as a varint.
+ * @p is_signed selects the wire type, the sign-extending element load and the
+ * ZigZag transform; the two public writers are thin wrappers over this so the
+ * header/count/loop machinery is emitted only once.
+ *
+ * @param ctx            Output stream context.
+ * @param id             Field identifier.
+ * @param data           Pointer to the element array.
+ * @param element_count  Number of elements.
+ * @param element_size   Size of each element in bytes.
+ * @param is_signed      Non-zero for the signed (ZigZag) path.
+ * @return SOFAB_RET_OK on success, or an sofab_ret_t error code.
+ */
+SOFAB_NOINLINE
+static sofab_ret_t _write_varint_array (
     sofab_ostream_t *ctx, sofab_id_t id, const void *data,
-    int32_t element_count, int32_t element_size)
+    int32_t element_count, int32_t element_size, int is_signed)
 {
     sofab_ret_t ret;
 
-    assert(ctx != NULL);
-    assert(element_count >= 0); /* zero-count arrays are legal */
-    assert(data != NULL || element_count == 0); /* data unused when empty */
-    assert(element_size > 0);
-
-    if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_VARINTARRAY_UNSIGNED)) != SOFAB_RET_OK)
+    if ((ret = _write_id_varint(ctx, id,
+            is_signed ? SOFAB_TYPE_VARINTARRAY_SIGNED
+                      : SOFAB_TYPE_VARINTARRAY_UNSIGNED,
+            (sofab_unsigned_t)element_count)) != SOFAB_RET_OK)
     {
         return ret;
-    }
-
-    if (_varint_encode(ctx, element_count) < 0)
-    {
-        return SOFAB_RET_E_BUFFER_FULL;
     }
 
     const uint8_t *ptr = (const uint8_t*)data;
     for (int32_t i = 0; i < element_count; i++)
     {
-        uint64_t value;
+        sofab_unsigned_t enc;
 
-        if (element_size == 1)
-            value = *(uint8_t *)ptr;
-        else if (element_size == 2)
-            value = *(uint16_t *)ptr;
-        else if (element_size == 4)
-            value = *(uint32_t *)ptr;
+        if (is_signed)
+        {
+            sofab_signed_t value;
+            if (element_size == 1)
+                value = *(const int8_t *)ptr;
+            else if (element_size == 2)
+                value = *(const int16_t *)ptr;
+            else if (element_size == 4)
+                value = *(const int32_t *)ptr;
 #if !defined(SOFAB_DISABLE_INT64_SUPPORT)
-        else if (element_size == 8)
-            value = *(uint64_t *)ptr;
+            else if (element_size == 8)
+                value = *(const int64_t *)ptr;
 #endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
+            else
+                // unsupported element size (8 requires 64-bit value support)
+                return SOFAB_RET_E_ARGUMENT;
+
+            enc = _zigzag_encode(value);
+        }
         else
         {
-            // unsupported element size (8 requires 64-bit value support)
-            return SOFAB_RET_E_ARGUMENT;
+            if (element_size == 1)
+                enc = *(const uint8_t *)ptr;
+            else if (element_size == 2)
+                enc = *(const uint16_t *)ptr;
+            else if (element_size == 4)
+                enc = *(const uint32_t *)ptr;
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+            else if (element_size == 8)
+                enc = *(const uint64_t *)ptr;
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
+            else
+                // unsupported element size (8 requires 64-bit value support)
+                return SOFAB_RET_E_ARGUMENT;
         }
 
-        if (_varint_encode(ctx, value) < 0)
+        if (_varint_encode(ctx, enc) < 0)
         {
             return SOFAB_RET_E_BUFFER_FULL;
         }
@@ -384,57 +436,28 @@ extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
     return SOFAB_RET_OK;
 }
 
-extern sofab_ret_t sofab_ostream_write_array_of_signed (
+extern sofab_ret_t sofab_ostream_write_array_of_unsigned (
     sofab_ostream_t *ctx, sofab_id_t id, const void *data,
     int32_t element_count, int32_t element_size)
 {
-    sofab_ret_t ret;
-
     assert(ctx != NULL);
     assert(element_count >= 0); /* zero-count arrays are legal */
     assert(data != NULL || element_count == 0); /* data unused when empty */
     assert(element_size > 0);
 
-    if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_VARINTARRAY_SIGNED)) != SOFAB_RET_OK)
-    {
-        return ret;
-    }
+    return _write_varint_array(ctx, id, data, element_count, element_size, 0);
+}
 
-    if (_varint_encode(ctx, element_count) < 0)
-    {
-        return SOFAB_RET_E_BUFFER_FULL;
-    }
+extern sofab_ret_t sofab_ostream_write_array_of_signed (
+    sofab_ostream_t *ctx, sofab_id_t id, const void *data,
+    int32_t element_count, int32_t element_size)
+{
+    assert(ctx != NULL);
+    assert(element_count >= 0); /* zero-count arrays are legal */
+    assert(data != NULL || element_count == 0); /* data unused when empty */
+    assert(element_size > 0);
 
-    const uint8_t *ptr = (const uint8_t*)data;
-    for (int32_t i = 0; i < element_count; i++)
-    {
-        int64_t value;
-
-        if (element_size == 1)
-            value = *(int8_t *)ptr;
-        else if (element_size == 2)
-            value = *(int16_t *)ptr;
-        else if (element_size == 4)
-            value = *(int32_t *)ptr;
-#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
-        else if (element_size == 8)
-            value = *(int64_t *)ptr;
-#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
-        else
-        {
-            // unsupported element size (8 requires 64-bit value support)
-            return SOFAB_RET_E_ARGUMENT;
-        }
-
-        if (_varint_encode(ctx, _zigzag_encode(value)) < 0)
-        {
-            return SOFAB_RET_E_BUFFER_FULL;
-        }
-
-        ptr += element_size;
-    }
-
-    return SOFAB_RET_OK;
+    return _write_varint_array(ctx, id, data, element_count, element_size, 1);
 }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
@@ -453,14 +476,10 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
     // only FP32 and FP64 are supported for fixlen arrays
     assert(type <= SOFAB_FIXLENTYPE_FP64);
 
-    if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_FIXLENARRAY)) != SOFAB_RET_OK)
+    if ((ret = _write_id_varint(ctx, id, SOFAB_TYPE_FIXLENARRAY,
+            (sofab_unsigned_t)element_count)) != SOFAB_RET_OK)
     {
         return ret;
-    }
-
-    if (_varint_encode(ctx, element_count) < 0)
-    {
-        return SOFAB_RET_E_BUFFER_FULL;
     }
 
     // The shared fixlen_word (element width + subtype) is ALWAYS written, even

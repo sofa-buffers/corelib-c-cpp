@@ -286,39 +286,42 @@ extern sofab_ret_t sofab_object_encode (
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
-            {
-                size_t element_count = field->size / field->element_size;
-                ret = sofab_ostream_write_array_of_unsigned(ctx, field->id,
-                    CAST_TO(const void *, src, field->offset), element_count, field->element_size);
-                break;
-            }
-
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
             {
-                size_t element_count = field->size / field->element_size;
-                ret = sofab_ostream_write_array_of_signed(ctx, field->id,
-                    CAST_TO(const void *, src, field->offset), element_count, field->element_size);
+                // Both writers share a signature and differ only in the element
+                // interpretation; select via pointer so the element-count math
+                // and the call are emitted once.
+                sofab_ret_t (*const write_array)(
+                    sofab_ostream_t *, sofab_id_t, const void *, int32_t, int32_t) =
+                    (field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED)
+                        ? sofab_ostream_write_array_of_signed
+                        : sofab_ostream_write_array_of_unsigned;
+                ret = write_array(ctx, field->id,
+                    CAST_TO(const void *, src, field->offset),
+                    field->size / field->element_size, field->element_size);
                 break;
             }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
-            {
-                size_t element_count = field->size / sizeof(float);
-                ret = sofab_ostream_write_array_of_fp32(ctx, field->id,
-                    CAST_TO(const float *, src, field->offset), element_count);
-                break;
-            }
-
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
             {
-                size_t element_count = field->size / sizeof(double);
-                ret = sofab_ostream_write_array_of_fp64(ctx, field->id,
-                    CAST_TO(const double *, src, field->offset), element_count);
+                // FP32/FP64 arrays share the fixlen-array writer; only the
+                // element width and subtype tag differ.
+#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+                int is_fp64 = (field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64);
+#else
+                const int is_fp64 = 0;
+#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+                size_t element_size = is_fp64 ? sizeof(double) : sizeof(float);
+                ret = sofab_ostream_write_array_of_fixlen(ctx, field->id,
+                    CAST_TO(const void *, src, field->offset),
+                    field->size / element_size, element_size,
+                    is_fp64 ? SOFAB_FIXLENTYPE_FP64 : SOFAB_FIXLENTYPE_FP32);
                 break;
             }
-#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
@@ -362,13 +365,12 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
         switch (field->type)
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
-                sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
-                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
-                break;
-
             case SOFAB_OBJECT_FIELDTYPE_SIGNED:
+                // unsigned and signed differ only in the wire type tag
                 sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
-                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(
+                        field->type == SOFAB_OBJECT_FIELDTYPE_SIGNED
+                            ? SOFAB_TYPE_VARINT_SIGNED : SOFAB_TYPE_VARINT_UNSIGNED));
                 break;
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
@@ -401,17 +403,14 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
-                sofab_istream_read_array(ctx,
-                    decoder->dst + field->offset,
-                    field->size / field->element_size, field->element_size,
-                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
-                break;
-
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
+                // unsigned and signed arrays differ only in the wire type tag
                 sofab_istream_read_array(ctx,
                     decoder->dst + field->offset,
                     field->size / field->element_size, field->element_size,
-                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(
+                        field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED
+                            ? SOFAB_TYPE_VARINTARRAY_SIGNED : SOFAB_TYPE_VARINTARRAY_UNSIGNED));
                 break;
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
