@@ -908,11 +908,12 @@ static void test_object_string_default_omission (void)
 /*
  * Object-path array decode: the wire carries the ACTUAL element count (0..N per
  * MESSAGE_SPEC §3 / CORELIB_PLAN §4.7), not necessarily the descriptor capacity.
- * The C object encoder always emits all capacity slots, but heap targets
- * (Go/Python/TS/...) legitimately encode the real stored length, which may be
- * < N. A C receiver must accept such a message: decode the leading elements and
- * leave the trailing slots at their init/default values. Over-count (wire > N)
- * stays rejected (generator#100 direction).
+ * The C object encoder emits the canonical trimmed length (dropping the trailing
+ * element-default run), and heap targets (Go/Python/TS/...) likewise encode the
+ * real stored length, which may be < N. A C receiver must accept such a message:
+ * decode the leading elements and clear the trailing slots to the element default
+ * (zero) per MESSAGE_SPEC §3 - a present field never leaves a stale init/default
+ * image in [M, N). Over-count (wire > N) stays rejected (generator#100 direction).
  */
 typedef struct
 {
@@ -952,25 +953,27 @@ static void test_object_array_count_full_partial_empty (void)
         TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, msg.vals, 4);
     }
 
-    /* partial: wire count 2 < capacity 4 -> leading two set, tail untouched */
+    /* partial: wire count 2 < capacity 4 -> leading two set, tail cleared to
+     * the element default (zero), even over the 0xAA sentinel (spec §3). */
     {
         const uint8_t partial[] = {0x03, 0x02, 1, 2};
         arr_count_msg_t msg;
         memset(msg.vals, 0xAA, sizeof(msg.vals));
         TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, arr_count_decode(&msg, partial, sizeof(partial)),
             "partial array must decode (spec: 0..N)");
-        const uint8_t expected[] = {1, 2, 0xAA, 0xAA};
+        const uint8_t expected[] = {1, 2, 0, 0};
         TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, msg.vals, 4);
     }
 
-    /* empty: wire count 0 -> nothing written, every slot untouched */
+    /* empty: wire count 0 -> present with count 0, so every slot is cleared to
+     * the element default (zero) - distinct from an absent field (spec §3). */
     {
         const uint8_t empty[] = {0x03, 0x00};
         arr_count_msg_t msg;
         memset(msg.vals, 0xAA, sizeof(msg.vals));
         TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, arr_count_decode(&msg, empty, sizeof(empty)),
             "explicit-empty array must decode (spec: 0..N)");
-        const uint8_t expected[] = {0xAA, 0xAA, 0xAA, 0xAA};
+        const uint8_t expected[] = {0, 0, 0, 0};
         TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, msg.vals, 4);
     }
 
@@ -981,6 +984,164 @@ static void test_object_array_count_full_partial_empty (void)
         memset(msg.vals, 0xAA, sizeof(msg.vals));
         TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG, arr_count_decode(&msg, over, sizeof(over)),
             "over-count array must be rejected");
+    }
+}
+
+//
+
+/*
+ * MESSAGE_SPEC §3 trailing-default-run rule (issue #86, Crucible F-0010), both
+ * directions, on the C object-descriptor path.
+ *
+ * A count:N array is always exactly N logical elements, but the encoder MUST
+ * write M = one past the last element that differs from the element default and
+ * MUST NOT emit the trailing default (zero) run; a decoder MUST refill [M, N)
+ * from the element default and MUST NOT let a schema default: image survive into
+ * that tail once the field is present on the wire.
+ */
+typedef struct
+{
+    uint32_t u32s[5];
+} trailrun_u32_t;
+
+static const sofab_object_descr_field_t _info_fields_trailrun_u32[] =
+{
+    SOFAB_OBJECT_FIELD_ARRAY(0, trailrun_u32_t, u32s, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+
+/* No default image: the element default is zero. */
+static const sofab_object_descr_t _info_trailrun_u32 =
+    SOFAB_OBJECT_DESCR(_info_fields_trailrun_u32, 1, NULL, 0);
+
+/* Default image seeds _init to {1,2,3,0,0}: the gap-2 leak vector. */
+static const trailrun_u32_t _info_defaults_trailrun_u32 = { .u32s = {1, 2, 3, 0, 0} };
+static const sofab_object_descr_t _info_trailrun_u32_def =
+    SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_info_fields_trailrun_u32, 1, NULL, 0,
+        &_info_defaults_trailrun_u32);
+
+typedef struct
+{
+    float fp32s[4];
+} trailrun_fp32_t;
+
+static const sofab_object_descr_field_t _info_fields_trailrun_fp32[] =
+{
+    SOFAB_OBJECT_FIELD_ARRAY(0, trailrun_fp32_t, fp32s, SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32),
+};
+
+static const sofab_object_descr_t _info_trailrun_fp32 =
+    SOFAB_OBJECT_DESCR(_info_fields_trailrun_fp32, 1, NULL, 0);
+
+static size_t trailrun_encode (const sofab_object_descr_t *info, const void *in,
+                               uint8_t *buffer, size_t buflen)
+{
+    sofab_ostream_t octx;
+    sofab_ostream_init(&octx, buffer, buflen, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, info, in), "encode failed");
+    return sofab_ostream_flush(&octx);
+}
+
+static sofab_ret_t trailrun_u32_decode (const sofab_object_descr_t *info,
+                                        trailrun_u32_t *msg,
+                                        const uint8_t *buf, size_t len)
+{
+    sofab_istream_t ctx;
+    sofab_object_decoder_t dec[2];
+    memset(dec, 0, sizeof(dec));
+    dec[0].info = info;
+    dec[0].dst = (uint8_t *)msg;
+    dec[0].depth = (uint8_t)(sizeof(dec) / sizeof(dec[0]) - 1);
+    sofab_istream_init(&ctx, sofab_object_field_cb, (void *)&dec[0]);
+    return sofab_istream_feed(&ctx, buf, len);
+}
+
+static void test_object_array_trailing_default_run (void)
+{
+    uint8_t buffer[32];
+
+    /* gap 1 (varint): value [7,8,9,0,0] encodes to the canonical count 3 with no
+     * trailing default run -- the issue's reproducer (id 0 -> tag 0x03). */
+    {
+        trailrun_u32_t in;
+        sofab_object_init(&_info_trailrun_u32, &in);
+        in.u32s[0] = 7; in.u32s[1] = 8; in.u32s[2] = 9; /* [7,8,9,0,0] */
+        size_t used = trailrun_encode(&_info_trailrun_u32, &in, buffer, sizeof(buffer));
+        const uint8_t expected[] = {0x03, 0x03, 0x07, 0x08, 0x09};
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+            "encode must trim the trailing default run (count 3, not 5)");
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
+    }
+
+    /* gap 1 (varint): an all-default value that still differs from a non-zero
+     * default image is present with count 0 -- distinct from being omitted. */
+    {
+        trailrun_u32_t in;
+        sofab_object_init(&_info_trailrun_u32_def, &in); /* {1,2,3,0,0} */
+        in.u32s[0] = 0; in.u32s[1] = 0; in.u32s[2] = 0;  /* [0,0,0,0,0] != default */
+        size_t used = trailrun_encode(&_info_trailrun_u32_def, &in, buffer, sizeof(buffer));
+        const uint8_t expected[] = {0x03, 0x00};
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+            "all-default array differing from its default image emits count 0");
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
+    }
+
+    /* gap 1 (fixlen): fp32 [1.5, 2.5, 0, 0] encodes to the canonical count 2. */
+    {
+        trailrun_fp32_t in;
+        sofab_object_init(&_info_trailrun_fp32, &in);
+        in.fp32s[0] = 1.5f; in.fp32s[1] = 2.5f; /* [1.5, 2.5, 0, 0] */
+        size_t used = trailrun_encode(&_info_trailrun_fp32, &in, buffer, sizeof(buffer));
+        /* [tag 0x05][count 2][fixlen_word 0x20][1.5f LE][2.5f LE] */
+        const uint8_t expected[] = {
+            0x05, 0x02, 0x20,
+            0x00, 0x00, 0xC0, 0x3F,  /* 1.5f */
+            0x00, 0x00, 0x20, 0x40}; /* 2.5f */
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+            "fixlen encode must trim the trailing default run (count 2, not 4)");
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
+    }
+
+    /* gap 1 (fixlen): a trailing -0.0 has its sign bit set, so its byte image is
+     * NOT the default -- it (and every element before it) stays on the wire. */
+    {
+        trailrun_fp32_t in;
+        sofab_object_init(&_info_trailrun_fp32, &in);
+        in.fp32s[0] = 1.5f; in.fp32s[3] = -0.0f; /* [1.5, +0.0, +0.0, -0.0] */
+        size_t used = trailrun_encode(&_info_trailrun_fp32, &in, buffer, sizeof(buffer));
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x04, buffer[1],
+            "a trailing -0.0 must not be trimmed as a default (count stays 4)");
+        TEST_ASSERT_EQUAL_size_t(3 + 4 * sizeof(float), used);
+    }
+
+    /* gap 2: decoding the canonical short wire must clear [M, N) to the element
+     * default, not leave the schema default's u32s[2]==3 behind. */
+    {
+        trailrun_u32_t msg;
+        /* value [1,2,0,0,0] trimmed to count 2: [tag 0x03][count 2][1][2] */
+        const uint8_t wire[] = {0x03, 0x02, 0x01, 0x02};
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+            trailrun_u32_decode(&_info_trailrun_u32_def, &msg, wire, sizeof(wire)),
+            "short array must decode");
+        const uint32_t expected[] = {1, 2, 0, 0, 0};
+        TEST_ASSERT_EQUAL_UINT32_ARRAY(expected, msg.u32s, 5);
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, msg.u32s[2],
+            "schema default must not survive into [M, N)");
+    }
+
+    /* end-to-end: encode [1,2,0,0,0] against the default image and feed it back;
+     * the tail must round-trip as the element default (zero), not {..,3,..}. */
+    {
+        trailrun_u32_t in;
+        sofab_object_init(&_info_trailrun_u32_def, &in); /* {1,2,3,0,0} */
+        in.u32s[0] = 1; in.u32s[1] = 2; in.u32s[2] = 0; /* [1,2,0,0,0] */
+        size_t used = trailrun_encode(&_info_trailrun_u32_def, &in, buffer, sizeof(buffer));
+
+        trailrun_u32_t out;
+        TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+            trailrun_u32_decode(&_info_trailrun_u32_def, &out, buffer, used));
+        const uint32_t expected[] = {1, 2, 0, 0, 0};
+        TEST_ASSERT_EQUAL_UINT32_ARRAY(expected, out.u32s, 5);
     }
 }
 
@@ -1134,6 +1295,7 @@ int test_object_main (void)
     RUN_TEST(test_object_serialize);
     RUN_TEST(test_object_deserialize);
     RUN_TEST(test_object_array_count_full_partial_empty);
+    RUN_TEST(test_object_array_trailing_default_run);
 
     RUN_TEST(test_object_serialize_invalid_unsigned_size);
     RUN_TEST(test_object_serialize_invalid_signed_size);
