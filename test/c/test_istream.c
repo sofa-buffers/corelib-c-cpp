@@ -745,7 +745,8 @@ static void test_msg_target_array_partial_fill (void)
     // §3 / §4.7: the wire carries the ACTUAL element count (0..N); a bound
     // destination declares its capacity N. A wire count below capacity is a
     // valid partial array: it decodes into the leading slots and the trailing
-    // slots keep their pre-set values (here a 0xAA sentinel).
+    // slots are the element default (zero) per §3 - the decoder clears them even
+    // over a pre-set sentinel (here 0xAA), so no stale image leaks past the wire.
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {0x04, 0x05, 0x01, 0x03, 0x05, 0xFF, 0x01, 0xFE, 0x01};
@@ -770,17 +771,20 @@ static void test_msg_target_array_partial_fill (void)
     // leading 5 slots hold the decoded values ...
     const int8_t expected[] = {-1, -2, -3, INT8_MIN, INT8_MAX};
     TEST_ASSERT_EQUAL_INT8_ARRAY(expected, value, 5);
-    // ... the remaining 5 keep their sentinel (untouched by the decoder)
+    // ... the remaining 5 are cleared to the element default (zero), not the
+    // sentinel (MESSAGE_SPEC §3: materialize exactly N elements).
     for (size_t i = 5; i < 10; i++)
     {
-        TEST_ASSERT_EQUAL_INT8((int8_t)0xAA, value[i]);
+        TEST_ASSERT_EQUAL_INT8(0, value[i]);
     }
 }
 
 static void test_msg_target_array_empty_into_sized_buffer (void)
 {
     // An explicit empty integer array (wire count 0) is valid against a
-    // non-empty destination: nothing is written, every slot keeps its value.
+    // non-empty destination: it is present with count 0, so every slot is the
+    // element default (zero) per §3 - distinct from an absent field, which would
+    // keep the destination's init/default image.
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {0x03, 0x00}; // unsigned array id=0, count=0
@@ -803,15 +807,16 @@ static void test_msg_target_array_empty_into_sized_buffer (void)
     TEST_ASSERT_EQUAL(0, test.field_count);
     for (size_t i = 0; i < sizeof(value); i++)
     {
-        TEST_ASSERT_EQUAL_UINT8(0xAA, value[i]);
+        TEST_ASSERT_EQUAL_UINT8(0, value[i]);
     }
 }
 
 static void test_msg_target_array_fixlen_empty_into_sized_buffer (void)
 {
     // §4.8: an explicit empty fixlen array (wire count 0) still carries its
-    // fixlen_word, then no payload. It is valid against a non-empty fp32
-    // destination, which is left untouched.
+    // fixlen_word, then no payload. It is present with count 0 against a
+    // non-empty fp32 destination, so every slot is cleared to the element
+    // default (zero) per §3.
     sofab_istream_t ctx;
     sofab_ret_t ret;
     const uint8_t buffer[] = {0x05, 0x00, 0x20}; // fp32 array id=0, count=0, fixlen_word
@@ -831,15 +836,16 @@ static void test_msg_target_array_fixlen_empty_into_sized_buffer (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
     TEST_ASSERT_EQUAL(0, test.field_count);
-    TEST_ASSERT_EQUAL_FLOAT(1.0f, value[0]);
-    TEST_ASSERT_EQUAL_FLOAT(2.0f, value[1]);
-    TEST_ASSERT_EQUAL_FLOAT(3.0f, value[2]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, value[0]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, value[1]);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, value[2]);
 }
 
 static void test_msg_target_array_fixlen_partial_fill (void)
 {
     // A partially filled fixlen array (wire count 2 < capacity 4) decodes into
-    // the leading slots; the trailing slots keep their pre-set values.
+    // the leading slots; the trailing slots are cleared to the element default
+    // (zero) per §3, even over a pre-set sentinel.
     sofab_istream_t ctx;
     sofab_ret_t ret;
     // fp32 array id=0, count=2, fixlen_word 0x20, then 1.0f and 2.0f (little-endian)
@@ -865,8 +871,8 @@ static void test_msg_target_array_fixlen_partial_fill (void)
     TEST_ASSERT_EQUAL(2, test.field_count);
     TEST_ASSERT_EQUAL_FLOAT(1.0f, value[0]);
     TEST_ASSERT_EQUAL_FLOAT(2.0f, value[1]);
-    TEST_ASSERT_EQUAL_FLOAT(9.0f, value[2]); // untouched
-    TEST_ASSERT_EQUAL_FLOAT(9.0f, value[3]); // untouched
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, value[2]); // cleared to element default
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, value[3]); // cleared to element default
 }
 
 static void test_msg_invalid_target_array_fixlen_count_too_small (void)

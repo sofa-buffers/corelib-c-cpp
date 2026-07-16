@@ -371,13 +371,22 @@ static bool _at_message_boundary (const sofab_istream_t *ctx)
  * On the wire an array carries its @b actual length (@c 0..N per MESSAGE_SPEC §3
  * / CORELIB_PLAN §4.7); a bound destination declares its @b capacity N in
  * @c target_count. A wire count within capacity is accepted and becomes the
- * number of elements the decoder reads — any remaining destination slots keep
- * their init/default values (MESSAGE_SPEC §5.1's pre-sized-destination model). A
- * wire count that would overflow the destination is rejected. When the callback
- * bound no destination (@c target_ptr is NULL) the field is skipped and the wire
- * count already sitting in @c target_count drives the read, so nothing changes.
+ * number of elements the decoder reads. A wire count that would overflow the
+ * destination is rejected. When the callback bound no destination (@c target_ptr
+ * is NULL) the field is skipped and the wire count already sitting in
+ * @c target_count drives the read, so nothing changes.
  *
- * @param ctx         Input stream context (@c target_count holds the capacity).
+ * The trailing @c [wire_count, N) slots are the @b element default (zero), not
+ * the schema default: MESSAGE_SPEC §3 requires a decoder to materialize exactly
+ * N elements whose last @c N - wire_count equal the element default. A @c default:
+ * image describes the field only while it is @e absent from the wire; once the
+ * field is @e present with count M, the tail is zero. So this clears the tail
+ * before the read rather than leaving whatever the @c _init image seeded there.
+ * (The C++ wrappers are unaffected: a @c std::vector is resized to the wire count
+ * first, making this a no-op, and a @c std::array<T,N> wants the clear.)
+ *
+ * @param ctx         Input stream context (@c target_count holds the capacity,
+ *                    @c target_len the element byte width).
  * @param wire_count  Element count decoded from the wire.
  * @return SOFAB_RET_OK, or SOFAB_RET_E_INVALID_MSG if @p wire_count exceeds the
  *         destination capacity.
@@ -392,7 +401,16 @@ static sofab_ret_t _bind_array_count (sofab_istream_t *ctx, size_t wire_count)
             return SOFAB_RET_E_INVALID_MSG;
         }
 
-        // read exactly what the wire carries; trailing slots keep their defaults
+        // Materialize exactly N elements: the wire fills [0, wire_count) below,
+        // and [wire_count, N) is the element default (zero). Clear that tail now
+        // so a non-zero _init/schema-default image cannot leak past the wire data.
+        if (wire_count < ctx->target_count)
+        {
+            memset((uint8_t *)ctx->target_ptr + wire_count * ctx->target_len, 0,
+                   (ctx->target_count - wire_count) * ctx->target_len);
+        }
+
+        // read exactly what the wire carries
         ctx->target_count = wire_count;
     }
 

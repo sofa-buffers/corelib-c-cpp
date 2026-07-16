@@ -44,6 +44,39 @@ static int _iszero (const void *ptr, size_t len)
     return 1;
 }
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+/*!
+ * @brief Canonical element count for a fixed-length array (MESSAGE_SPEC §3).
+ *
+ * A @c count:N array carries exactly @p n logical elements, but its trailing run
+ * of element defaults MUST NOT be emitted: the encoder writes @c M = one past the
+ * index of the last element that differs from the element default (zero), and a
+ * decoder refills @c [M, N) from the element default. The default is compared on
+ * the raw @b byte image (via @ref _iszero), so a trailing @c -0.0 (sign bit set)
+ * or any NaN is correctly @e not a default and stays on the wire.
+ *
+ * This trim lives only here on the C-only descriptor path — never in the
+ * @c sofab_ostream_write_array_of_* writers, whose C++ callers pass dynamic
+ * arrays with no @c N to refill from, so their trailing defaults are significant.
+ *
+ * @param base          Pointer to element 0.
+ * @param n             Structural element count N (@c size / element_size).
+ * @param element_size  Byte width of one element.
+ * @return M, the canonical (trimmed) element count in @c [0, n].
+ */
+static int32_t _array_trim_count (const void *base, size_t n, size_t element_size)
+{
+    const uint8_t *p = (const uint8_t *)base;
+
+    while (n > 0 && _iszero(p + (n - 1) * element_size, element_size))
+    {
+        n--;
+    }
+
+    return (int32_t)n;
+}
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*!
  * @brief Load a host-endian unsigned integer of @p width (1/2/4/8) bytes.
@@ -298,7 +331,9 @@ extern sofab_ret_t sofab_object_encode (
                         : sofab_ostream_write_array_of_unsigned;
                 ret = write_array(ctx, field->id,
                     CAST_TO(const void *, src, field->offset),
-                    field->size / field->element_size, field->element_size);
+                    _array_trim_count(CAST_TO(const void *, src, field->offset),
+                        field->size / field->element_size, field->element_size),
+                    field->element_size);
                 break;
             }
 
@@ -318,7 +353,9 @@ extern sofab_ret_t sofab_object_encode (
                 size_t element_size = is_fp64 ? sizeof(double) : sizeof(float);
                 ret = sofab_ostream_write_array_of_fixlen(ctx, field->id,
                     CAST_TO(const void *, src, field->offset),
-                    field->size / element_size, element_size,
+                    _array_trim_count(CAST_TO(const void *, src, field->offset),
+                        field->size / element_size, element_size),
+                    element_size,
                     is_fp64 ? SOFAB_FIXLENTYPE_FP64 : SOFAB_FIXLENTYPE_FP32);
                 break;
             }
