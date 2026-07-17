@@ -405,8 +405,8 @@ cost is `.text` (flash). Tables below are the size of the built static library
 | - | - | - | - |
 | ARMv6-m | ~3.0KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~3.1KB | 0.0KB | 0.0KB |
-| RV32IMC | ~3.8KB | 0.0KB | 0.0KB |
-| atmega8 | ~6.9KB | 0.0KB | 0.0KB |
+| RV32IMC | ~3.9KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.0KB | 0.0KB | 0.0KB |
 
 **Minimal configuration** — `SOFAB_DISABLE_FIXLEN_SUPPORT`,
 `SOFAB_DISABLE_ARRAY_SUPPORT`, `SOFAB_DISABLE_SEQUENCE_SUPPORT`,

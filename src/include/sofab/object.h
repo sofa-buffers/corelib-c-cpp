@@ -157,7 +157,7 @@ extern "C" {
  * @param nested_count  Number of entries in @p nested_list.
  */
 #define SOFAB_OBJECT_DESCR(field_list, field_count, nested_list, nested_count) \
-    { (field_list), (nested_list), NULL, (field_count), (nested_count) }
+    { (field_list), (nested_list), NULL, (field_count), (nested_count), 0 }
 
 /*!
  * @brief Build an object descriptor with a default-values reference.
@@ -173,7 +173,26 @@ extern "C" {
  * @param default_struct Pointer to a fully-populated object holding the field defaults.
  */
 #define SOFAB_OBJECT_DESCR_WITH_DEFAULTS(field_list, field_count,nested_list, nested_count, default_struct) \
-    { (field_list), (nested_list), (default_struct), (field_count), (nested_count) }
+    { (field_list), (nested_list), (default_struct), (field_count), (nested_count), 0 }
+
+/*!
+ * @brief Build a fixed-count sequence-holder object descriptor.
+ *
+ * Like @ref SOFAB_OBJECT_DESCR, but marks the descriptor as a fixed-count
+ * sequence holder: one whose fields are exactly the element slots
+ * @c 0 … @p field_count - 1 of a fixed-count @c string / @c blob / @c struct /
+ * @c union array (which lowers to a wrapper sequence). For such a descriptor a
+ * wire element id outside that range is an over-index element and is rejected as
+ * @ref SOFAB_RET_E_INVALID_MSG on decode (MESSAGE_SPEC §7/§7.1), rather than
+ * silently skipped the way a message ignores an unknown forward-compatible id.
+ *
+ * @param field_list    Array of @ref sofab_object_descr_field_t (the element slots).
+ * @param field_count   Number of element slots (the array capacity N).
+ * @param nested_list   Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
+ * @param nested_count  Number of entries in @p nested_list.
+ */
+#define SOFAB_OBJECT_DESCR_SEQ(field_list, field_count, nested_list, nested_count) \
+    { (field_list), (nested_list), NULL, (field_count), (nested_count), 1 }
 
 /* types **********************************************************************/
 /*!
@@ -199,6 +218,7 @@ typedef struct sofab_object_descr
     const void *const default_values;                       /*!< Pointer to default values for fields (optional, may be NULL) */
     const uint16_t field_count;                             /*!< Number of fields in the object */
     const uint8_t nested_count;                             /*!< Number of nested objects */
+    const uint8_t fixed_seq;                                /*!< Non-zero: fixed-count sequence holder — reject an unmatched (over-index) element id instead of skipping it */
 } sofab_object_descr_t;
 
 /*!
@@ -258,7 +278,10 @@ extern sofab_ret_t sofab_object_encode (
  * to a @ref sofab_object_decoder_t whose @c info and @c dst describe the target
  * object; for nested objects the decoder must be the first element of an array
  * with one slot per supported nesting level (see @c depth). The callback binds
- * the appropriate read for each known field ID and ignores unknown fields.
+ * the appropriate read for each known field ID. An unknown field ID is ignored
+ * (skipped) for a normal message descriptor, but for a fixed-count
+ * sequence-holder descriptor (see @ref SOFAB_OBJECT_DESCR_SEQ) it is an
+ * over-index element and rejects the message via @ref sofab_istream_invalidate.
  *
  * @param ctx     Pointer to the active input stream context.
  * @param id      Field ID reported by the decoder.
