@@ -699,6 +699,20 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                     case SOFAB_FIXLENTYPE_STRING:
                     case SOFAB_FIXLENTYPE_BLOB:
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+                        // MESSAGE_SPEC §4.8: a fixlen ARRAY carries only fp32/fp64
+                        // elements; a string/blob element subtype is malformed.
+                        // Reject it here, on the element word - before waiting for
+                        // any payload - so it reports INVALID, not INCOMPLETE
+                        // (§5.2: INVALID regardless of what follows). This state is
+                        // shared with the scalar FIXLEN path, which does allow
+                        // string/blob, hence the field-type guard. Mirrors the
+                        // scalar fp-width checks above (same bug class as #82).
+                        if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
+                        {
+                            return SOFAB_RET_E_INVALID_MSG;
+                        }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
                         ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
                         break;
 

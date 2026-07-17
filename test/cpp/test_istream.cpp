@@ -1135,8 +1135,12 @@ public:
         switch (id)
         {
             case 1:
+                // Safe generator contract: bind the FixedBytes itself so the
+                // decoder enforces the maxlen bound (an over-N wire length is
+                // rejected as INVALID, not truncated), rather than the unsafe
+                // is.read(blob.data(), size) that binds the raw wire length.
                 blob.set_len(size);
-                is.read(blob.data(), size);
+                if (size) is.read(blob);
                 break;
             case 2:
                 strSeq_.out = &strings;
@@ -1189,5 +1193,20 @@ TEST_CASE("IStream: blob + string sequence round-trip into fixed inline containe
                 REQUIRE(result.ok());
         }
         check(*istream);
+    }
+
+    SECTION("a blob longer than the FixedBytes capacity is rejected, not truncated")
+    {
+        // MESSAGE_SPEC §7.1: a maxlen bound binds every target. A wire blob whose
+        // byte length exceeds the FixedBytes<8> capacity must decode to INVALID,
+        // never silently truncate to the bound or overrun the inline buffer
+        // (issue #90). Binding via is.read(blob) lets the C core enforce this.
+        const std::vector<uint8_t> big(100, 0xAB);   // exceeds FixedBytes<8>
+        sofab::OStream os2{256};
+        os2.write(1, big.data(), static_cast<int32_t>(big.size()));
+
+        sofab::IStreamObject<FixedContainersObject> istream;
+        auto result = istream.feed(os2.data(), os2.bytesUsed());
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
     }
 }
