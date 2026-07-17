@@ -132,6 +132,7 @@ struct sofab_istream
     sofab_id_t id;                              /*!< Current field ID being processed */
     uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */
     uint8_t varint_shift;                       /*!< Current shift offset for varint decoding */
+    uint8_t invalid;                            /*!< Sticky flag: a callback rejected the message */
 };
 
 /* prototypes *****************************************************************/
@@ -177,6 +178,28 @@ extern void sofab_istream_init (
  */
 extern sofab_ret_t sofab_istream_feed (
     sofab_istream_t *ctx, const void *data, size_t datalen);
+
+/*!
+ * @brief Reject the message in progress from within a field callback.
+ *
+ * A field callback usually binds a destination (a sofab_istream_read_* call) or
+ * skips the field by binding nothing. Some declared bounds, however, can only be
+ * checked by the callback itself — most notably an element whose wire index is at
+ * or beyond a fixed-count array's capacity, delivered to the callback keyed by
+ * its wire id with no way for the core to know the schema count. For those cases
+ * a silent skip would let a malformed message decode as valid, violating
+ * MESSAGE_SPEC §7/§7.1 ("a declared bound binds every target").
+ *
+ * Calling this sets a sticky invalid flag on the stream: the enclosing
+ * @ref sofab_istream_feed (and every subsequent one) returns
+ * @ref SOFAB_RET_E_INVALID_MSG regardless of what else is decoded. The flag is
+ * set synchronously inside the callback, so it takes effect even when the field's
+ * payload fill is deferred across chunked feeds. It is cleared only by
+ * @ref sofab_istream_init.
+ *
+ * @param ctx  Pointer to the input stream context.
+ */
+extern void sofab_istream_invalidate (sofab_istream_t *ctx);
 
 /* read functions *************************************************************/
 
