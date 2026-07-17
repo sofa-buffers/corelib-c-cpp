@@ -644,6 +644,58 @@ TEST_CASE("IStream: malformed input is rejected")
     }
 }
 
+// invalidate() — the callback->decoder abort channel (issue #92). A field
+// callback that detects a bound the core cannot see (e.g. an over-index element
+// of a fixed-count wrapper array) rejects the whole message instead of silently
+// skipping the field. The verdict is sticky and folds into feed()'s Result.
+TEST_CASE("IStream: invalidate() from a field callback rejects the message")
+{
+    // A well-formed u8 field the callback would otherwise happily decode.
+    const uint8_t buffer[] = {0x00, 0x7F};
+
+    int calls = 0;
+    sofab::IStreamInline istream{
+        [&](sofab::id id, size_t, size_t) noexcept
+        {
+            calls++;
+            if (id == 0)
+            {
+                istream.invalidate();   // reject rather than read()
+            }
+        }
+    };
+
+    auto result = istream.feed(buffer, sizeof(buffer));
+
+    REQUIRE(result.code() == sofab::Error::InvalidMessage);
+    REQUIRE_FALSE(result.ok());
+    REQUIRE_FALSE(result.incomplete());
+    REQUIRE_FALSE(result);              // not a complete message
+    REQUIRE(calls == 1);
+}
+
+TEST_CASE("IStream: invalidate() is sticky across feeds")
+{
+    sofab::IStreamInline istream{
+        [&](sofab::id id, size_t, size_t) noexcept
+        {
+            if (id == 0)
+            {
+                istream.invalidate();
+            }
+        }
+    };
+
+    const uint8_t buffer[] = {0x00, 0x7F};
+    REQUIRE(istream.feed(buffer, sizeof(buffer)).code()
+            == sofab::Error::InvalidMessage);
+
+    // A later feed is short-circuited and still reports InvalidMessage.
+    const uint8_t more[] = {0x08, 0x2A};
+    REQUIRE(istream.feed(more, sizeof(more)).code()
+            == sofab::Error::InvalidMessage);
+}
+
 // Three-valued decode outcome (MESSAGE_SPEC §7): truncated input ends Incomplete
 // (a valid but partial decode), distinct from a complete message (ok / None) and
 // from a malformed one (InvalidMessage). The wrapper never silently accepts a

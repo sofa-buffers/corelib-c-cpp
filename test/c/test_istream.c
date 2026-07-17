@@ -2703,6 +2703,134 @@ static void test_read_full_scale_example (void)
 #endif
 }
 
+/*
+ * sofab_istream_invalidate() — the callback->decoder abort channel (issue #92).
+ *
+ * A fixed-count string/blob array lowers to a wrapper SEQUENCE whose elements are
+ * delivered to the nested callback keyed by their wire id. The core never learns
+ * the schema capacity N, so only the (generated) callback can detect an element
+ * whose wire index is at or beyond N. These tests model that collector: it binds
+ * an in-range element and calls sofab_istream_invalidate() for an over-index one,
+ * turning the otherwise-silent skip into a hard INVALID verdict (MESSAGE_SPEC
+ * §7/§7.1).
+ */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+
+#define _OVERINDEX_CAP  5
+
+typedef struct
+{
+    sofab_istream_decoder_t decoder;    /* outlives the field cb (deferred decode) */
+    char slots[_OVERINDEX_CAP][8];
+    int  invalidated;
+} test_overindex_t;
+
+/* The fixed-string-array element collector: reject wire index >= capacity. */
+static void _overindex_element_cb (
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    test_overindex_t *t = (test_overindex_t *)usrptr;
+
+    if (id >= _OVERINDEX_CAP)
+    {
+        // over-index element: no destination slot exists — reject the message
+        // instead of silently dropping it (the pre-#92 behaviour).
+        t->invalidated++;
+        sofab_istream_invalidate(ctx);
+        return;
+    }
+
+    sofab_istream_read_string(ctx, t->slots[id], sizeof(t->slots[id]));
+}
+
+/* The wrapper: id 0 opens the string-array sequence. */
+static void _overindex_wrapper_cb (
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    test_overindex_t *t = (test_overindex_t *)usrptr;
+
+    if (id == 0)
+    {
+        sofab_istream_read_sequence(ctx, &t->decoder, _overindex_element_cb, t);
+    }
+}
+
+static void test_invalidate_over_index_rejects (void)
+{
+    sofab_istream_t ctx;
+    test_overindex_t t = {0};
+
+    /*
+     * id 0: wrapper sequence
+     *   id 120: string "x"   <- wire index 120 >= capacity 5 => INVALID
+     * sequence end
+     */
+    const uint8_t buffer[] = {0x06, 0xC2, 0x07, 0x0A, 0x78, 0x07};
+
+    sofab_istream_init(&ctx, _overindex_wrapper_cb, &t);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_INT(1, t.invalidated);
+}
+
+static void test_invalidate_in_range_accepts (void)
+{
+    sofab_istream_t ctx;
+    test_overindex_t t = {0};
+
+    /*
+     * id 0: wrapper sequence
+     *   id 4: string "x"     <- wire index 4 < capacity 5 => OK
+     * sequence end
+     */
+    const uint8_t buffer[] = {0x06, 0x22, 0x0A, 0x78, 0x07};
+
+    sofab_istream_init(&ctx, _overindex_wrapper_cb, &t);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        sofab_istream_feed(&ctx, buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_INT(0, t.invalidated);
+    TEST_ASSERT_EQUAL_STRING("x", t.slots[4]);
+}
+
+static void test_invalidate_sticky_across_feeds (void)
+{
+    sofab_istream_t ctx;
+    test_overindex_t t = {0};
+
+    const uint8_t buffer[] = {0x06, 0xC2, 0x07, 0x0A, 0x78, 0x07};
+
+    sofab_istream_init(&ctx, _overindex_wrapper_cb, &t);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, buffer, sizeof(buffer)));
+
+    // Sticky: a subsequent feed is short-circuited and still reports INVALID,
+    // without decoding the freshly supplied byte.
+    const uint8_t more[] = {0x00};
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, more, sizeof(more)));
+    TEST_ASSERT_EQUAL_INT(1, t.invalidated);
+}
+
+static void test_invalidate_precedence_over_incomplete (void)
+{
+    sofab_istream_t ctx;
+    test_overindex_t t = {0};
+
+    /* Same over-index element, but truncated before the sequence end: an open
+     * sequence would normally be INCOMPLETE — the invalid verdict wins. */
+    const uint8_t buffer[] = {0x06, 0xC2, 0x07, 0x0A, 0x78};
+
+    sofab_istream_init(&ctx, _overindex_wrapper_cb, &t);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, buffer, sizeof(buffer)));
+}
+
+#endif /* SEQUENCE && FIXLEN support */
+
 int test_istream_main (void)
 {
     UNITY_BEGIN();
@@ -2797,6 +2925,13 @@ int test_istream_main (void)
     RUN_TEST(test_read_nested_sequence_skip);
     RUN_TEST(test_read_nested_sequence_skip_with_array);
     RUN_TEST(test_read_nested_sequence_skip_multilevel);
+
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    RUN_TEST(test_invalidate_over_index_rejects);
+    RUN_TEST(test_invalidate_in_range_accepts);
+    RUN_TEST(test_invalidate_sticky_across_feeds);
+    RUN_TEST(test_invalidate_precedence_over_incomplete);
+#endif
 
     RUN_TEST(test_read_full_scale_example);
 

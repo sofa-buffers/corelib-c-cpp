@@ -1434,6 +1434,22 @@ namespace sofab
         }
 
         /*!
+         * @brief Reject the message in progress from within a field callback.
+         *
+         * Facade over @ref sofab_istream_invalidate. Call it from a @c read
+         * dispatch / field callback when the callback itself detects a violated
+         * bound the core cannot see — most notably an element whose wire index is
+         * at or beyond a fixed-count array's capacity. It sets a sticky flag so
+         * this @ref feed and every subsequent one report
+         * @ref Error::InvalidMessage; the flag survives chunked feeds and is
+         * cleared only by re-initializing the stream.
+         */
+        void invalidate() noexcept
+        {
+            sofab_istream_invalidate(&ctx_);
+        }
+
+        /*!
          * @brief Bind the current field to a typed destination, deducing the
          *        wire type from @p T.
          *

@@ -442,6 +442,14 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     assert(data != NULL);
     assert(datalen > 0);
 
+    // A callback may have already rejected the message on an earlier feed. The
+    // flag is sticky, so short-circuit rather than decode bytes that belong to a
+    // message already condemned.
+    if (ctx->invalid)
+    {
+        return SOFAB_RET_E_INVALID_MSG;
+    }
+
     const uint8_t *p;
     for (p = (const uint8_t *)data; datalen > 0; p++, datalen--)
     {
@@ -941,12 +949,29 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
         }
     }
 
+    // A field callback may have rejected the message during this feed (e.g. an
+    // over-index element it could detect but the core could not). That verdict is
+    // final and takes precedence over both a clean boundary and a partial decode.
+    if (ctx->invalid)
+    {
+        return SOFAB_RET_E_INVALID_MSG;
+    }
+
     // All input consumed without an error. Distinguish a complete message
     // (consumed bytes end exactly on a field boundary) from a partial one
     // (consumed bytes end mid-field or with an open sequence). INCOMPLETE is a
     // valid but partial decode, NOT a rejection: the caller owns end-of-input
     // and may resume by feeding more bytes. There is no finalize step.
     return _at_message_boundary(ctx) ? SOFAB_RET_OK : SOFAB_RET_INCOMPLETE;
+}
+
+extern void sofab_istream_invalidate (sofab_istream_t *ctx)
+{
+    assert(ctx != NULL);
+
+    // Sticky: once set, sofab_istream_feed reports SOFAB_RET_E_INVALID_MSG for
+    // this feed and every subsequent one, until sofab_istream_init resets it.
+    ctx->invalid = 1;
 }
 
 extern void sofab_istream_read_field (
