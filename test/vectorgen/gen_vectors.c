@@ -217,6 +217,37 @@ static void json_field(FILE *o, const char *indent, const op_t *op)
     fputs(" }", o);
 }
 
+/* raw wire assembly (for the negative UTF-8 vectors) ************************
+ *
+ * The invalid-UTF-8 vectors carry bytes the strict encoder would REJECT, so
+ * they cannot be produced by replaying ops through it. Instead the message is
+ * hand-assembled from the same wire rules (CORELIB_PLAN §4.3/§4.6): a field
+ * header varint, a fixlen_word varint, then the raw (invalid) payload. */
+
+static size_t raw_varint(uint8_t *out, uint64_t v)
+{
+    size_t n = 0;
+    do {
+        uint8_t b = v & 0x7F;
+        v >>= 7;
+        if (v) b |= 0x80;
+        out[n++] = b;
+    } while (v);
+    return n;
+}
+
+/* Build the wire bytes for a single `string` field (id, STRING subtype) whose
+ * payload is the raw @p len bytes at @p payload (which need not be valid UTF-8). */
+static size_t build_string_msg(uint8_t *out, uint32_t id,
+                               const uint8_t *payload, size_t len)
+{
+    size_t n = 0;
+    n += raw_varint(out + n, ((uint64_t)id << 3) | (uint64_t)SOFAB_TYPE_FIXLEN);
+    n += raw_varint(out + n, ((uint64_t)len << 3) | (uint64_t)SOFAB_FIXLENTYPE_STRING);
+    memcpy(out + n, payload, len);
+    return n + len;
+}
+
 /* emit one full vector (replay + structure + bytes) *************************/
 
 static int g_first_vector = 1;
@@ -881,6 +912,85 @@ static void emit_all(FILE *o)
     }
 }
 
+/* the negative (invalid-UTF-8) vectors *************************************/
+
+/*
+ * A `string` payload is UTF-8 (MESSAGE_SPEC §8). These vectors carry payloads
+ * that are NOT valid UTF-8, each placed as a single `string` field at id 0.
+ * A strict (SOFAB_STRICT_UTF8) implementation MUST:
+ *   - decode `serialized_hex` -> the INVALID outcome (when the string is read;
+ *     skipped fields are never validated), and
+ *   - encode `string_hex` (the raw payload) -> the invalid-argument error.
+ * Seeds cover every overlong form (incl. C0 80, the Modified-UTF-8 NUL), a lone
+ * surrogate, out-of-range code points, bare continuation / invalid lead bytes,
+ * and multi-byte sequences truncated at end-of-payload.
+ */
+static void emit_invalid_utf8(FILE *o)
+{
+    static const struct {
+        const char *name;
+        const char *desc;
+        uint8_t     payload[8];
+        size_t      len;
+    } seeds[] = {
+        { "utf8_overlong_c0_80",
+          "Overlong 2-byte NUL (C0 80, Java \"Modified UTF-8\"): U+0000 must be a single 00 byte.",
+          {0xC0, 0x80}, 2 },
+        { "utf8_overlong_c1",
+          "Overlong 2-byte sequence C1 BF (would decode to U+007F, which is 1-byte ASCII).",
+          {0xC1, 0xBF}, 2 },
+        { "utf8_overlong_3byte",
+          "Overlong 3-byte sequence E0 80 80 (would decode to U+0000).",
+          {0xE0, 0x80, 0x80}, 3 },
+        { "utf8_overlong_4byte",
+          "Overlong 4-byte sequence F0 80 80 80 (would decode to U+0000).",
+          {0xF0, 0x80, 0x80, 0x80}, 4 },
+        { "utf8_surrogate_d800",
+          "Lone UTF-16 surrogate code point U+D800 (ED A0 80): never valid in UTF-8.",
+          {0xED, 0xA0, 0x80}, 3 },
+        { "utf8_surrogate_dfff",
+          "Lone UTF-16 surrogate code point U+DFFF (ED BF BF): never valid in UTF-8.",
+          {0xED, 0xBF, 0xBF}, 3 },
+        { "utf8_out_of_range",
+          "Code point above U+10FFFF (F4 90 80 80 = U+110000): out of the Unicode range.",
+          {0xF4, 0x90, 0x80, 0x80}, 4 },
+        { "utf8_bare_continuation",
+          "Bare continuation byte 0x80 with no lead byte.",
+          {0x80}, 1 },
+        { "utf8_lone_ff",
+          "0xFF: never a valid UTF-8 byte in any position.",
+          {0xFF}, 1 },
+        { "utf8_truncated_2byte",
+          "2-byte lead C2 with no continuation byte (truncated at end-of-payload -> INVALID).",
+          {0xC2}, 1 },
+        { "utf8_truncated_3byte",
+          "3-byte lead E2 82 missing its final continuation byte (truncated at end-of-payload).",
+          {0xE2, 0x82}, 2 },
+    };
+
+    int first = 1;
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); ++i)
+    {
+        uint8_t msg[32];
+        size_t  msglen = build_string_msg(msg, 0, seeds[i].payload, seeds[i].len);
+
+        if (!first) fputs(",\n", o);
+        first = 0;
+
+        fprintf(o, "    {\n");
+        fprintf(o, "      \"name\": ");        json_string(o, seeds[i].name); fputs(",\n", o);
+        fprintf(o, "      \"group\": \"invalid/utf8\",\n");
+        fprintf(o, "      \"description\": "); json_string(o, seeds[i].desc); fputs(",\n", o);
+        fprintf(o, "      \"requires\": [\"fixlen\"],\n");
+        fprintf(o, "      \"id\": 0,\n");
+        fprintf(o, "      \"string_hex\": ");  json_hex(o, seeds[i].payload, seeds[i].len); fputs(",\n", o);
+        fprintf(o, "      \"serialized_hex\": "); json_hex(o, msg, msglen); fputs(",\n", o);
+        fprintf(o, "      \"decode_outcome\": \"invalid\",\n");
+        fprintf(o, "      \"encode_outcome\": \"invalid_argument\"\n");
+        fprintf(o, "    }");
+    }
+}
+
 int main(void)
 {
     FILE *o = stdout;
@@ -898,11 +1008,25 @@ int main(void)
     fprintf(o, "    \"integers\": \"decimal JSON number literals (full u64/i64 range)\",\n");
     fprintf(o, "    \"floats\": \"finite values as JSON numbers; +/-infinity as the strings 'inf'/'-inf'\",\n");
     fprintf(o, "    \"blob.value_hex\": \"lowercase hex of the blob payload\",\n");
-    fprintf(o, "    \"array.element_type\": \"input element width/type fed to the encoder (u8..u64, i8..i64, fp32, fp64)\"\n");
+    fprintf(o, "    \"array.element_type\": \"input element width/type fed to the encoder (u8..u64, i8..i64, fp32, fp64)\",\n");
+    fprintf(o, "    \"invalid_utf8\": \"NEGATIVE vectors: a `string` field (id 0) whose bytes are not valid UTF-8. "
+               "A strict (SOFAB_STRICT_UTF8) build MUST decode serialized_hex to the INVALID outcome and refuse to "
+               "encode string_hex with the invalid-argument error. Backward-compatible: consumers that only read "
+               "'vectors' ignore this key. See test_vectors_README.md.\"\n");
     fprintf(o, "  },\n");
     fprintf(o, "  \"vectors\": [\n");
 
     emit_all(o);
+
+    fprintf(o, "\n  ],\n");
+
+    /* Negative conformance vectors: invalid-UTF-8 `string` payloads that a strict
+     * build rejects on both decode and encode (CORELIB_PLAN §6.4). Kept in a
+     * dedicated top-level array so existing consumers that only read "vectors"
+     * stay unaffected. */
+    fprintf(o, "  \"invalid_utf8\": [\n");
+
+    emit_invalid_utf8(o);
 
     fprintf(o, "\n  ]\n");
     fprintf(o, "}\n");

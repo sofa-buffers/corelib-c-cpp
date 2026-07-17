@@ -741,6 +741,119 @@ static int run_roundtrip(const vector_t *v, char *err, size_t errlen)
     return decode_bytes(v->ops, v->nops, out, used, 0, NULL, 0, err, errlen);
 }
 
+/* negative (invalid-UTF-8) vectors ******************************************
+ *
+ * The top-level "invalid_utf8" array holds `string` fields (id 0) whose bytes
+ * are NOT valid UTF-8. Under a strict build (SOFAB_STRICT_UTF8) each one must be
+ * rejected symmetrically: decoding serialized_hex (with the string MATERIALIZED,
+ * not skipped) yields the INVALID outcome, and encoding string_hex as a `string`
+ * yields the invalid-argument error (CORELIB_PLAN §6.4). A non-strict (or
+ * fixlen-less) build counts them but does not exercise them.
+ */
+#if SOFAB_STRICT_UTF8 && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+/* Materialize the string field so the strict decoder validates it (a skipped
+ * field is never validated). noterm avoids the null-terminator length guard. */
+static void neg_utf8_field_cb(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usr)
+{
+    (void)id; (void)size; (void)count;
+    sofab_istream_read_string_noterm(ctx, (char *)usr, STRMAX);
+}
+#endif
+
+static void run_invalid_utf8(const sofab_json_t *root, sofab_test_vectors_result_t *out)
+{
+    const sofab_json_t *arr = sofab_json_get(root, "invalid_utf8");
+    size_t n = sofab_json_array_size(arr);
+    out->invalid_vectors = (int)n;
+
+#if SOFAB_STRICT_UTF8 && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    for (size_t i = 0; i < n; i++)
+    {
+        const sofab_json_t *vj = sofab_json_array_at(arr, i);
+        size_t nl; const char *name = sofab_json_string(sofab_json_get(vj, "name"), &nl);
+        if (!name) name = "?";
+
+        size_t shl; const char *shex = sofab_json_string(sofab_json_get(vj, "serialized_hex"), &shl);
+        size_t phl; const char *phex = sofab_json_string(sofab_json_get(vj, "string_hex"), &phl);
+
+        uint8_t *msg = NULL, *payload = NULL;
+        size_t   msglen = 0, paylen = 0;
+        if (!shex || hex2bin(shex, shl, &msg, &msglen) ||
+            !phex || hex2bin(phex, phl, &payload, &paylen))
+        {
+            out->failures++;
+            if (!out->first_error[0])
+                snprintf(out->first_error, sizeof(out->first_error), "invalid_utf8[%zu]: malformed vector", i);
+            free(msg); free(payload);
+            continue;
+        }
+
+        /* decode (whole): a materialized invalid-UTF-8 string is INVALID */
+        {
+            out->invalid_checks++;
+            char buf[STRMAX];
+            sofab_istream_t is;
+            sofab_istream_init(&is, neg_utf8_field_cb, buf);
+            sofab_ret_t r = sofab_istream_feed(&is, msg, msglen);
+            if (r != SOFAB_RET_E_INVALID_MSG)
+            {
+                out->failures++;
+                if (!out->first_error[0])
+                    snprintf(out->first_error, sizeof(out->first_error),
+                             "%s/decode: expected INVALID, got %d", name, (int)r);
+            }
+        }
+
+        /* decode (one byte at a time): every intermediate byte is INCOMPLETE
+         * (a valid partial decode — never a premature INVALID for a well-formed
+         * prefix), and the complete payload resolves to INVALID, never OK. */
+        {
+            out->invalid_checks++;
+            char buf[STRMAX];
+            sofab_istream_t is;
+            sofab_istream_init(&is, neg_utf8_field_cb, buf);
+            sofab_ret_t r = SOFAB_RET_OK;
+            int saw_invalid = 0;
+            for (size_t k = 0; k < msglen; k++)
+            {
+                r = sofab_istream_feed(&is, &msg[k], 1);
+                if (r == SOFAB_RET_E_INVALID_MSG) { saw_invalid = 1; break; }
+                if (r != SOFAB_RET_OK && r != SOFAB_RET_INCOMPLETE) break;
+            }
+            if (!saw_invalid)
+            {
+                out->failures++;
+                if (!out->first_error[0])
+                    snprintf(out->first_error, sizeof(out->first_error),
+                             "%s/chunked-decode: expected INVALID, last=%d", name, (int)r);
+            }
+        }
+
+        /* encode: writing the invalid payload as a `string` is refused */
+        {
+            out->invalid_checks++;
+            uint8_t obuf[64];
+            sofab_ostream_t os;
+            sofab_ostream_init(&os, obuf, sizeof(obuf), 0, NULL, NULL);
+            sofab_ret_t r = sofab_ostream_write_fixlen(
+                &os, 0, payload, (int32_t)paylen, SOFAB_FIXLENTYPE_STRING);
+            if (r != SOFAB_RET_E_ARGUMENT)
+            {
+                out->failures++;
+                if (!out->first_error[0])
+                    snprintf(out->first_error, sizeof(out->first_error),
+                             "%s/encode: expected InvalidArgument, got %d", name, (int)r);
+            }
+        }
+
+        free(msg); free(payload);
+    }
+#else
+    (void)root;
+    (void)n;
+#endif /* SOFAB_STRICT_UTF8 && !SOFAB_DISABLE_FIXLEN_SUPPORT */
+}
+
 /* top-level *****************************************************************/
 
 static char *read_file(const char *path, size_t *len)
@@ -849,6 +962,9 @@ int sofab_test_vectors_run_all(const char *path, sofab_test_vectors_result_t *ou
 
         free_vector(&vec);
     }
+
+    /* negative (invalid-UTF-8) conformance vectors */
+    run_invalid_utf8(root, out);
 
     sofab_json_free(root);
     return out->failures ? -1 : 0;

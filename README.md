@@ -296,6 +296,21 @@ features removes their code paths and shrinks the footprint.
 | `SOFAB_DISABLE_FP64_SUPPORT` | off | Drop 64-bit float (`fp64`); auto-defined where `double` is not 8 bytes |
 | `SOFAB_DISABLE_INT64_SUPPORT` | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
+| `SOFAB_DISABLE_STRICT_UTF8` | off | Drop strict UTF-8 validation of `string` fields (see below); compiles the validator out entirely (zero `.text`/`.rodata`) |
+
+**Strict UTF-8 (`SOFAB_STRICT_UTF8`, on by default).** A `string` is UTF-8
+([MESSAGE_SPEC §8](https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md));
+`blob` is the type for opaque bytes. With the check on — the default — a `string`
+whose bytes are not valid UTF-8 is rejected **symmetrically**: decoding a
+*materialized* (read, not skipped) invalid string yields `SOFAB_RET_E_INVALID_MSG`,
+and encoding one with `sofab_ostream_write_fixlen(..., SOFAB_FIXLENTYPE_STRING)`
+yields `SOFAB_RET_E_ARGUMENT`. The validator (`sofab_utf8_valid`) is a real one —
+it rejects overlong encodings (incl. `C0 80`), surrogates, and code points above
+`U+10FFFF`, while allowing embedded `U+0000`. It is a **validation policy, never a
+wire-format switch** (it only decides accept-vs-reject and is never lossy), so
+peers with different settings interoperate on all valid data. Define
+`SOFAB_DISABLE_STRICT_UTF8` to compile it out for a footprint/throughput build;
+CI still runs the strict (default) configuration.
 
 The object API also selects an integer-width profile via
 `SOFAB_OBJECT_DESCR_PROFILE` (`SOFAB_OBJECT_DESCR_SMALL` / `_MEDIUM` (default) /

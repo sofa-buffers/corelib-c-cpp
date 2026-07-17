@@ -9,6 +9,7 @@
 
 /* includes *******************************************************************/
 #include "sofab/ostream.h"
+#include "sofab/utf8.h"
 
 #include <assert.h>
 
@@ -319,6 +320,20 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
 
     assert(ctx != NULL);
     assert(datalen == 0 || data != NULL);
+
+#if SOFAB_STRICT_UTF8
+    // A `string` value MUST be valid UTF-8 (MESSAGE_SPEC §8); refuse a non-UTF-8
+    // one with the invalid-argument error before any bytes are emitted. This is
+    // the encode-side half of the symmetric strict check and enforces the
+    // producer-side MUST NOT: without it a strict ecosystem's own encoders could
+    // emit bytes its decoders reject (CORELIB_PLAN §6.4). Only STRING is checked
+    // - a blob is opaque bytes and is never validated.
+    if (type == SOFAB_FIXLENTYPE_STRING &&
+        !sofab_utf8_valid((const uint8_t *)data, (size_t)datalen))
+    {
+        return SOFAB_RET_E_ARGUMENT;
+    }
+#endif /* SOFAB_STRICT_UTF8 */
 
     if ((ret = _write_id_varint(ctx, id, SOFAB_TYPE_FIXLEN,
             _type_encode(datalen, type))) != SOFAB_RET_OK)

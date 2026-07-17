@@ -9,6 +9,7 @@
 
 /* includes *******************************************************************/
 #include "sofab/istream.h"
+#include "sofab/utf8.h"
 
 #include <assert.h>
 
@@ -798,6 +799,22 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
+#if SOFAB_STRICT_UTF8
+                // Remember where a materialized string payload begins so it can
+                // be UTF-8-validated once its complete declared payload has been
+                // assembled (FIXLEN_RAW completion below). Only a materialized
+                // (read, not skipped) STRING field is validated - never a blob,
+                // never a skipped field (target_ptr == NULL), and an empty string
+                // (length 0) is trivially valid so it needs no start marker. A
+                // fixlen ARRAY carries only fp32/fp64 elements (string/blob is
+                // rejected earlier), so its subtype is never STRING here.
+                ctx->utf8_start =
+                    (ctx->target_ptr &&
+                     _OPT_FIXLENTYPE(ctx->target_opt) == SOFAB_FIXLENTYPE_STRING &&
+                     length)
+                        ? ctx->target_ptr : NULL;
+#endif /* SOFAB_STRICT_UTF8 */
+
                 if (length)
                 {
                     // store source length to know how many bytes to consume
@@ -853,6 +870,26 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     // need more data
                     continue;
                 }
+
+#if SOFAB_STRICT_UTF8
+                // The complete string payload has now been assembled: validate
+                // it as UTF-8. utf8_start is non-NULL only for a materialized,
+                // non-empty string; _read_fixlen advanced target_ptr by exactly
+                // the payload length, so [utf8_start, target_ptr) is the whole
+                // payload. This is cross-chunk-safe: a payload split at a chunk
+                // boundary never reaches here (the read above returns >0 and the
+                // state stays FIXLEN_RAW -> the feed reports INCOMPLETE), so only
+                // a payload complete to its declared length is checked. An
+                // end-of-payload truncation (a multi-byte sequence cut short at
+                // the declared length) is therefore INVALID, while an
+                // end-of-chunk split stays INCOMPLETE (CORELIB_PLAN §6.4).
+                if (ctx->utf8_start &&
+                    !sofab_utf8_valid(ctx->utf8_start,
+                                      (size_t)(ctx->target_ptr - ctx->utf8_start)))
+                {
+                    return SOFAB_RET_E_INVALID_MSG;
+                }
+#endif /* SOFAB_STRICT_UTF8 */
 
                 // go back to idle
                 ctx->decoder->state = _DECODER_STATE_IDLE;

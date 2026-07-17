@@ -160,6 +160,45 @@ typedef int32_t sofab_signed_t;
 // #define SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
 
 /*!
+ * @brief Strict UTF-8 validation of @c string fields (default ON).
+ *
+ * A @c string payload is UTF-8 (MESSAGE_SPEC §8); @c blob is the type for
+ * opaque bytes. With strict validation enabled — the default — a @c string
+ * whose bytes are not valid UTF-8 is rejected @b symmetrically (CORELIB_PLAN
+ * §6.4):
+ *  - @b decode: a materialized (read, not skipped) @c string with invalid bytes
+ *    makes the message the @ref SOFAB_RET_E_INVALID_MSG outcome — the same
+ *    terminal class as any other malformed message. Skipped @c string fields are
+ *    never validated (wire validity of unread content is the producer's
+ *    responsibility). Cross-chunk: a multi-byte sequence split at end-of-chunk
+ *    stays @ref SOFAB_RET_INCOMPLETE; only a sequence still ill-formed once the
+ *    complete declared payload has arrived is @c INVALID.
+ *  - @b encode: a @c string value that is not valid UTF-8 is refused with
+ *    @ref SOFAB_RET_E_ARGUMENT (@c sofab_ostream_write_fixlen with the
+ *    @ref SOFAB_FIXLENTYPE_STRING subtype). @c blob bytes are never validated.
+ *
+ * This is a @b validation @b policy, never a wire-format switch: it only decides
+ * accept-vs-reject and never changes how valid data is encoded, so peers with
+ * different settings interoperate on all valid data. It is @b never lossy — an
+ * invalid @c string is rejected, never silently replaced with @c U+FFFD or
+ * truncated, in either direction and in either state.
+ *
+ * Following the corelib's @c SOFAB_DISABLE_* configuration style, the check is
+ * ON by default and compiled out entirely by defining
+ * @c SOFAB_DISABLE_STRICT_UTF8 — a footprint/throughput opt-out that leaves zero
+ * @c .text / @c .rodata cost (CORELIB_PLAN §6.4). With the check OFF the wire
+ * bytes are stored verbatim (byte-container behavior), never lossy. The resolved
+ * boolean @ref SOFAB_STRICT_UTF8 (1 when on, 0 when off) is what the corelib and
+ * generated code gate on, so flipping the flag never requires regenerating code.
+ */
+// #define SOFAB_DISABLE_STRICT_UTF8
+#if !defined(SOFAB_DISABLE_STRICT_UTF8)
+# define SOFAB_STRICT_UTF8 1
+#else
+# define SOFAB_STRICT_UTF8 0
+#endif
+
+/*!
  * @brief Narrow unsigned/signed scalar varint values from 64-bit to 32-bit.
  *
  * Changes @ref sofab_unsigned_t / @ref sofab_signed_t to 32-bit and removes the

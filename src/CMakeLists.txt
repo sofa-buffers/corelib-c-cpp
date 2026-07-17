@@ -1,7 +1,11 @@
 # --- core library sources ---
+# utf8.c holds the hand-written UTF-8 validator behind SOFAB_STRICT_UTF8; it
+# compiles to nothing when the check is disabled (SOFAB_DISABLE_STRICT_UTF8), so
+# it stays in the source list unconditionally and costs zero .text when OFF.
 set(SOFAB_SOURCES
     ostream.c
     istream.c
+    utf8.c
 )
 
 # The object descriptor API lives entirely in object.c; disabling it drops
@@ -42,7 +46,8 @@ foreach(_sofab_feature
         FIXLEN_SUPPORT
         FP64_SUPPORT
         INT64_SUPPORT
-        INTEGER_OVERFLOW_CHECK)
+        INTEGER_OVERFLOW_CHECK
+        STRICT_UTF8)
     option(SOFAB_DISABLE_${_sofab_feature}
         "Exclude ${_sofab_feature} from the SofaBuffers wire format" OFF)
     if(SOFAB_DISABLE_${_sofab_feature})
