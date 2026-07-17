@@ -674,6 +674,39 @@ static void test_msg_invalid_array_fixlen_type (void)
     TEST_ASSERT_EQUAL_UINT8(0, test.calls); // due to invalid fixlen type, callback is not called
 }
 
+static void test_msg_invalid_array_fixlen_string_blob_subtype (void)
+{
+    // MESSAGE_SPEC §4.8: a fixlen ARRAY may only carry fp32/fp64 elements. A
+    // string(2)/blob(3) element subtype is malformed and must be rejected on the
+    // element word - INVALID, never INCOMPLETE (§5.2), even when the payload is
+    // truncated (issue #89 / F-0014; the array analogue of #82's scalar fix).
+    // Header 0x05 = FIXLENARRAY id 0; count 5; element word (4 << 3) | subtype.
+    const uint8_t subtypes[] = {0x02 /* string */, 0x03 /* blob */};
+
+    for (size_t i = 0; i < sizeof(subtypes); i++)
+    {
+        sofab_istream_t ctx;
+        sofab_ret_t ret;
+        const uint8_t buffer[] = {0x05, 0x05, (uint8_t)((4 << 3) | subtypes[i]) /* truncated */};
+
+        float value[5] = {0};
+        test_single_field_t test =
+        {
+            .expected_id = 0,
+            .target_type = FIELD_TYPE_ARRAY_FP32,
+            .target_ptr = &value,
+            .target_size = sizeof(value) / sizeof(value[0]),
+            .calls = 0
+        };
+
+        sofab_istream_init(&ctx, _single_field_callback, &test);
+        ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+        TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+        // subtype is rejected on the element word, before the callback fires
+        TEST_ASSERT_EQUAL_UINT8(0, test.calls);
+    }
+}
+
 static void test_msg_invalid_target_len_fixlen (void)
 {
     sofab_istream_t ctx;
@@ -2698,6 +2731,7 @@ int test_istream_main (void)
     RUN_TEST(test_msg_array_count_zero_fixlen);
     RUN_TEST(test_msg_array_count_zero_resumes_next_field);
     RUN_TEST(test_msg_invalid_array_fixlen_type);
+    RUN_TEST(test_msg_invalid_array_fixlen_string_blob_subtype);
     RUN_TEST(test_msg_invalid_nested_sequence_depth);
     RUN_TEST(test_msg_invalid_nested_sequence_extra_end);
     RUN_TEST(test_msg_invalid_target_len_fixlen);

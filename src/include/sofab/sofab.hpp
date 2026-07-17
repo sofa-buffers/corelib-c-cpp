@@ -344,8 +344,11 @@ namespace sofab
      * Generated code mirrors the @c std::vector<std::uint8_t> path:
      *   - encode passes @ref data / @ref size to the blob write, byte-for-byte
      *     identical to the same-content vector;
-     *   - decode emits @c b.set_len(_size); is.read(b.data(), _size); — @ref set_len
-     *     fixes the logical length before the read binds the inline buffer.
+     *   - decode emits @c b.set_len(_size); if (_size) is.read(b); — @ref set_len
+     *     fixes the logical length (clamped to @p N) before the read binds the
+     *     inline buffer over @ref size bytes. Binding the container this way (not a
+     *     bare @c is.read(b.data(), _size)) lets the decoder reject an over-@p N
+     *     wire length as INVALID per MESSAGE_SPEC §7.1 instead of truncating it.
      *
      * @tparam N  Maximum number of bytes.
      */
@@ -471,6 +474,16 @@ namespace sofab
         /*! @brief Negated @ref operator==. */
         bool operator!=(const FixedBytes &o) const noexcept { return !(*this == o); }
     };
+
+    /*! @brief Trait: true only for @ref FixedBytes specializations. */
+    template <typename>
+    struct is_fixed_bytes : std::false_type { };
+    template <std::size_t N>
+    struct is_fixed_bytes<FixedBytes<N>> : std::true_type { };
+    /*! @brief Convenience value for @ref is_fixed_bytes. */
+    template <typename T>
+    inline constexpr bool is_fixed_bytes_v =
+        is_fixed_bytes<std::remove_cv_t<T>>::value;
 
     /********************/
     /*** InlineVector ***/
@@ -1490,6 +1503,19 @@ namespace sofab
                     // c_str()/string_view stay valid. Matched before the span
                     // branch so a char buffer is never treated as an array.
                     sofab_istream_read_string_noterm(&ctx_, value.data(), value.size());
+                }
+                else if constexpr (is_fixed_bytes_v<T>)
+                {
+                    // FixedBytes<N>: the heap-free counterpart of a blob field.
+                    // The caller has already fixed the logical length via
+                    // set_len(_size), so value.size() is the field length clamped
+                    // to the capacity N. Binding that (rather than the raw wire
+                    // _size a bare read(data(), _size) would pass) lets the C
+                    // decoder enforce the schema bound: a wire length > N exceeds
+                    // the bound and is rejected as INVALID - never silently
+                    // truncated - per MESSAGE_SPEC §7.1. Matched before the span
+                    // branch so the byte buffer is never treated as an array.
+                    sofab_istream_read_blob(&ctx_, value.data(), value.size());
                 }
                 else if constexpr (InputMessage<T>)
                 {
