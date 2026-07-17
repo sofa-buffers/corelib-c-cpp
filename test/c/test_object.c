@@ -1287,6 +1287,119 @@ static void test_object_blob_sized (void)
 }
 
 //
+// issue #94: the C object API must reject an over-index element of a fixed-count
+// string/blob wrapper array (a SOFAB_OBJECT_DESCR_SEQ holder) as INVALID rather
+// than silently drop it — the object-API counterpart of the #92/#93 abort
+// channel. A message descriptor must still SKIP an unknown (forward-compat) id.
+//
+
+#define _OVERIDX_CAP 5
+
+/* fixed-count string[5] holder + a 1-field message wrapping it at id 200 */
+typedef struct { char strings[_OVERIDX_CAP][16]; } _overidx_str_holder_t;
+static const sofab_object_descr_field_t _overidx_str_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _overidx_str_holder_t, strings[0], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(1, _overidx_str_holder_t, strings[1], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(2, _overidx_str_holder_t, strings[2], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(3, _overidx_str_holder_t, strings[3], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(4, _overidx_str_holder_t, strings[4], SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+static const sofab_object_descr_t _overidx_str_holder =
+    SOFAB_OBJECT_DESCR_SEQ(_overidx_str_fields, _OVERIDX_CAP, NULL, 0);
+
+typedef struct { _overidx_str_holder_t arr; } _overidx_str_msg_t;
+static const sofab_object_descr_field_t _overidx_str_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _overidx_str_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _overidx_str_nested[] = { &_overidx_str_holder };
+static const sofab_object_descr_t _overidx_str_msg =
+    SOFAB_OBJECT_DESCR(_overidx_str_msg_fields, 1, _overidx_str_nested, 1);
+
+/* fixed-count blob[5] holder + its wrapper message */
+typedef struct { uint8_t blobs[_OVERIDX_CAP][16]; } _overidx_blob_holder_t;
+static const sofab_object_descr_field_t _overidx_blob_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _overidx_blob_holder_t, blobs[0], SOFAB_OBJECT_FIELDTYPE_BLOB),
+    SOFAB_OBJECT_FIELD(1, _overidx_blob_holder_t, blobs[1], SOFAB_OBJECT_FIELDTYPE_BLOB),
+    SOFAB_OBJECT_FIELD(2, _overidx_blob_holder_t, blobs[2], SOFAB_OBJECT_FIELDTYPE_BLOB),
+    SOFAB_OBJECT_FIELD(3, _overidx_blob_holder_t, blobs[3], SOFAB_OBJECT_FIELDTYPE_BLOB),
+    SOFAB_OBJECT_FIELD(4, _overidx_blob_holder_t, blobs[4], SOFAB_OBJECT_FIELDTYPE_BLOB),
+};
+static const sofab_object_descr_t _overidx_blob_holder =
+    SOFAB_OBJECT_DESCR_SEQ(_overidx_blob_fields, _OVERIDX_CAP, NULL, 0);
+
+typedef struct { _overidx_blob_holder_t arr; } _overidx_blob_msg_t;
+static const sofab_object_descr_field_t _overidx_blob_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _overidx_blob_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _overidx_blob_nested[] = { &_overidx_blob_holder };
+static const sofab_object_descr_t _overidx_blob_msg =
+    SOFAB_OBJECT_DESCR(_overidx_blob_msg_fields, 1, _overidx_blob_nested, 1);
+
+static sofab_ret_t _overidx_decode (
+    const sofab_object_descr_t *info, void *dst, const uint8_t *buf, size_t len)
+{
+    struct { sofab_istream_t ctx; sofab_object_decoder_t decoder[2]; } d;
+    memset(&d, 0, sizeof(d));
+    d.decoder[0].info  = info;
+    d.decoder[0].dst   = (uint8_t *)dst;
+    d.decoder[0].depth = 1;   /* one nesting level (the holder sequence) */
+    sofab_istream_init(&d.ctx, sofab_object_field_cb, &d.decoder[0]);
+    return sofab_istream_feed(&d.ctx, buf, len);
+}
+
+/* id 200 SEQUENCE_START (0xC6 0x0C), then one string element ... , SEQUENCE_END */
+static void test_object_overindex_string_rejected (void)
+{
+    _overidx_str_msg_t msg;
+    /* element wire id 5 (>= capacity 5): string "x" -> INVALID */
+    const uint8_t buf[] = {0xC6, 0x0C, 0x2A, 0x0A, 0x78, 0x07};
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        _overidx_decode(&_overidx_str_msg, &msg, buf, sizeof(buf)));
+}
+
+static void test_object_overindex_string_in_range_ok (void)
+{
+    _overidx_str_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    /* element wire id 4 (< capacity 5): string "x" -> OK, stored in slot 4 */
+    const uint8_t buf[] = {0xC6, 0x0C, 0x22, 0x0A, 0x78, 0x07};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("x", msg.arr.strings[4]);
+}
+
+static void test_object_overindex_blob_rejected (void)
+{
+    _overidx_blob_msg_t msg;
+    /* element wire id 5 (>= capacity 5): blob 0x78 -> INVALID */
+    const uint8_t buf[] = {0xC6, 0x0C, 0x2A, 0x0B, 0x78, 0x07};
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        _overidx_decode(&_overidx_blob_msg, &msg, buf, sizeof(buf)));
+}
+
+static void test_object_overindex_blob_in_range_ok (void)
+{
+    _overidx_blob_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    /* element wire id 4 (< capacity 5): blob 0x78 -> OK, stored in slot 4 */
+    const uint8_t buf[] = {0xC6, 0x0C, 0x22, 0x0B, 0x78, 0x07};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_blob_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT8(0x78, msg.arr.blobs[4][0]);
+}
+
+static void test_object_message_unknown_id_still_skipped (void)
+{
+    /* Regression: a normal (non-holder) message must SKIP an unknown/forward-
+     * compat id, not reject it. Top-level unknown id 99, u8 = 42. */
+    _overidx_str_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {0x98, 0x06, 0x2A};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, buf, sizeof(buf)));
+}
+
+//
 
 int test_object_main (void)
 {
@@ -1308,6 +1421,12 @@ int test_object_main (void)
     RUN_TEST(test_object_roundtrip_empty_sequence_before_sequence);
     RUN_TEST(test_object_string_default_omission);
     RUN_TEST(test_object_blob_sized);
+
+    RUN_TEST(test_object_overindex_string_rejected);
+    RUN_TEST(test_object_overindex_string_in_range_ok);
+    RUN_TEST(test_object_overindex_blob_rejected);
+    RUN_TEST(test_object_overindex_blob_in_range_ok);
+    RUN_TEST(test_object_message_unknown_id_still_skipped);
 
     return UNITY_END();
 }

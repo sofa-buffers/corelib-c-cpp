@@ -496,6 +496,22 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 break;
         }
 
-        break;
+        // field handled — done (return, so the over-index reject below only
+        // runs when no descriptor field matched this id)
+        return;
     }
+
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    // No descriptor field matched this id. A message treats an unknown id as a
+    // forward-compatible field and skips it. But a fixed-count sequence holder's
+    // fields ARE the element slots 0..field_count-1, so an unmatched id is an
+    // over-index element (id >= N): reject the message per MESSAGE_SPEC §7/§7.1
+    // instead of silently dropping it. This is the object-API counterpart of the
+    // streaming abort channel from #92/#93 (issue #94); the holder loop above
+    // never bound a target, so the invalidate is set synchronously here.
+    if (info->fixed_seq)
+    {
+        sofab_istream_invalidate(ctx);
+    }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 }
