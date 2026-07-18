@@ -438,6 +438,19 @@ cost is `.text` (flash). Tables below are the size of the built static library
 | RV32IMC | ~3.9KB | 0.0KB | 0.0KB |
 | atmega8 | ~7.0KB | 0.0KB | 0.0KB |
 
+**Full configuration, strict UTF-8 on** — same as above plus
+`SOFAB_ENABLE_STRICT_UTF8` (off by default). This is the only row where the
+validator (`utf8.c`) is compiled in; the delta over *Full configuration* above is
+its entire `.text`/`.rodata` cost (~0.2–0.4&nbsp;KB), which the default build does
+not pay:
+
+| Architecture | .text | .data | .bss |
+| - | - | - | - |
+| ARMv6-m | ~3.3KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.3KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.1KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.4KB | 0.0KB | 0.0KB |
+
 **Minimal configuration** — `SOFAB_DISABLE_FIXLEN_SUPPORT`,
 `SOFAB_DISABLE_ARRAY_SUPPORT`, `SOFAB_DISABLE_SEQUENCE_SUPPORT`,
 `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` and the `SOFAB_OBJECT_DESCR_SMALL` profile:
