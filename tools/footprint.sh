@@ -8,8 +8,10 @@
 # Because the C core never allocates, .data/.bss are always 0 and the whole cost
 # is .text (flash); the tables therefore track .text.
 #
-# The three configurations mirror the README:
+# The configurations mirror the README:
 #   full            — everything on (ostream.c + istream.c + object.c)
+#   full-strict     — same as full, plus SOFAB_ENABLE_STRICT_UTF8 (compiles the
+#                     otherwise-empty utf8.c validator in); isolates its .text cost
 #   minimal         — SOFAB_DISABLE_{FIXLEN,ARRAY,SEQUENCE}_SUPPORT +
 #                     SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK + OBJECT_DESCR_SMALL,
 #                     object API still built
@@ -68,6 +70,7 @@ ARCHES=(
 # space-separated value that must survive as a single argv element.
 CONFIGS=(
   "full|Full configuration"
+  "full-strict|Full configuration, strict UTF-8 on"
   "minimal|Minimal configuration (object API on)"
   "minimal-noobj|Minimal configuration, without object.c"
 )
@@ -76,6 +79,7 @@ CONFIGS=(
 config_extra() {
   case "$1" in
     full)          CFG_EXTRA=() ;;
+    full-strict)   CFG_EXTRA=( -DSOFAB_ENABLE_STRICT_UTF8=ON ) ;;
     minimal)       CFG_EXTRA=( -DCMAKE_C_FLAGS_RELEASE="-Os -DNDEBUG ${MIN_MACROS}" ) ;;
     minimal-noobj) CFG_EXTRA=( -DSOFAB_DISABLE_OBJECT_API=ON
                                -DCMAKE_C_FLAGS_RELEASE="-Os -DNDEBUG ${MIN_MACROS}" ) ;;
