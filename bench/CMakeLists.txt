@@ -8,6 +8,7 @@
 set(SOFAB_BENCH_CORELIB
     ${CMAKE_SOURCE_DIR}/src/ostream.c
     ${CMAKE_SOURCE_DIR}/src/istream.c
+    ${CMAKE_SOURCE_DIR}/src/utf8.c
 )
 
 # --- C benchmark ---

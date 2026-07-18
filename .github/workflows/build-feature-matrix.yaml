@@ -108,3 +108,14 @@ jobs:
             -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
           cmake --build build/minimal --target sofab_vectortest
           $RUN ./build/minimal/test/c/sofab_vectortest
+
+      # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4),
+      # so the negative `invalid_utf8` vectors are skipped in every leg above.
+      # This leg turns the check ON explicitly (opt-in SOFAB_ENABLE_STRICT_UTF8)
+      # so those negative vectors actually RUN and are asserted rejected — the
+      # spec-mandated strict-ON configuration for a non-strict default build.
+      - name: strict-utf8-on
+        run: |
+          cmake -S . -B build/strict-utf8-on $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_ENABLE_STRICT_UTF8"
+          cmake --build build/strict-utf8-on --target sofab_vectortest
+          $RUN ./build/strict-utf8-on/test/c/sofab_vectortest

@@ -297,6 +297,36 @@ features removes their code paths and shrinks the footprint.
 | `SOFAB_DISABLE_INT64_SUPPORT` | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
 
+Strict UTF-8 validation is the one **opt-IN** knob (off by default in this
+footprint corelib — see below):
+
+| Macro | Default | Effect |
+| - | - | - |
+| `SOFAB_ENABLE_STRICT_UTF8` | off | Enable strict UTF-8 validation of `string` fields (see below); off by default so the validator costs zero `.text`/`.rodata` |
+
+**Strict UTF-8 (`SOFAB_STRICT_UTF8`, off by default).** This is a
+footprint/embedded corelib, so the strict UTF-8 check **defaults OFF** — the
+constrained-profile allowance in
+[CORELIB_PLAN §6.4](https://github.com/sofa-buffers/documentation/blob/main/CORELIB_PLAN.md)
+(a documented non-strict build; the validator, `utf8.c`, and every gated site
+compile to nothing, for zero `.text`/`.rodata` cost). **With the check OFF a
+`string`'s wire bytes are stored verbatim (byte-container behavior), never
+lossy** — invalid bytes are neither validated nor silently replaced/dropped.
+Opt in with `-DSOFAB_ENABLE_STRICT_UTF8` (or a direct `-DSOFAB_STRICT_UTF8=1`);
+conformance/fuzzer builds and this repo's CI enable it explicitly.
+
+A `string` is UTF-8
+([MESSAGE_SPEC §8](https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md));
+`blob` is the type for opaque bytes. With the check **on**, a `string` whose
+bytes are not valid UTF-8 is rejected **symmetrically**: decoding a
+*materialized* (read, not skipped) invalid string yields `SOFAB_RET_E_INVALID_MSG`,
+and encoding one with `sofab_ostream_write_fixlen(..., SOFAB_FIXLENTYPE_STRING)`
+yields `SOFAB_RET_E_ARGUMENT`. The validator (`sofab_utf8_valid`) is a real one —
+it rejects overlong encodings (incl. `C0 80`), surrogates, and code points above
+`U+10FFFF`, while allowing embedded `U+0000`. It is a **validation policy, never a
+wire-format switch** (it only decides accept-vs-reject and is never lossy), so
+peers with different settings interoperate on all valid data.
+
 The object API also selects an integer-width profile via
 `SOFAB_OBJECT_DESCR_PROFILE` (`SOFAB_OBJECT_DESCR_SMALL` / `_MEDIUM` (default) /
 `_BIG` = `uint8_t` / `uint16_t` / `uint32_t` descriptor members), and can be

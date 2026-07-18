@@ -25,6 +25,7 @@ add_executable(sofabtest
     test_istream.c
     test_object.c
     test_vectors.c
+    test_utf8.c
 )
 
 target_compile_options(sofabtest

@@ -30,6 +30,7 @@ int test_ostream_main (void);
 int test_istream_main (void);
 int test_object_main (void);
 int test_vectors_main (void);
+int test_utf8_main (void);
 
 int main (void)
 {
@@ -39,6 +40,7 @@ int main (void)
     result |= test_istream_main();
     result |= test_object_main();
     result |= test_vectors_main();
+    result |= test_utf8_main();
 
     return result;
 }

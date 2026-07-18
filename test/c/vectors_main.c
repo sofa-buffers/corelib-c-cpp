@@ -26,6 +26,8 @@ int main(void)
 
     printf("[vectors] %d vectors, %d run, %d skipped, %d checks, %d failures\n",
            r.vectors, r.vectors - r.skipped, r.skipped, r.checks, r.failures);
+    printf("[invalid_utf8] %d negative vectors, %d checks\n",
+           r.invalid_vectors, r.invalid_checks);
 
     if (!r.loaded)
     {

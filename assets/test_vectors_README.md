@@ -87,6 +87,54 @@ sequence), then verifies the remaining fields still decode and the message is
 fully consumed. **Fields are only ever skipped when `skip_ids` is present**;
 vectors without it just don't run that scenario.
 
+### Negative vectors — `invalid_utf8`
+
+Alongside the positive `vectors`, the file carries a **separate top-level
+`invalid_utf8` array** of *negative* conformance cases: a `string` field (id `0`)
+whose bytes are **not valid UTF-8**. They exist because a `string` is UTF-8
+(MESSAGE_SPEC §8) and a strict corelib (`SOFAB_STRICT_UTF8`, CORELIB_PLAN §6.4)
+rejects a non-UTF-8 `string` **symmetrically** — the positive vectors, being
+valid encoder output, cannot express this.
+
+```jsonc
+{
+  "name": "utf8_overlong_c0_80",
+  "group": "invalid/utf8",
+  "description": "...",
+  "requires": ["fixlen"],
+  "id": 0,                          // the string field id in serialized_hex
+  "string_hex": "c080",            // the raw (invalid) string payload bytes
+  "serialized_hex": "0212c080",    // the whole wire message: string field id 0
+  "decode_outcome": "invalid",     // strict decode of serialized_hex -> INVALID
+  "encode_outcome": "invalid_argument" // strict encode of string_hex -> InvalidArgument
+}
+```
+
+Per entry, a **strict** implementation must:
+
+- **decode** `serialized_hex` with the string **materialized** (read into a
+  destination — a *skipped* field is never validated) and get the **INVALID**
+  decode outcome — the same terminal class as any other malformed message, and
+  chunk-boundary independent (a multi-byte sequence merely *split* at end-of-chunk
+  stays INCOMPLETE; only a sequence still ill-formed once its complete declared
+  payload has arrived is INVALID);
+- **encode** `string_hex` as a `string` and get the **invalid-argument** error.
+
+The seeds cover every overlong form (including `C0 80`, the Java "Modified UTF-8"
+NUL), lone surrogates, code points above `U+10FFFF`, bare continuation / invalid
+lead bytes (`0xFF`), and multi-byte sequences truncated at end-of-payload.
+
+`invalid_utf8` is **backward-compatible**: a consumer that only reads `vectors`
+ignores it and still passes every positive vector. A **non-strict** build (one
+that compiled the check out, or has no strings) skips these — it cannot represent
+the rejection — but its CI **must** still run the strict configuration. In this
+footprint corelib the strict check defaults **OFF** (CORELIB_PLAN §6.4), so its
+CI enables it explicitly (`-DSOFAB_ENABLE_STRICT_UTF8`) on a dedicated strict-ON
+leg that runs these negative vectors; targets that ship strict ON by default get
+it for free. `string_hex` / `serialized_hex` are lowercase hex, like
+`serialized.hex`; the payload is placed at field id `0` with the `string` (fixlen
+UTF-8) wire subtype.
+
 ### Decode scenarios the harness runs per vector
 
 `encode`, `chunked-encode` (1/3/7-byte buffers), `decode`, `chunked-decode`

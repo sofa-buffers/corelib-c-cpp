@@ -160,6 +160,54 @@ typedef int32_t sofab_signed_t;
 // #define SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
 
 /*!
+ * @brief Strict UTF-8 validation of @c string fields (default OFF — opt-in).
+ *
+ * A @c string payload is UTF-8 (MESSAGE_SPEC §8); @c blob is the type for
+ * opaque bytes. With strict validation enabled a @c string whose bytes are not
+ * valid UTF-8 is rejected @b symmetrically (CORELIB_PLAN §6.4):
+ *  - @b decode: a materialized (read, not skipped) @c string with invalid bytes
+ *    makes the message the @ref SOFAB_RET_E_INVALID_MSG outcome — the same
+ *    terminal class as any other malformed message. Skipped @c string fields are
+ *    never validated (wire validity of unread content is the producer's
+ *    responsibility). Cross-chunk: a multi-byte sequence split at end-of-chunk
+ *    stays @ref SOFAB_RET_INCOMPLETE; only a sequence still ill-formed once the
+ *    complete declared payload has arrived is @c INVALID.
+ *  - @b encode: a @c string value that is not valid UTF-8 is refused with
+ *    @ref SOFAB_RET_E_ARGUMENT (@c sofab_ostream_write_fixlen with the
+ *    @ref SOFAB_FIXLENTYPE_STRING subtype). @c blob bytes are never validated.
+ *
+ * This is a @b validation @b policy, never a wire-format switch: it only decides
+ * accept-vs-reject and never changes how valid data is encoded, so peers with
+ * different settings interoperate on all valid data. It is @b never lossy — an
+ * invalid @c string is rejected, never silently replaced with @c U+FFFD or
+ * truncated, in either direction and in either state.
+ *
+ * This is a @b footprint/embedded corelib (the @c c and @c c-cpp targets), so
+ * the check @b defaults @b OFF and is @b opt-in — the constrained-profile
+ * allowance in CORELIB_PLAN §6.4 (a documented non-strict build; zero
+ * @c .text / @c .rodata cost when OFF, since @c utf8.c and every gated site
+ * compile to nothing). With the check OFF the wire bytes are stored verbatim
+ * (byte-container behavior), never lossy — an invalid @c string is never
+ * silently replaced or dropped, only accepted verbatim.
+ *
+ * The check follows the corelib's opt-in style: it is enabled by defining
+ * @c SOFAB_ENABLE_STRICT_UTF8 (conformance/fuzzer/CI builds do this). A direct
+ * @c -DSOFAB_STRICT_UTF8=1 also works and wins over both knobs. The legacy
+ * @c SOFAB_DISABLE_STRICT_UTF8 opt-out is still honored — it forces the check
+ * OFF, which is now also the default, so it is harmless. The resolved boolean
+ * @ref SOFAB_STRICT_UTF8 (1 when on, 0 when off) is what the corelib and
+ * generated code gate on, so flipping the flag never requires regenerating code.
+ */
+// #define SOFAB_ENABLE_STRICT_UTF8
+#if !defined(SOFAB_STRICT_UTF8)
+# if defined(SOFAB_ENABLE_STRICT_UTF8) && !defined(SOFAB_DISABLE_STRICT_UTF8)
+#  define SOFAB_STRICT_UTF8 1
+# else
+#  define SOFAB_STRICT_UTF8 0
+# endif
+#endif
+
+/*!
  * @brief Narrow unsigned/signed scalar varint values from 64-bit to 32-bit.
  *
  * Changes @ref sofab_unsigned_t / @ref sofab_signed_t to 32-bit and removes the

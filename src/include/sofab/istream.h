@@ -124,6 +124,11 @@ struct sofab_istream
     sofab_unsigned_t varint_value;              /*!< Accumulated varint value under construction */
     sofab_istream_decoder_t default_decoder;    /*!< Top-level decoder instance */
     uint8_t *target_ptr;                        /*!< Pointer to output buffer for field data */
+#if SOFAB_STRICT_UTF8
+    uint8_t *utf8_start;                        /*!< Start of a materialized string payload to
+                                                 *!< UTF-8-validate at completion; NULL = don't
+                                                 *!< validate (non-string, skipped, or empty). */
+#endif
     sofab_istream_decoder_t *decoder;           /*!< Currently active decoder (may be nested) */
     size_t fixlen_remaining;                    /*!< Remaining bytes to read for a fixed-length field */
     size_t target_len;                          /*!< Target element size or total buffer length */
