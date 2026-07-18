@@ -1,7 +1,8 @@
 # --- core library sources ---
-# utf8.c holds the hand-written UTF-8 validator behind SOFAB_STRICT_UTF8; it
-# compiles to nothing when the check is disabled (SOFAB_DISABLE_STRICT_UTF8), so
-# it stays in the source list unconditionally and costs zero .text when OFF.
+# utf8.c holds the hand-written UTF-8 validator behind SOFAB_STRICT_UTF8; the
+# whole file is #if SOFAB_STRICT_UTF8, so in this footprint corelib's default
+# (strict OFF) build it compiles to nothing — it stays in the source list
+# unconditionally and costs zero .text unless SOFAB_ENABLE_STRICT_UTF8 is set.
 set(SOFAB_SOURCES
     ostream.c
     istream.c
@@ -46,14 +47,25 @@ foreach(_sofab_feature
         FIXLEN_SUPPORT
         FP64_SUPPORT
         INT64_SUPPORT
-        INTEGER_OVERFLOW_CHECK
-        STRICT_UTF8)
+        INTEGER_OVERFLOW_CHECK)
     option(SOFAB_DISABLE_${_sofab_feature}
         "Exclude ${_sofab_feature} from the SofaBuffers wire format" OFF)
     if(SOFAB_DISABLE_${_sofab_feature})
         target_compile_definitions(sofabuffers PUBLIC SOFAB_DISABLE_${_sofab_feature})
     endif()
 endforeach()
+
+# Strict UTF-8 validation is opt-IN in this footprint corelib: CORELIB_PLAN §6.4
+# lets constrained profiles default the check OFF (zero .text/.rodata cost), so
+# unlike the SOFAB_DISABLE_* toggles above this one enables a check that is off by
+# default. Turn it on with -DSOFAB_ENABLE_STRICT_UTF8=ON (conformance/fuzzer/CI
+# builds do). Applied PUBLIC so downstream headers resolve SOFAB_STRICT_UTF8
+# identically to the library. The legacy -DSOFAB_DISABLE_STRICT_UTF8 still forces
+# it OFF at the preprocessor level (now also the default), so it stays harmless.
+option(SOFAB_ENABLE_STRICT_UTF8 "Enable strict UTF-8 validation of string fields" OFF)
+if(SOFAB_ENABLE_STRICT_UTF8)
+    target_compile_definitions(sofabuffers PUBLIC SOFAB_ENABLE_STRICT_UTF8)
+endif()
 
 find_program(SIZE_EXECUTABLE NAMES size)
 if(SIZE_EXECUTABLE)

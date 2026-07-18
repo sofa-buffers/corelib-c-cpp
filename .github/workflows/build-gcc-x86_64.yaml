@@ -46,3 +46,22 @@ jobs:
       - name: Run tests
         working-directory: build
         run: ctest --output-on-failure --verbose
+
+      # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4),
+      # so the default build above compiles the validator out and skips the utf8
+      # unit tests + negative vectors. Per §6.4 the strict-ON configuration MUST
+      # still be built and conformance-tested, so this second leg opts in with
+      # SOFAB_ENABLE_STRICT_UTF8 and reruns the full ctest suite — the utf8
+      # validator tests and the invalid_utf8 negative vectors now run.
+      - name: Configure with CMake (strict UTF-8 ON)
+        run: |
+          cmake -S . -B build-strict-utf8 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_STRICT_UTF8=ON
+
+      - name: Build project (strict UTF-8 ON)
+        run: cmake --build build-strict-utf8
+
+      - name: Run tests (strict UTF-8 ON)
+        working-directory: build-strict-utf8
+        run: ctest --output-on-failure --verbose

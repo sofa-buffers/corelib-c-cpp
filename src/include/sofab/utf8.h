@@ -4,9 +4,11 @@
  *
  * A `string` payload is UTF-8 (MESSAGE_SPEC §8); this module provides the
  * validator the corelib uses to enforce that on the encode and decode paths when
- * @ref SOFAB_STRICT_UTF8 is enabled (the default). It is a security surface — a
- * real validator, not a byte-range shortcut — and is declared (and compiled)
- * only when the check is on, so a build with @c SOFAB_DISABLE_STRICT_UTF8 pays
+ * @ref SOFAB_STRICT_UTF8 is enabled. This is a footprint corelib, so the check
+ * @b defaults @b OFF (CORELIB_PLAN §6.4's constrained-profile allowance); opt in
+ * with @c SOFAB_ENABLE_STRICT_UTF8 (or @c -DSOFAB_STRICT_UTF8=1). It is a
+ * security surface — a real validator, not a byte-range shortcut — and is
+ * declared (and compiled) only when the check is on, so the default build pays
  * zero @c .text / @c .rodata cost (CORELIB_PLAN §6.4).
  *
  * SPDX-License-Identifier: MIT

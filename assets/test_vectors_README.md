@@ -127,8 +127,11 @@ lead bytes (`0xFF`), and multi-byte sequences truncated at end-of-payload.
 `invalid_utf8` is **backward-compatible**: a consumer that only reads `vectors`
 ignores it and still passes every positive vector. A **non-strict** build (one
 that compiled the check out, or has no strings) skips these — it cannot represent
-the rejection — but its CI **must** still run the strict configuration, which is
-the shipped default. `string_hex` / `serialized_hex` are lowercase hex, like
+the rejection — but its CI **must** still run the strict configuration. In this
+footprint corelib the strict check defaults **OFF** (CORELIB_PLAN §6.4), so its
+CI enables it explicitly (`-DSOFAB_ENABLE_STRICT_UTF8`) on a dedicated strict-ON
+leg that runs these negative vectors; targets that ship strict ON by default get
+it for free. `string_hex` / `serialized_hex` are lowercase hex, like
 `serialized.hex`; the payload is placed at field id `0` with the `string` (fixlen
 UTF-8) wire subtype.
 
