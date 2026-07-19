@@ -107,6 +107,43 @@ namespace sofab
     /*! @brief Field identifier type (alias of @ref sofab_id_t). */
     using id = sofab_id_t;
 
+    /*!
+     * @brief Wire type of a decoded field (the 3-bit type tag of its header).
+     *
+     * Part of the public API: returned by @ref IStreamImpl::wire. The enumerator
+     * values are the wire tags themselves, so this mirrors @ref sofab_type_t while
+     * exposing the same @c sofab::Wire surface as the sibling @c corelib-cpp — a
+     * generator emits one @ref IStreamImpl::wire guard shape for both.
+     */
+    enum class Wire : uint8_t
+    {
+        Unsigned      = SOFAB_TYPE_VARINT_UNSIGNED,      //!< Unsigned integer encoded as a varint.
+        Signed        = SOFAB_TYPE_VARINT_SIGNED,        //!< Signed integer, zig-zag encoded as a varint.
+        Fixlen        = SOFAB_TYPE_FIXLEN,               //!< Length-prefixed payload (float, string or blob).
+        ArrayUnsigned = SOFAB_TYPE_VARINTARRAY_UNSIGNED, //!< Count-prefixed array of unsigned varints.
+        ArraySigned   = SOFAB_TYPE_VARINTARRAY_SIGNED,   //!< Count-prefixed array of zig-zag varints.
+        ArrayFixlen   = SOFAB_TYPE_FIXLENARRAY,          //!< Count-prefixed array of fixed-size elements.
+        SequenceStart = SOFAB_TYPE_SEQUENCE_START,       //!< Opens a nested sub-message.
+        SequenceEnd   = SOFAB_TYPE_SEQUENCE_END,         //!< Closes the most recently opened sub-message.
+    };
+
+    /*!
+     * @brief Sub-type of a length-prefixed (@ref Wire::Fixlen) payload.
+     *
+     * Part of the public API: returned by @ref IStreamImpl::fixType. MESSAGE_SPEC
+     * §7.3 bounds the decode-side type check at wire type *plus* this subtype,
+     * since @c fp32 / @c fp64 / @c string / @c blob all share the
+     * @ref Wire::Fixlen wire type. Mirrors @ref sofab_fixlentype_t and matches
+     * @c corelib-cpp's @c sofab::Fix.
+     */
+    enum class Fix : uint8_t
+    {
+        Fp32   = SOFAB_FIXLENTYPE_FP32,   //!< 32-bit IEEE-754 float.
+        Fp64   = SOFAB_FIXLENTYPE_FP64,   //!< 64-bit IEEE-754 double.
+        String = SOFAB_FIXLENTYPE_STRING, //!< UTF-8 text.
+        Blob   = SOFAB_FIXLENTYPE_BLOB,   //!< Opaque byte string.
+    };
+
     /*******************/
     /*** FixedString ***/
     /*******************/
@@ -1447,6 +1484,44 @@ namespace sofab
         void invalidate() noexcept
         {
             sofab_istream_invalidate(&ctx_);
+        }
+
+        /*!
+         * @brief Wire type of the field currently being delivered.
+         *
+         * Valid inside a field callback / @c deserialize, before the field's
+         * @ref read binds a destination. MESSAGE_SPEC §7.3: compare it against
+         * the wire type the declared field maps to and, on a mismatch, return
+         * without calling @ref read — the field is then skipped automatically,
+         * exactly like an unknown id (a framing mismatch, not a malformed
+         * message). Reads no bytes and does not consume the field.
+         *
+         * @return The delivered field's @ref Wire.
+         */
+        [[nodiscard]] Wire wire() const noexcept
+        {
+            // ctx_.target_opt holds the delivered wire opt on callback entry
+            // (low 3 bits = wire type); a later read() overwrites it with the
+            // schema opt, so this must be read before binding a destination.
+            return static_cast<Wire>(ctx_.target_opt & 0x07);
+        }
+
+        /*!
+         * @brief Fixlen sub-type of the field currently being delivered.
+         *
+         * Only meaningful when @ref wire is @ref Wire::Fixlen or
+         * @ref Wire::ArrayFixlen; §7.3 bounds the type check at wire type *plus*
+         * this subtype, since @c fp32 / @c fp64 / @c string / @c blob share the
+         * fixlen wire type. Valid inside a field callback / @c deserialize before
+         * @ref read; reads no bytes and does not consume the field.
+         *
+         * @return The delivered field's @ref Fix.
+         */
+        [[nodiscard]] Fix fixType() const noexcept
+        {
+            // The fixlen subtype is merged into bits 3..5 of target_opt before
+            // the callback fires (istream.c: target_opt |= fixlen_type << 3).
+            return static_cast<Fix>((ctx_.target_opt >> 3) & 0x07);
         }
 
         /*!

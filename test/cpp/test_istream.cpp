@@ -603,6 +603,91 @@ TEST_CASE("IStream: fields without a matching read are skipped")
     REQUIRE(got == 99);
 }
 
+// MESSAGE_SPEC §7.3 (issue #104): a field whose header wire type contradicts the
+// schema must be *skipped* like an unknown id, not rejected. The C++ wrapper
+// drives istream.c directly, so the generated deserialize needs wire()/fixType()
+// to see the delivered wire type and return without read() on a mismatch. Names
+// and enum values mirror the sibling corelib-cpp so one generator guard fits both.
+TEST_CASE("IStream: §7.3 wire-type mismatch skips the field via wire() guard")
+{
+    // someu8 (id 0) is declared u8 → the unsigned varint wire type. The guard
+    // the generator emits compares wire() and skips on a mismatch.
+    uint8_t someu8 = 7;             // schema default, must survive a skip
+    int calls = 0;
+    sofab::Wire seen{};
+
+    sofab::IStreamInline istream{
+        [&](sofab::id id, size_t, size_t) noexcept
+        {
+            calls++;
+            if (id == 0)
+            {
+                seen = istream.wire();
+                if (istream.wire() != sofab::Wire::Unsigned)
+                    return;                       // §7.3: skip on mismatch
+                istream.read(someu8);
+            }
+        }
+    };
+
+    SECTION("Signed wire type delivered for an unsigned field is skipped")
+    {
+        // 01 06 = id 0, wire type Signed, zig-zag 06. Per §7.3 the field is
+        // skipped and the whole decode still succeeds (a framing mismatch, not
+        // a malformed message) — the pre-#104 wrapper failed the decode here.
+        const uint8_t buffer[] = {0x01, 0x06};
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(calls == 1);
+        REQUIRE(seen == sofab::Wire::Signed);
+        REQUIRE(someu8 == 7);                     // default kept, field skipped
+    }
+
+    SECTION("Matching unsigned wire type decodes normally")
+    {
+        // 00 09 = id 0, correct unsigned wire type, value 9.
+        const uint8_t buffer[] = {0x00, 0x09};
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(calls == 1);
+        REQUIRE(seen == sofab::Wire::Unsigned);
+        REQUIRE(someu8 == 9);
+    }
+}
+
+// §7.3 bounds the check at wire type *plus* fixlen subtype, since fp32/fp64/
+// string/blob share the Fixlen wire type. fixType() exposes that subtype.
+TEST_CASE("IStream: fixType() reports the delivered fixlen subtype")
+{
+    sofab::OStream ostream{64};
+    ostream
+        .write(5, 3.1415f)                        // Fixlen / Fp32
+        .write(6, std::string_view{"hi"});        // Fixlen / String
+    const auto used = ostream.bytesUsed();
+
+    sofab::Wire wire5{}, wire6{};
+    sofab::Fix  fix5{},  fix6{};
+
+    sofab::IStreamInline istream{
+        [&](sofab::id id, size_t, size_t) noexcept
+        {
+            if (id == 5) { wire5 = istream.wire(); fix5 = istream.fixType(); }
+            if (id == 6) { wire6 = istream.wire(); fix6 = istream.fixType(); }
+            // no read() — fields are skipped; we only inspect the delivered type
+        }
+    };
+
+    auto result = istream.feed(ostream.data(), used);
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(wire5 == sofab::Wire::Fixlen);
+    REQUIRE(fix5  == sofab::Fix::Fp32);
+    REQUIRE(wire6 == sofab::Wire::Fixlen);
+    REQUIRE(fix6  == sofab::Fix::String);
+}
+
 TEST_CASE("IStream: malformed input is rejected")
 {
     SECTION("field id varint overflow")
