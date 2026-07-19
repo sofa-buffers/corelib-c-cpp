@@ -63,50 +63,50 @@ jobs:
       - name: max
         run: |
           cmake -S . -B build/max $CM_ARGS -DCMAKE_C_FLAGS=""
-          cmake --build build/max --target sofab_vectortest
+          cmake --build build/max --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/max/test/c/sofab_vectortest
 
       - name: no-fp64
         run: |
           cmake -S . -B build/no-fp64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT"
-          cmake --build build/no-fp64 --target sofab_vectortest
+          cmake --build build/no-fp64 --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/no-fp64/test/c/sofab_vectortest
 
       - name: no-int64
         run: |
           cmake -S . -B build/no-int64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT"
-          cmake --build build/no-int64 --target sofab_vectortest
+          cmake --build build/no-int64 --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/no-int64/test/c/sofab_vectortest
 
       - name: no-array
         run: |
           cmake -S . -B build/no-array $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT"
-          cmake --build build/no-array --target sofab_vectortest
+          cmake --build build/no-array --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/no-array/test/c/sofab_vectortest
 
       - name: no-sequence
         run: |
           cmake -S . -B build/no-sequence $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
-          cmake --build build/no-sequence --target sofab_vectortest
+          cmake --build build/no-sequence --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/no-sequence/test/c/sofab_vectortest
 
       - name: no-fixlen
         run: |
           cmake -S . -B build/no-fixlen $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT"
-          cmake --build build/no-fixlen --target sofab_vectortest
+          cmake --build build/no-fixlen --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/no-fixlen/test/c/sofab_vectortest
 
       - name: no-overflow-check
         run: |
           cmake -S . -B build/no-overflow-check $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
-          cmake --build build/no-overflow-check --target sofab_vectortest
+          cmake --build build/no-overflow-check --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/no-overflow-check/test/c/sofab_vectortest
 
       - name: minimal
         run: |
           cmake -S . -B build/minimal $CM_ARGS \
             -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
-          cmake --build build/minimal --target sofab_vectortest
+          cmake --build build/minimal --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/minimal/test/c/sofab_vectortest
 
       # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4),
@@ -117,5 +117,5 @@ jobs:
       - name: strict-utf8-on
         run: |
           cmake -S . -B build/strict-utf8-on $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_ENABLE_STRICT_UTF8"
-          cmake --build build/strict-utf8-on --target sofab_vectortest
+          cmake --build build/strict-utf8-on --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/strict-utf8-on/test/c/sofab_vectortest

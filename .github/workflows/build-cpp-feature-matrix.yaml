@@ -70,31 +70,31 @@ jobs:
       - name: max
         run: |
           cmake -S . -B build/max $CM_ARGS -DCMAKE_C_FLAGS="" -DCMAKE_CXX_FLAGS=""
-          cmake --build build/max --target sofab_cpp_smoke
+          cmake --build build/max --target sofab_cpp_smoke --parallel $(nproc)
           $RUN ./build/max/test/cpp-smoke/sofab_cpp_smoke
 
       - name: no-fp64
         run: |
           cmake -S . -B build/no-fp64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT"
-          cmake --build build/no-fp64 --target sofab_cpp_smoke
+          cmake --build build/no-fp64 --target sofab_cpp_smoke --parallel $(nproc)
           $RUN ./build/no-fp64/test/cpp-smoke/sofab_cpp_smoke
 
       - name: no-int64
         run: |
           cmake -S . -B build/no-int64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT"
-          cmake --build build/no-int64 --target sofab_cpp_smoke
+          cmake --build build/no-int64 --target sofab_cpp_smoke --parallel $(nproc)
           $RUN ./build/no-int64/test/cpp-smoke/sofab_cpp_smoke
 
       - name: no-array
         run: |
           cmake -S . -B build/no-array $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT"
-          cmake --build build/no-array --target sofab_cpp_smoke
+          cmake --build build/no-array --target sofab_cpp_smoke --parallel $(nproc)
           $RUN ./build/no-array/test/cpp-smoke/sofab_cpp_smoke
 
       - name: no-overflow
         run: |
           cmake -S . -B build/no-overflow $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
-          cmake --build build/no-overflow --target sofab_cpp_smoke
+          cmake --build build/no-overflow --target sofab_cpp_smoke --parallel $(nproc)
           $RUN ./build/no-overflow/test/cpp-smoke/sofab_cpp_smoke
 
   # --- configs the wrapper rejects: assert the #error fires at compile time ---

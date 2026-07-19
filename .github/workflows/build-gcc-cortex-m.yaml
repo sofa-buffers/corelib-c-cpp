@@ -38,7 +38,7 @@ jobs:
       - name: cortex-m0 (armv6-m)
         run: |
           cmake -S . -B build/m0 $CM_COMMON -DARM_MARCH=armv6-m -DARM_MTUNE=cortex-m0
-          cmake --build build/m0
+          cmake --build build/m0 --parallel $(nproc)
           file build/m0/test/c/sofabtest
           readelf -h -A build/m0/test/c/sofabtest
           size build/m0/src/libsofabuffers.a
@@ -46,7 +46,7 @@ jobs:
       - name: cortex-m3 (armv7-m)
         run: |
           cmake -S . -B build/m3 $CM_COMMON -DARM_MARCH=armv7-m -DARM_MTUNE=cortex-m3
-          cmake --build build/m3
+          cmake --build build/m3 --parallel $(nproc)
           file build/m3/test/c/sofabtest
           readelf -h -A build/m3/test/c/sofabtest
           size build/m3/src/libsofabuffers.a
@@ -54,7 +54,7 @@ jobs:
       - name: cortex-m7 (armv7e-m+fp.dp)
         run: |
           cmake -S . -B build/m7 $CM_COMMON -DARM_MARCH=armv7e-m+fp.dp -DARM_MTUNE=cortex-m7
-          cmake --build build/m7
+          cmake --build build/m7 --parallel $(nproc)
           file build/m7/test/c/sofabtest
           readelf -h -A build/m7/test/c/sofabtest
           size build/m7/src/libsofabuffers.a
@@ -62,7 +62,7 @@ jobs:
       - name: cortex-m23 (armv8-m.base)
         run: |
           cmake -S . -B build/m23 $CM_COMMON -DARM_MARCH=armv8-m.base -DARM_MTUNE=cortex-m23
-          cmake --build build/m23
+          cmake --build build/m23 --parallel $(nproc)
           file build/m23/test/c/sofabtest
           readelf -h -A build/m23/test/c/sofabtest
           size build/m23/src/libsofabuffers.a
@@ -70,7 +70,7 @@ jobs:
       - name: cortex-m55 (armv8.1-m.main+mve)
         run: |
           cmake -S . -B build/m55 $CM_COMMON -DARM_MARCH=armv8.1-m.main+mve -DARM_MTUNE=cortex-m55
-          cmake --build build/m55
+          cmake --build build/m55 --parallel $(nproc)
           file build/m55/test/c/sofabtest
           readelf -h -A build/m55/test/c/sofabtest
           size build/m55/src/libsofabuffers.a
@@ -86,6 +86,6 @@ jobs:
               -DSOFAB_DISABLE_SEQUENCE_SUPPORT \
               -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK \
               -DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL"
-          cmake --build build/minimal --target sofabuffers
+          cmake --build build/minimal --target sofabuffers --parallel $(nproc)
           file build/minimal/src/libsofabuffers.a
           size build/minimal/src/libsofabuffers.a
