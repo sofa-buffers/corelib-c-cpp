@@ -433,7 +433,7 @@ cost is `.text` (flash). Tables below are the size of the built static library
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.0KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.1KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~3.1KB | 0.0KB | 0.0KB |
 | RV32IMC | ~3.9KB | 0.0KB | 0.0KB |
 | atmega8 | ~7.0KB | 0.0KB | 0.0KB |
