@@ -28,7 +28,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build project
-        run: cmake --build build
+        run: cmake --build build --parallel $(nproc)
 
       - name: Library size
         run: size build/src/libsofabuffers.a
@@ -64,7 +64,7 @@ jobs:
             -DSOFAB_ENABLE_STRICT_UTF8=ON
 
       - name: Build project (strict UTF-8 ON)
-        run: cmake --build build-strict-utf8
+        run: cmake --build build-strict-utf8 --parallel $(nproc)
 
       - name: Run tests (strict UTF-8 ON)
         working-directory: build-strict-utf8

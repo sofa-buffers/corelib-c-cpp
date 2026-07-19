@@ -357,7 +357,7 @@ Build with CMake and a C99 / C++20 toolchain:
 
 ```sh
 cmake -S . -B build
-cmake --build build --parallel
+cmake --build build --parallel $(nproc)
 ctest --test-dir build --output-on-failure
 ```
 
@@ -414,7 +414,7 @@ Convenience targets build and run them:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
+cmake --build build --parallel $(nproc)
 cmake --build build --target run_bench            # throughput (MB/s), C and C++
 cmake --build build --target run_perf             # per-op cost (cycles/op + MB/s)
 cmake --build build --target run_bench_callgrind  # instructions/op under Callgrind (needs valgrind)

@@ -35,7 +35,7 @@ jobs:
             -DSOFAB_ENABLE_STRICT_UTF8=ON
 
       - name: Build project
-        run: cmake --build build
+        run: cmake --build build --parallel $(nproc)
 
       - name: Run tests
         working-directory: build

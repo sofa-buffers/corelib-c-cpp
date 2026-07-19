@@ -35,7 +35,7 @@ jobs:
             -DSOFAB_ENABLE_BENCH=OFF
 
       - name: Build project
-        run: cmake --build build
+        run: cmake --build build --parallel $(nproc)
 
       - name: Library size (${{ matrix.mcu }})
         run: size build/src/libsofabuffers.a
