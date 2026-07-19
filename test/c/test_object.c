@@ -1400,6 +1400,193 @@ static void test_object_message_unknown_id_still_skipped (void)
 }
 
 //
+// issue #100: MESSAGE_SPEC §7.3 — a matched field whose header wire type (wire
+// type + fixlen subtype) contradicts the declared type must be SKIPPED, exactly
+// like an unknown id, not rejected with E_USAGE. The single-byte header packs
+// (id << 3) | wire_type; a fixlen word packs (length << 3) | fixlen_subtype.
+//
+
+typedef struct { uint8_t x; } _wt_inner_t;      /* one u8 at id 0 */
+typedef struct {
+    uint8_t     u8;      /* id 0,  declared UNSIGNED */
+    char        str[8];  /* id 1,  declared STRING   */
+    _wt_inner_t nested;  /* id 10, declared SEQUENCE */
+} _wt_msg_t;
+
+static const sofab_object_descr_field_t _wt_inner_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _wt_inner_t, x, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+static const sofab_object_descr_t _wt_inner_descr =
+    SOFAB_OBJECT_DESCR(_wt_inner_fields, 1, NULL, 0);
+
+static const sofab_object_descr_field_t _wt_msg_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _wt_msg_t, u8, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+    SOFAB_OBJECT_FIELD(1, _wt_msg_t, str, SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD_SEQUENCE(10, _wt_msg_t, nested, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _wt_nested[] = { &_wt_inner_descr };
+static const sofab_object_descr_t _wt_msg =
+    SOFAB_OBJECT_DESCR(_wt_msg_fields, 3, _wt_nested, 1);
+
+static void test_object_wiretype_control_decodes (void)
+{
+    /* Control: id 0 carries UNSIGNED, matching the schema -> u8 = 5. */
+    _wt_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {0x00, 0x05};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wt_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT8(5, msg.u8);
+}
+
+static void test_object_wiretype_signed_for_unsigned_skipped (void)
+{
+    /* id 0 declared UNSIGNED, header carries SIGNED -> skip, u8 stays default. */
+    _wt_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {0x01, 0x06};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wt_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT8(0, msg.u8);
+}
+
+static void test_object_wiretype_array_for_scalar_skipped (void)
+{
+    /* id 0 declared UNSIGNED, header carries ARRAY_UNSIGNED (count 1, elem 5)
+     * -> skip, u8 stays default. */
+    _wt_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {0x03, 0x01, 0x05};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wt_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT8(0, msg.u8);
+}
+
+static void test_object_wiretype_scalar_for_sequence_skipped (void)
+{
+    /* id 10 declared SEQUENCE, header carries UNSIGNED -> skip, nested untouched. */
+    _wt_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {0x50, 0x05};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wt_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT8(0, msg.nested.x);
+}
+
+static void test_object_wiretype_sequence_for_scalar_skipped (void)
+{
+    /* id 0 declared UNSIGNED, header opens a (empty) SEQUENCE -> the whole
+     * sequence is skipped via skip_depth, u8 stays default. */
+    _wt_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {0x06, 0x07};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wt_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT8(0, msg.u8);
+}
+
+static void test_object_wiretype_fixlen_subtype_skipped (void)
+{
+    /* id 1 declared STRING, header carries FIXLEN/BLOB (differs only in the
+     * fixlen subtype, mask 0x3F) -> skip, str stays empty. The matching-subtype
+     * control (STRING) still decodes to prove the check is subtype-precise. */
+    _wt_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t blob_for_string[] = {0x0A, 0x0B, 0x78};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_wt_msg, &msg, blob_for_string, sizeof(blob_for_string)));
+    TEST_ASSERT_EQUAL_STRING("", msg.str);
+
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t string_ok[] = {0x0A, 0x0A, 0x78};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_wt_msg, &msg, string_ok, sizeof(string_ok)));
+    TEST_ASSERT_EQUAL_STRING("x", msg.str);
+}
+
+//
+// issue #99: MESSAGE_SPEC §7.4 — a re-opened array wrapper REPLACES the array
+// value whole (each open resets slots to defaults), whereas a struct/union
+// MERGES (last occurrence wins per field id). The wrapper is distinguished by
+// the fixed_seq flag (SOFAB_OBJECT_DESCR_SEQ), reused from issue #94.
+//
+
+#define _WRAP_CAP 3
+typedef struct { char strings[_WRAP_CAP][8]; } _wrap_holder_t;
+static const sofab_object_descr_field_t _wrap_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _wrap_holder_t, strings[0], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(1, _wrap_holder_t, strings[1], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(2, _wrap_holder_t, strings[2], SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+static const sofab_object_descr_t _wrap_holder =   /* fixed_seq = 1 (wrapper) */
+    SOFAB_OBJECT_DESCR_SEQ(_wrap_fields, _WRAP_CAP, NULL, 0);
+
+typedef struct { _wrap_holder_t arr; } _wrap_msg_t;
+static const sofab_object_descr_field_t _wrap_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _wrap_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _wrap_nested[] = { &_wrap_holder };
+static const sofab_object_descr_t _wrap_msg =
+    SOFAB_OBJECT_DESCR(_wrap_msg_fields, 1, _wrap_nested, 1);
+
+static void test_object_wrapper_reopen_replaces (void)
+{
+    /* string_array (id 200) opened twice: element 0 = "A" in the first opening,
+     * element 1 = "B" in the second. §7.4 replaces -> ["", "B", ""]. */
+    _wrap_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {
+        0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x07,   /* open, strings[0]="A", close */
+        0xC6, 0x0C, 0x0A, 0x0A, 0x42, 0x07,   /* re-open, strings[1]="B", close */
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("",  msg.arr.strings[0]);
+    TEST_ASSERT_EQUAL_STRING("B", msg.arr.strings[1]);
+    TEST_ASSERT_EQUAL_STRING("",  msg.arr.strings[2]);
+}
+
+static void test_object_wrapper_single_open_unchanged (void)
+{
+    /* Control: both elements in ONE opening must still yield ["A", "B", ""]. */
+    _wrap_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {
+        0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x0A, 0x0A, 0x42, 0x07,
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("A", msg.arr.strings[0]);
+    TEST_ASSERT_EQUAL_STRING("B", msg.arr.strings[1]);
+    TEST_ASSERT_EQUAL_STRING("",  msg.arr.strings[2]);
+}
+
+/* struct holder (fixed_seq = 0) must keep MERGING across re-opens */
+typedef struct { uint8_t a; uint8_t b; } _mrg_inner_t;
+static const sofab_object_descr_field_t _mrg_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _mrg_inner_t, a, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+    SOFAB_OBJECT_FIELD(1, _mrg_inner_t, b, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+static const sofab_object_descr_t _mrg_inner =
+    SOFAB_OBJECT_DESCR(_mrg_fields, 2, NULL, 0);
+
+typedef struct { _mrg_inner_t s; } _mrg_msg_t;
+static const sofab_object_descr_field_t _mrg_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _mrg_msg_t, s, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _mrg_nested[] = { &_mrg_inner };
+static const sofab_object_descr_t _mrg_msg =
+    SOFAB_OBJECT_DESCR(_mrg_msg_fields, 1, _mrg_nested, 1);
+
+static void test_object_struct_reopen_merges (void)
+{
+    /* Struct (fixed_seq == 0): first opening sets a = 9, second sets b = 7.
+     * §7.4 merges -> both retained (a reset-on-open would drop a). */
+    _mrg_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {
+        0xC6, 0x0C, 0x00, 0x09, 0x07,   /* open, a = 9, close */
+        0xC6, 0x0C, 0x08, 0x07, 0x07,   /* re-open, b = 7, close */
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_mrg_msg, &msg, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_UINT8(9, msg.s.a);
+    TEST_ASSERT_EQUAL_UINT8(7, msg.s.b);
+}
+
+//
 
 int test_object_main (void)
 {
@@ -1427,6 +1614,17 @@ int test_object_main (void)
     RUN_TEST(test_object_overindex_blob_rejected);
     RUN_TEST(test_object_overindex_blob_in_range_ok);
     RUN_TEST(test_object_message_unknown_id_still_skipped);
+
+    RUN_TEST(test_object_wiretype_control_decodes);
+    RUN_TEST(test_object_wiretype_signed_for_unsigned_skipped);
+    RUN_TEST(test_object_wiretype_array_for_scalar_skipped);
+    RUN_TEST(test_object_wiretype_scalar_for_sequence_skipped);
+    RUN_TEST(test_object_wiretype_sequence_for_scalar_skipped);
+    RUN_TEST(test_object_wiretype_fixlen_subtype_skipped);
+
+    RUN_TEST(test_object_wrapper_reopen_replaces);
+    RUN_TEST(test_object_wrapper_single_open_unchanged);
+    RUN_TEST(test_object_struct_reopen_merges);
 
     return UNITY_END();
 }

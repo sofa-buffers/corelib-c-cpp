@@ -23,6 +23,56 @@
 /* prototypes *****************************************************************/
 
 /* static vars ****************************************************************/
+/*!
+ * @brief In the minimal profile the §7.3 wire-type map degenerates to identity.
+ *
+ * When fixlen, array and sequence support are all compiled out, the only field
+ * types that can reach @ref sofab_object_field_cb are @c UNSIGNED and @c SIGNED
+ * (the istream rejects every other wire type as @c INVALID before the callback),
+ * and for those the expected wire opt equals @c field->type (0x0 / 0x1). The
+ * lookup table below and its bounds check are then dead weight, so the §7.3
+ * check collapses to a direct @c field->type comparison and the table vanishes.
+ */
+#if defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && \
+    defined(SOFAB_DISABLE_ARRAY_SUPPORT)  && \
+    defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+#  define _WIRETYPE_MAP_IS_IDENTITY 1
+#endif
+
+#if !defined(_WIRETYPE_MAP_IS_IDENTITY)
+/*!
+ * @brief Expected wire opt (field type + fixlen subtype, low 6 bits) for each
+ *        descriptor field type, indexed by @c SOFAB_OBJECT_FIELDTYPE_*.
+ *
+ * MESSAGE_SPEC §7.3: on decode a field whose header wire type does not match the
+ * one its declared type maps to — for @c fixlen including the subtype — is
+ * skipped exactly like an unknown id, and is @e not reported as a usage error or
+ * as @c INVALID. @ref sofab_object_field_cb compares the actual wire opt (held in
+ * @c ctx->target_opt on entry, subtype already merged for fixlen) against this
+ * table before binding a target; a mismatch leaves the target unbound so the
+ * istream skips the field. The @c STRINGTERM bit (0x40) is a read-side option,
+ * absent from the wire, so the comparison masks it out (§7.3 depth is 0x3F).
+ */
+static const uint8_t _expected_wire_opt[] = {
+    [SOFAB_OBJECT_FIELDTYPE_UNSIGNED]       = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED),
+    [SOFAB_OBJECT_FIELDTYPE_SIGNED]         = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED),
+    [SOFAB_OBJECT_FIELDTYPE_FP32]           = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32),
+    [SOFAB_OBJECT_FIELDTYPE_FP64]           = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64),
+    [SOFAB_OBJECT_FIELDTYPE_STRING]         = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING),
+    [SOFAB_OBJECT_FIELDTYPE_BLOB]           = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB),
+    [SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED] = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED),
+    [SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED]   = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED),
+    [SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32]     = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32),
+    [SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64]     = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64),
+    [SOFAB_OBJECT_FIELDTYPE_SEQUENCE]       = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START),
+};
+#endif /* !defined(_WIRETYPE_MAP_IS_IDENTITY) */
 
 /* functions ******************************************************************/
 /*!
@@ -399,6 +449,25 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
             continue;
         }
 
+        /* MESSAGE_SPEC §7.3: the id matches, but if the header wire type
+         * contradicts the declared type (wire type + fixlen subtype, mask
+         * 0x3F) the field is skipped like an unknown id — not rejected. Bind no
+         * target and return, leaving target_ptr NULL so the istream consumes
+         * (or, for a sequence, skips) the field. A descriptor type outside the
+         * table (0x0..0xA) falls through to the switch's default (also a skip). */
+#if defined(_WIRETYPE_MAP_IS_IDENTITY)
+        if ((ctx->target_opt ^ field->type) & 0x07)
+        {
+            return;
+        }
+#else
+        if (field->type < (sizeof _expected_wire_opt / sizeof _expected_wire_opt[0])
+            && ((ctx->target_opt ^ _expected_wire_opt[field->type]) & 0x3F))
+        {
+            return;
+        }
+#endif
+
         switch (field->type)
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
@@ -482,6 +551,18 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 nested->dst = decoder->dst + field->offset;
                 // decrement available amount of decoder handles
                 nested->depth = decoder->depth - 1;
+
+                // MESSAGE_SPEC §7.4: a re-opened array wrapper *replaces* the
+                // array value whole, whereas a struct/union *merges* (last
+                // occurrence wins per field id). A wrapper holder is flagged
+                // fixed_seq (SOFAB_OBJECT_DESCR_SEQ) — the same marker used to
+                // reject over-index elements. Reset its slots to their defaults
+                // on open so a later occurrence overwrites rather than merges;
+                // structs and unions (fixed_seq == 0) keep merging untouched.
+                if (nested->info->fixed_seq)
+                {
+                    sofab_object_init(nested->info, nested->dst);
+                }
 
                 sofab_istream_read_sequence(ctx,
                     &nested->decoder,
