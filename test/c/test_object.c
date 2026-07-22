@@ -1587,6 +1587,69 @@ static void test_object_struct_reopen_merges (void)
 }
 
 //
+// issue #106: the §7.4 wrapper-replace above must also reset a SIZED BLOB slot's
+// companion used-length. That length sits before the buffer and is NOT covered by
+// the descriptor's (offset, size), so sofab_object_init's generic clear missed it:
+// on a re-open the dropped element survived as an all-zero blob. A string wrapper
+// (no separate length) already reset correctly — this is the blob-specific residual.
+//
+
+#define _BWRAP_CAP 3
+/* three sized-blob element slots; each length member immediately precedes its
+ * buffer, as SOFAB_OBJECT_FIELD_BLOB_SIZED requires (all uint8 -> no padding). */
+typedef struct {
+    uint8_t l0; uint8_t b0[8];
+    uint8_t l1; uint8_t b1[8];
+    uint8_t l2; uint8_t b2[8];
+} _bwrap_holder_t;
+static const sofab_object_descr_field_t _bwrap_fields[] = {
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(0, _bwrap_holder_t, b0, l0),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(1, _bwrap_holder_t, b1, l1),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(2, _bwrap_holder_t, b2, l2),
+};
+static const sofab_object_descr_t _bwrap_holder =   /* fixed_seq = 1 (wrapper) */
+    SOFAB_OBJECT_DESCR_SEQ(_bwrap_fields, _BWRAP_CAP, NULL, 0);
+
+typedef struct { _bwrap_holder_t arr; } _bwrap_msg_t;
+static const sofab_object_descr_field_t _bwrap_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _bwrap_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _bwrap_nested[] = { &_bwrap_holder };
+static const sofab_object_descr_t _bwrap_msg =
+    SOFAB_OBJECT_DESCR(_bwrap_msg_fields, 1, _bwrap_nested, 1);
+
+static void test_object_wrapper_reopen_replaces_blob (void)
+{
+    /* blob_array (id 200) opened with element 0 = "de ad", then RE-OPENED empty.
+     * §7.4 replaces the array whole -> it must be empty. */
+    _bwrap_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t buf[] = {
+        0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x07,   /* open, blobs[0]="dead", close */
+        0xC6, 0x0C, 0x07,                            /* re-open empty, close */
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_bwrap_msg, &msg, buf, sizeof(buf)));
+
+    /* the re-open dropped element 0: its used-length is back to 0 (pre-fix it stayed
+     * 2, so _field_is_default saw the slot as present). */
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, msg.arr.l0, "sized-blob length not reset on §7.4 re-open");
+    TEST_ASSERT_EQUAL_UINT8(0, msg.arr.l1);
+    TEST_ASSERT_EQUAL_UINT8(0, msg.arr.l2);
+
+    /* and it re-encodes as an empty wrapper (begin C6 0C, end 07) — never as a
+     * stale "00 00" blob for element 0. */
+    uint8_t out[32];
+    sofab_ostream_t octx;
+    sofab_ostream_init(&octx, out, sizeof(out), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, &_bwrap_msg, &msg), "re-encode failed");
+    size_t used = sofab_ostream_flush(&octx);
+    const uint8_t expected_empty[] = { 0xC6, 0x0C, 0x07 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected_empty), used, "re-encoded wrapper not empty");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_empty, out, used, "re-encoded wrapper bytes");
+}
+
+//
 
 int test_object_main (void)
 {
@@ -1623,6 +1686,7 @@ int test_object_main (void)
     RUN_TEST(test_object_wiretype_fixlen_subtype_skipped);
 
     RUN_TEST(test_object_wrapper_reopen_replaces);
+    RUN_TEST(test_object_wrapper_reopen_replaces_blob);
     RUN_TEST(test_object_wrapper_single_open_unchanged);
     RUN_TEST(test_object_struct_reopen_merges);
 
