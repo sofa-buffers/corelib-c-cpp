@@ -252,6 +252,24 @@ extern sofab_ret_t sofab_object_init (
             {
                 memset(CAST_TO(void *, obj, field->offset), 0, field->size);
             }
+
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+            /* Sized blob: the used-length member sits nested_idx bytes before the
+             * buffer and is not covered by (offset, size); reset it too, mirroring
+             * _field_is_default / encode / decode which all address it at
+             * offset - nested_idx. Without this a §7.4 wrapper re-open leaves a
+             * stale length, so a dropped element survives as an all-zero blob. */
+            if (field->type == SOFAB_OBJECT_FIELDTYPE_BLOB && field->nested_idx != 0)
+            {
+                uint64_t dlen = info->default_values != NULL
+                    ? _load_uint(CAST_TO(const void *, info->default_values,
+                                         field->offset - field->nested_idx),
+                                 field->nested_idx)
+                    : 0;
+                _store_uint(CAST_TO(void *, obj, field->offset - field->nested_idx),
+                            field->nested_idx, dlen);
+            }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
         }
     }
 
