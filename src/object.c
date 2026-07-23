@@ -166,27 +166,52 @@ static void _store_uint (void *p, uint8_t width, uint64_t val)
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 /*!
- * @brief Test whether a leaf field currently holds its default value (so it is
+ * @brief Test whether a field currently holds its default value (so it is
  *        omitted from the sparse encoding).
  *
  * Fixed-width fields (integers, floats, blobs, native arrays) compare their raw
- * storage: against @p defaults when the descriptor carries a default image, else
+ * storage: against the descriptor's default image when it carries one, else
  * against all-zero. A STRING is instead compared by its logical, null-terminated
  * content bounded by the field size: the buffer bytes past the terminator are
  * indeterminate (e.g. a shorter string overwriting a longer one) and must not
  * affect the decision, so it matches exactly what @ref sofab_ostream_write_string
- * serialises. Callers must not pass a SEQUENCE field (never omitted per field).
+ * serialises.
  *
- * @param field    Leaf field descriptor.
- * @param src      Object being encoded.
- * @param defaults Default image (@c info->default_values), or NULL for zero.
+ * A SEQUENCE field recurses: it is default iff its whole sub-object is default
+ * (every child field default), i.e. iff encoding it would emit an empty frame.
+ * This is the encode-faithful notion a raw @ref _iszero byte scan cannot express —
+ * an all-default nested struct is @e not all-zero when it carries non-zero
+ * defaults, and its padding must be ignored. It powers MESSAGE_SPEC §5.1 trailing
+ * elision of sequence-form wrapper elements (see @ref sofab_object_encode); the
+ * per-field skip there must still @e not call this on a @e standalone SEQUENCE
+ * field, which §2 keeps framed regardless.
+ *
+ * @param info  Descriptor owning @p field (source of the default image and, for a
+ *              SEQUENCE, the nested descriptor).
+ * @param field Field descriptor.
+ * @param src   Object being encoded.
  * @return 1 when the field equals its default, 0 otherwise.
  */
 static int _field_is_default (
+    const sofab_object_descr_t *info,
     const sofab_object_descr_field_t *field,
-    const void *src,
-    const void *defaults)
+    const void *src)
 {
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    if (field->type == SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
+    {
+        const sofab_object_descr_t *ninfo = info->nested_list[field->nested_idx];
+        const void *nsrc = CAST_TO(const void *, src, field->offset);
+        for (size_t i = 0; i < ninfo->field_count; i++)
+        {
+            if (!_field_is_default(ninfo, &ninfo->field_list[i], nsrc))
+                return 0;
+        }
+        return 1;
+    }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
+    const void *defaults = info->default_values;
     const void *val = CAST_TO(const void *, src, field->offset);
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
@@ -286,7 +311,39 @@ extern sofab_ret_t sofab_object_encode (
     assert(info != NULL);
     assert(src != NULL);
 
-    for (size_t i = 0; i < info->field_count && ret == SOFAB_RET_OK; i++)
+    /*
+     * MESSAGE_SPEC §5.1: a fixed-count wrapper holder elides its trailing run of
+     * all-default elements — sequence-form elements included. The element slots
+     * are ids 0..field_count-1; drop the maximal trailing run whose elements each
+     * equal their default so an all-default array-of-struct re-encodes as an empty
+     * wrapper (M = 0), matching the §3 trim already applied to scalar arrays by
+     * _array_trim_count. _field_is_default handles both element kinds uniformly
+     * (a SEQUENCE element recurses into its sub-object); leaf-element holders would
+     * also have their trailing run elided by the per-field skip below, so here the
+     * trim is only load-bearing for the sequence-form elements that skip never
+     * reaches. Confined to a fixed_seq holder, so a standalone struct field stays
+     * framed per §2.
+     */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    size_t n_emit = info->field_count;
+    if (info->fixed_seq)
+    {
+        while (n_emit > 0)
+        {
+            if (!_field_is_default(info, &info->field_list[n_emit - 1], src))
+                break;
+            n_emit--;
+        }
+    }
+#  define _SOFAB_ENCODE_LIMIT n_emit
+#else
+    /* Without sequence support no fixed-count wrapper holder can be reached, so
+     * there is nothing to trim: the loop reads info->field_count directly and
+     * this path stays byte-identical to the pre-elision encoder (minimal profile). */
+#  define _SOFAB_ENCODE_LIMIT info->field_count
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
+    for (size_t i = 0; i < _SOFAB_ENCODE_LIMIT && ret == SOFAB_RET_OK; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
@@ -303,7 +360,7 @@ extern sofab_ret_t sofab_object_encode (
         if (field->type != SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
 #endif
         {
-            if (_field_is_default(field, src, info->default_values))
+            if (_field_is_default(info, field, src))
             {
                 // Field value matches its default, skip serialization
                 continue;
@@ -445,6 +502,7 @@ extern sofab_ret_t sofab_object_encode (
                 return SOFAB_RET_E_USAGE;
         }
     }
+#undef _SOFAB_ENCODE_LIMIT
 
     return ret;
 }
