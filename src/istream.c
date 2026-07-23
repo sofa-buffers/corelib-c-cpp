@@ -613,6 +613,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     _FITS_UNSIGNED_CHECK(unsigned_value, ctx->target_len * 8);
                 }
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
                 // if decoding an array of unsigned values ...
                 if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_VARINTARRAY_UNSIGNED)
                 {
@@ -626,6 +627,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         continue;
                     }
                 }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
                 // go back to idle
                 ctx->decoder->state = _DECODER_STATE_IDLE;
@@ -654,6 +656,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     _FITS_SIGNED_CHECK(signed_value, ctx->target_len * 8);
                 }
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
                 // if decoding an array of signed values ...
                 if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_VARINTARRAY_SIGNED)
                 {
@@ -667,6 +670,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         continue;
                     }
                 }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
                 // go back to idle
                 ctx->decoder->state = _DECODER_STATE_IDLE;
@@ -845,6 +849,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
 #endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
                 if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
                 {
                     ctx->target_count--;
@@ -857,6 +862,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         continue;
                     }
                 }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
                 // go back to idle
                 ctx->decoder->state = _DECODER_STATE_IDLE;

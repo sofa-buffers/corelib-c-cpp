@@ -1651,6 +1651,161 @@ static void test_object_wrapper_reopen_replaces_blob (void)
 
 //
 
+// issue #109 (Crucible F-0030): MESSAGE_SPEC §5.1 — a fixed-count wrapper holder
+// elides its trailing run of all-default elements, SEQUENCE-form (struct/union/
+// nested-array) elements INCLUDED. Pre-fix the `field->type != SEQUENCE` guard in
+// sofab_object_encode skipped the per-element default check for every struct
+// element, so an all-default array-of-struct re-encoded as N explicit empty
+// frames instead of the canonical empty wrapper. This is the encode-side
+// analogue of the §3 scalar-array trim (_array_trim_count).
+//
+// holder: se_kv e[5] whose element slots are themselves SEQUENCE fields.
+typedef struct { uint8_t k; uint8_t v; } _se_kv_t;
+static const sofab_object_descr_field_t _se_kv_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _se_kv_t, k, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+    SOFAB_OBJECT_FIELD(1, _se_kv_t, v, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+static const sofab_object_descr_t _se_kv =
+    SOFAB_OBJECT_DESCR(_se_kv_fields, 2, NULL, 0);
+
+#define _SE_CAP 5
+typedef struct { _se_kv_t e[_SE_CAP]; } _se_holder_t;
+static const sofab_object_descr_field_t _se_holder_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(0, _se_holder_t, e[0], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(1, _se_holder_t, e[1], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(2, _se_holder_t, e[2], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(3, _se_holder_t, e[3], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(4, _se_holder_t, e[4], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _se_holder_nested[] = { &_se_kv };
+static const sofab_object_descr_t _se_holder =   /* fixed_seq = 1 (wrapper) */
+    SOFAB_OBJECT_DESCR_SEQ(_se_holder_fields, _SE_CAP, _se_holder_nested, 1);
+
+typedef struct { _se_holder_t arr; } _se_msg_t;
+static const sofab_object_descr_field_t _se_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _se_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _se_msg_nested[] = { &_se_holder };
+static const sofab_object_descr_t _se_msg =
+    SOFAB_OBJECT_DESCR(_se_msg_fields, 1, _se_msg_nested, 1);
+
+static size_t _se_encode (const _se_msg_t *m, uint8_t *out, size_t cap)
+{
+    sofab_ostream_t o;
+    sofab_ostream_init(&o, out, cap, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&o, &_se_msg, m), "struct-element encode failed");
+    return sofab_ostream_flush(&o);
+}
+
+static void test_object_struct_wrapper_all_default_empty (void)
+{
+    /* every element all-default -> M = 0 -> the whole [0,N) run elides -> the
+     * canonical empty wrapper C6 0C 07 (pre-fix: five empty seq frames). */
+    _se_msg_t m;
+    memset(&m, 0, sizeof(m));
+    uint8_t out[64];
+    size_t used = _se_encode(&m, out, sizeof(out));
+    const uint8_t expected[] = { 0xC6, 0x0C, 0x07 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "all-default array-of-struct must re-encode as an empty wrapper");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_struct_wrapper_trailing_run_trimmed (void)
+{
+    /* only element 0 carries data -> M = 1 -> elements [1,5) elide. */
+    _se_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].k = 1; m.arr.e[0].v = 2;
+    uint8_t out[64];
+    size_t used = _se_encode(&m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,                   /* wrapper open (id 200) */
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07, /* e0: {k=1, v=2} */
+        0x07,                         /* wrapper close */
+    };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "trailing all-default struct elements must be trimmed (M=1)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_struct_wrapper_interior_default_kept (void)
+{
+    /* elements 0 and 2 set, element 1 all-default -> M = 3: only the trailing
+     * run elides; the INTERIOR default element 1 stays on the wire as an empty
+     * frame (0x0E 0x07), per §5.1 (M = one past the last non-default element). */
+    _se_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].k = 1; m.arr.e[0].v = 2;
+    m.arr.e[2].k = 3; m.arr.e[2].v = 4;
+    uint8_t out[64];
+    size_t used = _se_encode(&m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07, /* e0 = {1,2} */
+        0x0E, 0x07,                         /* e1 = empty frame (interior default) */
+        0x16, 0x00, 0x03, 0x08, 0x04, 0x07, /* e2 = {3,4} */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "interior default element must be framed, only trailing run trims");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_struct_wrapper_last_set_no_trim (void)
+{
+    /* only the LAST element carries data -> M = N -> nothing trims; the leading
+     * default elements 0..3 are framed as empty frames (they are not a trailing
+     * run). Guards against over-trimming from either end. */
+    _se_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.e[4].k = 9;
+    uint8_t out[64];
+    size_t used = _se_encode(&m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x07,                   /* e0 empty */
+        0x0E, 0x07,                   /* e1 empty */
+        0x16, 0x07,                   /* e2 empty */
+        0x1E, 0x07,                   /* e3 empty */
+        0x26, 0x00, 0x09, 0x07,       /* e4 = {9,0} */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "a non-default last element must suppress all trimming (M=N)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_struct_wrapper_roundtrip (void)
+{
+    /* value equality across encode -> decode for the interior-default case:
+     * both the canonical and (pre-fix) verbose forms decode identically, but
+     * the value must survive the newly-elided trailing run via the N-fill. */
+    _se_msg_t in;
+    memset(&in, 0, sizeof(in));
+    in.arr.e[0].k = 1; in.arr.e[0].v = 2;
+    in.arr.e[2].k = 3; in.arr.e[2].v = 4;
+    uint8_t out[64];
+    size_t used = _se_encode(&in, out, sizeof(out));
+
+    /* two nesting levels below the message (holder sequence -> element struct),
+     * so the decoder needs depth 2 and three handles -- more than _overidx_decode
+     * provides. */
+    _se_msg_t back;
+    memset(&back, 0, sizeof(back));
+    struct { sofab_istream_t ctx; sofab_object_decoder_t decoder[3]; } d;
+    memset(&d, 0, sizeof(d));
+    d.decoder[0].info  = &_se_msg;
+    d.decoder[0].dst   = (uint8_t *)&back;
+    d.decoder[0].depth = 2;
+    sofab_istream_init(&d.ctx, sofab_object_field_cb, &d.decoder[0]);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_istream_feed(&d.ctx, out, used));
+    TEST_ASSERT_EQUAL_MEMORY(&in, &back, sizeof(_se_msg_t));
+}
+
+//
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
@@ -1689,6 +1844,12 @@ int test_object_main (void)
     RUN_TEST(test_object_wrapper_reopen_replaces_blob);
     RUN_TEST(test_object_wrapper_single_open_unchanged);
     RUN_TEST(test_object_struct_reopen_merges);
+
+    RUN_TEST(test_object_struct_wrapper_all_default_empty);
+    RUN_TEST(test_object_struct_wrapper_trailing_run_trimmed);
+    RUN_TEST(test_object_struct_wrapper_interior_default_kept);
+    RUN_TEST(test_object_struct_wrapper_last_set_no_trim);
+    RUN_TEST(test_object_struct_wrapper_roundtrip);
 
     return UNITY_END();
 }

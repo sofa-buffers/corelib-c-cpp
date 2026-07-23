@@ -433,10 +433,10 @@ cost is `.text` (flash). Tables below are the size of the built static library
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.1KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.1KB | 0.0KB | 0.0KB |
-| RV32IMC | ~3.9KB | 0.0KB | 0.0KB |
-| atmega8 | ~7.0KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.2KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.3KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.2KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.4KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — same as above plus
 `SOFAB_ENABLE_STRICT_UTF8` (off by default). This is the only row where the
@@ -446,10 +446,10 @@ not pay:
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.3KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.3KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.1KB | 0.0KB | 0.0KB |
-| atmega8 | ~7.4KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.5KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.5KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.5KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.8KB | 0.0KB | 0.0KB |
 
 **Minimal configuration** — `SOFAB_DISABLE_FIXLEN_SUPPORT`,
 `SOFAB_DISABLE_ARRAY_SUPPORT`, `SOFAB_DISABLE_SEQUENCE_SUPPORT`,
