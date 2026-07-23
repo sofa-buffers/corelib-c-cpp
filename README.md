@@ -460,17 +460,17 @@ not pay:
 | ARMv6-m | ~1.1KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~1.1KB | 0.0KB | 0.0KB |
 | RV32IMC | ~1.4KB | 0.0KB | 0.0KB |
-| atmega8 | ~2.8KB | 0.0KB | 0.0KB |
+| atmega8 | ~2.7KB | 0.0KB | 0.0KB |
 
 Same minimal configuration, additionally without `object.c`
 (`SOFAB_DISABLE_OBJECT_API`):
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~0.8KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~0.7KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~0.7KB | 0.0KB | 0.0KB |
 | RV32IMC | ~0.9KB | 0.0KB | 0.0KB |
-| atmega8 | ~1.9KB | 0.0KB | 0.0KB |
+| atmega8 | ~1.8KB | 0.0KB | 0.0KB |
 
 ## Choosing between the two C/C++ corelibs
 
