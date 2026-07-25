@@ -16,6 +16,7 @@
 /* includes *******************************************************************/
 #include <array>
 #include <concepts>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <span>
@@ -1929,6 +1930,157 @@ namespace sofab
             return data_;
         }
     };
+
+    /* ---------------------------------------------------------------------- */
+    /* Wrapper-sequence collectors and encode helpers                          */
+    /*                                                                          */
+    /* MESSAGE_SPEC §5 lowers an array of strings, blobs, structs or nested     */
+    /* arrays to a sequence whose child ids are the element indices. These      */
+    /* collect such a sequence into this profile's heap-free containers. They   */
+    /* mirror sofab::StringSeq / BlobSeq / MessageSeq in corelib-cpp so both    */
+    /* C++ outputs read the same; the difference is the storage they fill —     */
+    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.    */
+    /* ---------------------------------------------------------------------- */
+
+    /**
+     * @brief Collects a `string` wrapper sequence into inline storage.
+     *
+     * An element is *placed* at its index id rather than appended: a default
+     * (empty) element is omitted on the wire (§2), so the vector is grown with
+     * empty slots up to the id and the value stored there. Inline storage never
+     * reallocates, so an element bound earlier stays address-stable while later
+     * slots grow — which the deferred C decoder relies on.
+     *
+     * An index at or past the fixed capacity N is a schema-bound violation
+     * (§5.1/§7) and is rejected with @ref IStreamImpl::invalidate, before the fill
+     * loop. That also bounds an over-index amplification: InlineVector's
+     * emplace_back is a no-op once full, so an unguarded loop would spin forever
+     * on such an index (issue #126).
+     *
+     * @tparam Container Inline vector of @ref FixedString.
+     */
+    template <typename Container>
+    struct FixedStringSeq : IStreamMessage
+    {
+        Container *out = nullptr;
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::String) return; /* §7.3 */
+            if (static_cast<size_t>(id) >= out->capacity())
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &s = (*out)[id];
+            s.set_len(size);
+            if (size) is.read(s);
+        }
+    };
+
+    /// The `blob` counterpart of @ref FixedStringSeq; same placement and bound
+    /// rules, filling @ref FixedBytes slots.
+    template <typename Container>
+    struct FixedBlobSeq : IStreamMessage
+    {
+        Container *out = nullptr;
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::Blob) return; /* §7.3 */
+            if (static_cast<size_t>(id) >= out->capacity())
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &b = (*out)[id];
+            b.set_len(size);
+            if (size) is.read(b.data(), b.size());
+        }
+    };
+
+    /**
+     * @brief Collects a struct/union or nested-array wrapper sequence into inline
+     *        storage.
+     *
+     * Elements arrive in order, so each is emplaced and read in turn:
+     * @ref IStreamImpl::read descends into a struct element's own sub-sequence, or
+     * reads a nested array row, exactly as for a scalar field.
+     *
+     * @tparam Container Inline vector of the element type.
+     */
+    template <typename Container>
+    struct FixedMessageSeq : IStreamMessage
+    {
+        Container *out = nullptr;
+
+        void deserialize(IStreamImpl &is, sofab_id_t, size_t, size_t) noexcept override
+        {
+            is.read(out->emplace_back());
+        }
+    };
+
+    /**
+     * @brief Collects a struct/union or nested-array wrapper sequence into a
+     *        `std::vector<T>` — the `allow_dynamic` heap fallback.
+     *
+     * The inline-storage counterpart is @ref FixedMessageSeq; this one exists for
+     * fields a schema leaves unbounded, which this profile only accepts under
+     * `allow_dynamic`. Named to match `sofab::MessageSeq` in corelib-cpp so both
+     * C++ outputs read alike.
+     *
+     * @tparam T Element type.
+     */
+    template <typename T>
+    struct MessageSeq : IStreamMessage
+    {
+        std::vector<T> *out = nullptr;
+        long cap = -1;   ///< Schema `count` N, or -1; an id at or past N is INVALID (§5.1/§7).
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
+        {
+            if (cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
+            {
+                is.invalidate();
+                return;
+            }
+            T &row = out->emplace_back();
+            /* A count-less native-array row is a std::vector the read fills only up
+             * to its current size, so size it to the row's wire count first.
+             * Struct/union rows and fixed std::array rows have no resize(). */
+            if constexpr (requires { row.resize(count); } && !std::is_base_of_v<IStreamMessage, T>)
+                row.resize(count);
+            is.read(row);
+        }
+    };
+
+    /**
+     * @brief Narrow a fixed-count array to its non-default prefix, for encode.
+     *
+     * MESSAGE_SPEC §3: a `count: N` array's canonical encoding carries `M` = one
+     * past the last element that differs from the element default, and the decoder
+     * refills `[M, N)` from the schema count. The stream emits whatever container
+     * it is handed, so the value is narrowed first. A dynamic array has no N to
+     * refill from, so its trailing defaults are significant and it is not trimmed.
+     *
+     * Elements compare by **byte image**, never `operator==`: `-0.0 == 0.0` holds
+     * in C++, but `-0.0` is a distinct value that must survive the round-trip, and
+     * a NaN payload likewise never matches the default.
+     *
+     * @param a Contiguous container of trivially-copyable elements.
+     * @return A span over `[0, M)`.
+     */
+    template <typename C>
+    std::span<const typename C::value_type> trimTail(const C &a) noexcept
+    {
+        using Elem = typename C::value_type;
+        const Elem zero{};
+        size_t n = a.size();
+        while (n > 0 && std::memcmp(&a[n - 1], &zero, sizeof(Elem)) == 0) --n;
+        return std::span<const Elem>(a.data(), n);
+    }
 };
 
 /** @} */ // end of defgroup
