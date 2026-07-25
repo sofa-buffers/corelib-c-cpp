@@ -1373,6 +1373,24 @@ namespace sofab
 
         IStreamImpl() noexcept = default;
 
+        // Count a §7.3 skip the C core cannot see. The core counts a skip when a
+        // bound read contradicts the wire; the reads that must check the type
+        // *before* they touch their destination (readString, readBlob,
+        // readSequence) decline without ever binding, so from the core's side
+        // they are indistinguishable from a callback that simply was not
+        // interested. Counting here keeps sofab_istream_skipped meaning the same
+        // thing whichever side detected the contradiction. Saturating, like the
+        // core's own increment.
+        void noteSkip_() noexcept
+        {
+#if SOFAB_SKIP_COUNTER
+            if (ctx_.skipped < 0xFF)
+            {
+                ctx_.skipped++;
+            }
+#endif
+        }
+
     public:
         /*!
          * @brief Outcome of a @ref feed call.
@@ -1726,6 +1744,130 @@ namespace sofab
             sofab_istream_read_blob(&ctx_, dst, maxlen);
             return maxlen;
         }
+
+        /*!
+         * @brief Bind a string field, sizing the destination first.
+         *
+         * A string destination has to be given its logical length before the read
+         * binds it, and that is a change to the destination — so unlike a scalar
+         * read it cannot be issued unconditionally and left to the decoder to
+         * unbind. This checks the delivered type first (MESSAGE_SPEC §7.3) and
+         * touches @p value only if the field really is a string: a contradicting
+         * field leaves the destination exactly as it was and is skipped like an
+         * unknown id.
+         *
+         * Accepts both storage shapes: a @ref FixedString (inline, @c set_len)
+         * and a @c std::string (@c resize), so the same call works in the no-heap
+         * and the dynamic profile.
+         *
+         * @param value  Destination string.
+         * @param size   Field length, as delivered to the field callback.
+         */
+        template <typename T>
+        void readString(T &value, size_t size) noexcept
+        {
+            if (wire() != Wire::Fixlen || fixType() != Fix::String)
+            {
+                noteSkip_();
+                return;
+            }
+
+            if constexpr (requires { value.set_len(size); })
+            {
+                value.set_len(size);
+            }
+            else
+            {
+                value.resize(size);
+            }
+
+            // a zero-length string binds no target: there is nothing to fill
+            if (value.size())
+            {
+                read(value);
+            }
+        }
+
+        /*!
+         * @brief Bind a blob field, sizing the destination first.
+         *
+         * The blob counterpart of @ref readString, and for the same reason: the
+         * destination must be sized before it is bound, so the delivered type is
+         * checked before @p value is touched (MESSAGE_SPEC §7.3).
+         *
+         * @param value  Destination byte buffer (@ref FixedBytes or
+         *               @c std::vector<uint8_t>).
+         * @param size   Field length, as delivered to the field callback.
+         */
+        template <typename T>
+        void readBlob(T &value, size_t size) noexcept
+        {
+            if (wire() != Wire::Fixlen || fixType() != Fix::Blob)
+            {
+                noteSkip_();
+                return;
+            }
+
+            if constexpr (requires { value.set_len(size); })
+            {
+                value.set_len(size);
+            }
+            else
+            {
+                value.resize(size);
+            }
+
+            // Bind the destination's own size, not the wire length: a wire length
+            // beyond the declared bound is then rejected as INVALID by the C
+            // decoder rather than silently truncated (MESSAGE_SPEC §7.1).
+            read(value.data(), value.size());
+        }
+
+        /*!
+         * @brief Bind a wrapper-array field through a collector, clearing the
+         *        destination first.
+         *
+         * A wrapper array arrives as a sequence whose element index is the field
+         * id (MESSAGE_SPEC §5.1); @p collector turns those elements into entries
+         * of @p out. The destination is emptied first — a wrapper array replaces
+         * rather than merges (§7.4) — and that, again, is a change that must not
+         * happen for a field which turns out not to be a sequence at all.
+         *
+         * @param collector  Collector for the element type (e.g. @ref FixedStringSeq).
+         * @param out        Destination container; must outlive decoding.
+         */
+        template <typename C, typename Out>
+        void readSequence(C &collector, Out &out) noexcept
+        {
+            if (wire() != Wire::SequenceStart)
+            {
+                noteSkip_();
+                return;
+            }
+
+            out.clear();
+            collector.out = &out;
+            read(collector);
+        }
+
+        /*!
+         * @brief Number of fields skipped because their wire type contradicted
+         *        the destination bound for them.
+         *
+         * Facade over @ref sofab_istream_skipped. Not an error count: a skip is
+         * how a reader and a writer built from different revisions of a schema
+         * keep talking (MESSAGE_SPEC §7.3). A non-zero value after a successful
+         * decode means the two sides disagree about what an id means, which is
+         * worth a log line or a health metric. Saturates at 255.
+         *
+         * @return Number of type-contradicting fields skipped.
+         */
+#if SOFAB_SKIP_COUNTER
+        [[nodiscard]] uint8_t skipped() const noexcept
+        {
+            return sofab_istream_skipped(&ctx_);
+        }
+#endif
 
         /*!
          * @brief Decode a sequence of variable-length string elements into a vector.

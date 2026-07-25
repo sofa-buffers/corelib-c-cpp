@@ -47,21 +47,30 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure --verbose
 
-      # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4),
-      # so the default build above compiles the validator out and skips the utf8
-      # unit tests + negative vectors. Per §6.4 the strict-ON configuration MUST
-      # still be built and conformance-tested, so this second leg opts in with
-      # SOFAB_ENABLE_STRICT_UTF8 and reruns the full ctest suite — the utf8
-      # validator tests and the invalid_utf8 negative vectors now run.
-      - name: Configure with CMake (strict UTF-8 ON)
+      # This footprint corelib defaults its opt-in features OFF, so the build
+      # above compiles them out and the tests covering them do not run. Each one
+      # must still be built and tested, so this second leg turns them all on and
+      # reruns the full ctest suite:
+      #
+      #   SOFAB_ENABLE_STRICT_UTF8   — CORELIB_PLAN §6.4 requires the strict-ON
+      #                                configuration to be conformance-tested;
+      #                                brings in the utf8 validator tests and the
+      #                                invalid_utf8 negative vectors.
+      #   SOFAB_ENABLE_SKIP_COUNTER  — brings in the assertions on
+      #                                sofab_istream_skipped / IStreamImpl::skipped.
+      #
+      # The default leg above is what proves the library still builds, and the
+      # §7.3 skips still happen, with every one of them compiled out.
+      - name: Configure with CMake (opt-in features ON)
         run: |
-          cmake -S . -B build-strict-utf8 \
+          cmake -S . -B build-optin \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DSOFAB_ENABLE_STRICT_UTF8=ON
+            -DSOFAB_ENABLE_STRICT_UTF8=ON \
+            -DSOFAB_ENABLE_SKIP_COUNTER=ON
 
-      - name: Build project (strict UTF-8 ON)
-        run: cmake --build build-strict-utf8 --parallel $(nproc)
+      - name: Build project (opt-in features ON)
+        run: cmake --build build-optin --parallel $(nproc)
 
-      - name: Run tests (strict UTF-8 ON)
-        working-directory: build-strict-utf8
+      - name: Run tests (opt-in features ON)
+        working-directory: build-optin
         run: ctest --output-on-failure --verbose

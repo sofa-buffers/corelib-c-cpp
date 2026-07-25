@@ -47,7 +47,14 @@ typedef enum
                                  //!< boundary) and SOFAB_RET_E_INVALID_MSG (malformed).
     /* Error codes follow. */
     SOFAB_RET_E_ARGUMENT,        //!< Invalid argument
-    SOFAB_RET_E_USAGE,           //!< Invalid usage
+    SOFAB_RET_E_USAGE,           //!< Invalid usage: the call cannot be carried out at
+                                 //!< all (e.g. a destination width no wire type fits,
+                                 //!< or a descriptor field type that does not exist).
+                                 //!< NOT reported when a read's type merely contradicts
+                                 //!< the delivered field: that is two peers disagreeing
+                                 //!< about an id, not a defect in the caller, so the
+                                 //!< field is skipped and counted instead — see
+                                 //!< sofab_istream_skipped.
     SOFAB_RET_E_BUFFER_FULL,     //!< Sofab serialization failed due to buffer overflow
     SOFAB_RET_E_INVALID_MSG,     //!< Sofab deserialization failed due to invalid message
 } sofab_ret_t;
@@ -204,6 +211,34 @@ typedef int32_t sofab_signed_t;
 #  define SOFAB_STRICT_UTF8 1
 # else
 #  define SOFAB_STRICT_UTF8 0
+# endif
+#endif
+
+/*!
+ * @brief Count fields skipped because their wire type contradicted the read
+ *        bound for them (MESSAGE_SPEC §7.3).
+ *
+ * Such a skip is normal traffic, not an error: it is how a reader and a writer
+ * built from different revisions of a schema keep talking. The counter exists
+ * only so an application can *notice* it — a non-zero count after a successful
+ * decode means the two sides disagree about what an id means, which belongs in a
+ * log line or a health metric. Nothing in the decode path reads it.
+ *
+ * Being a pure diagnostic, it follows the same opt-in style as
+ * @ref SOFAB_STRICT_UTF8 and @b defaults @b OFF for this footprint corelib.
+ * Measured cost when ON: 16–24 bytes of @c .text (the saturating increment plus
+ * @ref sofab_istream_skipped), and no @c .data / @c .bss — the counter shares
+ * the alignment padding the context already had. Enable it by defining
+ * @c SOFAB_ENABLE_SKIP_COUNTER; a direct @c -DSOFAB_SKIP_COUNTER=1 also works
+ * and wins. The resolved boolean @ref SOFAB_SKIP_COUNTER is what the corelib and
+ * the C++ wrapper gate on.
+ */
+// #define SOFAB_ENABLE_SKIP_COUNTER
+#if !defined(SOFAB_SKIP_COUNTER)
+# if defined(SOFAB_ENABLE_SKIP_COUNTER) && !defined(SOFAB_DISABLE_SKIP_COUNTER)
+#  define SOFAB_SKIP_COUNTER 1
+# else
+#  define SOFAB_SKIP_COUNTER 0
 # endif
 #endif
 

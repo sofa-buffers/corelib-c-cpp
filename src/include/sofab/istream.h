@@ -70,6 +70,12 @@ typedef struct sofab_istream sofab_istream_t;
  * to bind a destination buffer or initiate a nested sequence.
  * If no read function is called, the field will be skipped.
  *
+ * Binding a read whose type contradicts the field on the wire skips the field
+ * too (MESSAGE_SPEC §7.3): the destination is left untouched and decoding
+ * continues, since an id that means different things to the two peers is a
+ * disagreement between them, not a malformed message. @ref sofab_istream_skipped
+ * counts those skips.
+ *
  * Example usage:
  * @code
  * void my_field_cb(sofab_istream_t *ctx, sofab_id_t id,
@@ -138,6 +144,11 @@ struct sofab_istream
     uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */
     uint8_t varint_shift;                       /*!< Current shift offset for varint decoding */
     uint8_t invalid;                            /*!< Sticky flag: a callback rejected the message */
+#if SOFAB_SKIP_COUNTER
+    uint8_t skipped;                            /*!< Saturating count of type-contradicting fields
+                                                 *!< skipped per MESSAGE_SPEC 7.3
+                                                 *!< (@ref sofab_istream_skipped) */
+#endif
 };
 
 /* prototypes *****************************************************************/
@@ -205,6 +216,29 @@ extern sofab_ret_t sofab_istream_feed (
  * @param ctx  Pointer to the input stream context.
  */
 extern void sofab_istream_invalidate (sofab_istream_t *ctx);
+
+/*!
+ * @brief Number of fields skipped because their wire type contradicted the
+ *        destination a field callback bound.
+ *
+ * A field whose type on the wire does not match the type of the
+ * sofab_istream_read_* call made for it carries no value for that destination,
+ * so it is skipped like an unknown id and decoding continues (MESSAGE_SPEC
+ * §7.3). That is not an error: it is what lets a reader and a writer built from
+ * different revisions of a schema keep talking.
+ *
+ * This counter makes those skips visible. A non-zero value on a message that
+ * decoded successfully means the two sides disagree about what an id means —
+ * useful in a log or a health metric, and the signal that used to be reported as
+ * @ref SOFAB_RET_E_USAGE. The count saturates at 255; only zero versus non-zero
+ * carries meaning. It is cleared by @ref sofab_istream_init.
+ *
+ * @param ctx  Pointer to the input stream context.
+ * @return Number of type-contradicting fields skipped, saturating at 255.
+ */
+#if SOFAB_SKIP_COUNTER
+extern uint8_t sofab_istream_skipped (const sofab_istream_t *ctx);
+#endif
 
 /* read functions *************************************************************/
 

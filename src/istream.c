@@ -275,16 +275,24 @@ static size_t _read_fixlen_reverse (sofab_istream_t *ctx, uint8_t byte)
  *
  * Skips the callback while inside an ignored sequence. After the callback runs,
  * verifies that the field/fixlen type bound by any read matches the actual
- * field on the wire.
+ * field on the wire; a bound read whose type contradicts the wire is unbound so
+ * that the field is skipped (MESSAGE_SPEC 7.3) and counted in @c ctx->skipped.
  *
- * @param ctx  Input stream context.
- * @return SOFAB_RET_OK on success, or SOFAB_RET_E_USAGE if the bound read type
- *         does not match the decoded field type.
+ * @param ctx        Input stream context.
+ * @param type_mask  Which option bits must match: 0x3F = field type and fixlen
+ *                   subtype, 0x07 = field type only.
+ * @return SOFAB_RET_OK.
  */
 static sofab_ret_t _call_field_callback_masked (
     sofab_istream_t *ctx, uint8_t type_mask)
 {
+    // State as the callback finds it. A callback that declines the field leaves
+    // exactly this behind, and it is what a contradicting read is rolled back to
+    // below -- note target_count is NOT zero for an array: it is seeded with the
+    // wire count, which is what drives the element skip.
     uint8_t field_opt = ctx->target_opt;
+    size_t field_len = ctx->target_len;
+    size_t field_count = ctx->target_count;
 
     // field is ignored, so let's skip all children
     if (ctx->decoder->skip_depth > 0)
@@ -315,8 +323,38 @@ static sofab_ret_t _call_field_callback_masked (
         // 0x07 = field type only
         if ((ctx->target_opt ^ field_opt) & type_mask)
         {
-            // target type mismatch
-            return SOFAB_RET_E_USAGE;
+            // MESSAGE_SPEC 7.3: the field on the wire contradicts the type the
+            // callback bound, so it carries no value for this target -- skip
+            // it, exactly as an unknown id is skipped. Restoring the state from
+            // before the callback is precisely what a callback that declined
+            // the field leaves behind, so the regular skip path takes over.
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+            // sofab_istream_read_sequence is the one read that does more than
+            // bind a pointer: it pushes a decoder onto the chain. If that is
+            // what the callback did, unbinding alone would leave the stream
+            // delivering later fields to a decoder the caller believes is
+            // finished -- and whose storage is typically a local. Pop it.
+            if ((ctx->target_opt & 0x07)
+                == SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START)
+                && ctx->decoder->parent != NULL)
+            {
+                ctx->decoder = ctx->decoder->parent;
+            }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
+            ctx->target_ptr = NULL;
+            ctx->target_len = field_len;
+            ctx->target_count = field_count;
+            ctx->target_opt = field_opt;
+
+#if SOFAB_SKIP_COUNTER
+            // saturating: a diagnostic ("the peers disagree about this id"),
+            // not a quantity anyone computes with
+            if (ctx->skipped < UINT8_MAX)
+            {
+                ctx->skipped++;
+            }
+#endif /* SOFAB_SKIP_COUNTER */
         }
     }
 
@@ -1016,6 +1054,15 @@ extern void sofab_istream_invalidate (sofab_istream_t *ctx)
     // this feed and every subsequent one, until sofab_istream_init resets it.
     ctx->invalid = 1;
 }
+
+#if SOFAB_SKIP_COUNTER
+extern uint8_t sofab_istream_skipped (const sofab_istream_t *ctx)
+{
+    assert(ctx != NULL);
+
+    return ctx->skipped;
+}
+#endif /* SOFAB_SKIP_COUNTER */
 
 extern void sofab_istream_read_field (
     sofab_istream_t *ctx, void *var, size_t varlen, uint8_t opt)

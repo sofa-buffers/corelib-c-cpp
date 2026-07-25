@@ -158,6 +158,12 @@ Decoding is callback-driven: feed the bytes and, inside the callback, bind each
 field to a destination with a `sofab_istream_read_*()` call. Unread fields are
 skipped automatically.
 
+A field is skipped just the same when the `read_*` bound for it does not match
+the type on the wire (MESSAGE_SPEC §7.3) — the decode continues and the
+destination keeps its previous value. That is what lets two peers built from
+different revisions of a schema keep talking, so it is not an error; if you want
+to know it happened, `sofab_istream_skipped()` counts it.
+
 ```c
 #include "sofab/istream.h"
 
@@ -297,12 +303,12 @@ features removes their code paths and shrinks the footprint.
 | `SOFAB_DISABLE_INT64_SUPPORT` | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
 
-Strict UTF-8 validation is the one **opt-IN** knob (off by default in this
-footprint corelib — see below):
+Two knobs are **opt-IN** (off by default in this footprint corelib — see below):
 
 | Macro | Default | Effect |
 | - | - | - |
 | `SOFAB_ENABLE_STRICT_UTF8` | off | Enable strict UTF-8 validation of `string` fields (see below); off by default so the validator costs zero `.text`/`.rodata` |
+| `SOFAB_ENABLE_SKIP_COUNTER` | off | Count fields skipped because their wire type contradicted the read bound for them (§7.3), readable with `sofab_istream_skipped()`; a pure diagnostic no decode path reads, costing 16–24&nbsp;B of `.text` when on |
 
 **Strict UTF-8 (`SOFAB_STRICT_UTF8`, off by default).** This is a
 footprint/embedded corelib, so the strict UTF-8 check **defaults OFF** — the
@@ -446,10 +452,10 @@ not pay:
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.5KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.4KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~3.5KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.5KB | 0.0KB | 0.0KB |
-| atmega8 | ~7.8KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.4KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.9KB | 0.0KB | 0.0KB |
 
 **Minimal configuration** — `SOFAB_DISABLE_FIXLEN_SUPPORT`,
 `SOFAB_DISABLE_ARRAY_SUPPORT`, `SOFAB_DISABLE_SEQUENCE_SUPPORT`,
