@@ -476,9 +476,10 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
         }
 
         /* MESSAGE_SPEC §7.3 (a header wire type that contradicts the declared
-         * type is skipped like an unknown id) needs no check here: the read
-         * below binds the declared type, and the istream unbinds and skips the
-         * field when the wire disagrees. */
+         * type is skipped like an unknown id) needs no check for a branch that
+         * only binds: the istream unbinds a contradicting read and skips the
+         * field on its own. Two branches below do more than bind, and those
+         * check first -- see the comments there. */
         switch (field->type)
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
@@ -506,6 +507,18 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 break;
 
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
+                /* A sized blob writes used_len whether or not the bind survives,
+                 * so a contradicting field would zero the length of the value
+                 * already there. The bind alone would be safe; this is not, so
+                 * settle the wire type (and the fixlen subtype) first. */
+                if (field->nested_idx != 0
+                    && (ctx->target_opt & 0x3F)
+                        != (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB)))
+                {
+                    break;
+                }
+
                 sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
                 if (field->nested_idx != 0)
                 {
@@ -551,6 +564,18 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
             {
                 if (decoder->depth == 0) break; // Sequence depth exceeded
+
+                /* The wrapper reset below (MESSAGE_SPEC §7.4) is a side effect on
+                 * the destination, so unlike a plain bind it cannot be left to
+                 * the istream to undo: a field whose wire type contradicts would
+                 * have emptied the array before being skipped. Settle §7.3 here.
+                 * It also spares the istream a decoder push it would only have to
+                 * pop again. */
+                if ((ctx->target_opt & 0x07)
+                    != SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START))
+                {
+                    break;
+                }
 
                 // pointer arithmetic to get next decoder handle in array
                 // (bounds are checked via depth above)
