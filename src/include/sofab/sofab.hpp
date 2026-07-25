@@ -2027,6 +2027,29 @@ namespace sofab
     };
 
     /*!
+     * @brief A message that both encodes and decodes: exactly
+     *        @ref OStreamMessage + @ref IStreamMessage.
+     *
+     * Almost every message is both, so spelling out the pair at every declaration
+     * is noise. This is an empty intermediate base — no storage, no vtable slot of
+     * its own, identical layout to inheriting the two directly — so it is a naming
+     * convenience and nothing else:
+     *
+     * ```cpp
+     * struct Telemetry : sofab::Message {
+     *     sofab::OStreamImpl::Result serialize(sofab::OStreamImpl &os) const noexcept override;
+     *     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t, size_t) noexcept override;
+     * };
+     * ```
+     *
+     * Both @ref sofab::InputMessage and @ref sofab::OutputMessage are satisfied
+     * through it. Inherit a single side directly when a type really is one-way.
+     */
+    struct Message : OStreamMessage, IStreamMessage
+    {
+    };
+
+    /*!
      * @brief Self-contained decoder that owns a message instance.
      *
      * Wires a @ref IStreamMessage subclass to an input stream so fed bytes are
@@ -2139,6 +2162,68 @@ namespace sofab
             while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
             auto &b = (*out)[id];
             b.set_len(size);
+            if (size) is.read(b.data(), b.size());
+        }
+    };
+
+    /**
+     * @brief Collects a `string` wrapper sequence into a `std::vector<std::string>`.
+     *
+     * The heap counterpart of @ref FixedStringSeq, for the `allow_dynamic`
+     * storage mode: the schema's `count` and element `maxlen` still bind, they
+     * just are not the container's capacity any more, so both are checked here.
+     * An index at or past @ref cap is a schema-bound violation (§5.1/§7), as is
+     * an element longer than @ref elemMax. Named to match `sofab::StringSeq` in
+     * corelib-cpp so both C++ outputs read alike.
+     */
+    struct StringSeq : IStreamMessage
+    {
+        std::vector<std::string> *out = nullptr;
+        long cap = -1;      ///< Schema `count` N, or -1 for unbounded.
+        long elemMax = -1;  ///< Element `maxlen`, or -1 for unbounded.
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::String)
+            {
+                return; /* §7.3 */
+            }
+            if ((cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
+                || (elemMax >= 0 && size > static_cast<size_t>(elemMax)))
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &s = (*out)[id];
+            s.assign(size, '\0');
+            if (size) is.read(s);
+        }
+    };
+
+    /// The `blob` counterpart of @ref StringSeq; same placement and bound rules,
+    /// filling `std::vector<std::uint8_t>` slots.
+    struct BlobSeq : IStreamMessage
+    {
+        std::vector<std::vector<uint8_t>> *out = nullptr;
+        long cap = -1;      ///< Schema `count` N, or -1 for unbounded.
+        long elemMax = -1;  ///< Element `maxlen`, or -1 for unbounded.
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::Blob)
+            {
+                return; /* §7.3 */
+            }
+            if ((cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
+                || (elemMax >= 0 && size > static_cast<size_t>(elemMax)))
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &b = (*out)[id];
+            b.resize(size);
             if (size) is.read(b.data(), b.size());
         }
     };
