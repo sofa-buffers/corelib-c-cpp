@@ -1842,15 +1842,25 @@ namespace sofab
          * and a @c std::string (@c resize), so the same call works in the no-heap
          * and the dynamic profile.
          *
-         * @param value  Destination string.
-         * @param size   Field length, as delivered to the field callback.
+         * @param value   Destination string.
+         * @param size    Field length, as delivered to the field callback.
+         * @param maxlen  Schema `maxlen`, or -1 for no bound.
          */
         template <typename T>
-        void readString(T &value, size_t size) noexcept
+        void readString(T &value, size_t size, long maxlen = -1) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::String)
             {
                 noteSkip_();
+                return;
+            }
+
+            // MESSAGE_SPEC §7.1: a declared bound rejects, it never truncates.
+            // Checked before the destination is sized, so an over-long field
+            // cannot make the receiver allocate what the bound exists to prevent.
+            if (maxlen >= 0 && size > static_cast<size_t>(maxlen))
+            {
+                invalidate();
                 return;
             }
 
@@ -1877,16 +1887,24 @@ namespace sofab
          * destination must be sized before it is bound, so the delivered type is
          * checked before @p value is touched (MESSAGE_SPEC §7.3).
          *
-         * @param value  Destination byte buffer (@ref FixedBytes or
-         *               @c std::vector<uint8_t>).
-         * @param size   Field length, as delivered to the field callback.
+         * @param value   Destination byte buffer (@ref FixedBytes or
+         *                @c std::vector<uint8_t>).
+         * @param size    Field length, as delivered to the field callback.
+         * @param maxlen  Schema `maxlen`, or -1 for no bound.
          */
         template <typename T>
-        void readBlob(T &value, size_t size) noexcept
+        void readBlob(T &value, size_t size, long maxlen = -1) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::Blob)
             {
                 noteSkip_();
+                return;
+            }
+
+            // §7.1, as for readString above.
+            if (maxlen >= 0 && size > static_cast<size_t>(maxlen))
+            {
+                invalidate();
                 return;
             }
 
@@ -1903,6 +1921,69 @@ namespace sofab
             // beyond the declared bound is then rejected as INVALID by the C
             // decoder rather than silently truncated (MESSAGE_SPEC §7.1).
             read(value.data(), value.size());
+        }
+
+        /*!
+         * @brief Bind a native scalar array, preparing the destination first.
+         *
+         * Like @ref readString, this exists because the destination is touched
+         * before it is bound — an inline @c std::array is reset so elements the
+         * encoder trimmed off the tail decode as the element default rather than
+         * as a schema default (MESSAGE_SPEC §3), and a @c std::vector is sized to
+         * the wire count. Both must wait until the delivered field is known to be
+         * an array of this element type (§7.3), and the count must be checked
+         * against the schema bound before a resize, so an over-count message
+         * cannot make the receiver allocate what the bound exists to prevent.
+         *
+         * @param out        Destination array or vector.
+         * @param wireCount  Element count delivered to the field callback.
+         * @param cap        Schema `count`, or -1 for no bound.
+         */
+        template <typename C>
+        void readArray(C &out, size_t wireCount = 0, long cap = -1) noexcept
+        {
+            using Elem = typename C::value_type;
+
+            bool tagOk;
+            if constexpr (std::is_same_v<Elem, float>)
+            {
+                tagOk = wire() == Wire::ArrayFixlen && fixType() == Fix::Fp32;
+            }
+            else if constexpr (std::is_same_v<Elem, double>)
+            {
+                tagOk = wire() == Wire::ArrayFixlen && fixType() == Fix::Fp64;
+            }
+            else if constexpr (std::is_signed_v<Elem>)
+            {
+                tagOk = wire() == Wire::ArraySigned;
+            }
+            else
+            {
+                tagOk = wire() == Wire::ArrayUnsigned;
+            }
+
+            if (!tagOk)
+            {
+                noteSkip_();
+                return;
+            }
+
+            if (cap >= 0 && wireCount > static_cast<size_t>(cap))
+            {
+                invalidate();
+                return;
+            }
+
+            if constexpr (requires { out.resize(wireCount); })
+            {
+                out.resize(wireCount);
+            }
+            else
+            {
+                out = C{};
+            }
+
+            read(out);
         }
 
         /*!
