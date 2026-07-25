@@ -2260,14 +2260,14 @@ namespace sofab
     };
 
     /* ---------------------------------------------------------------------- */
-    /* Wrapper-sequence collectors and encode helpers                          */
-    /*                                                                          */
-    /* MESSAGE_SPEC §5 lowers an array of strings, blobs, structs or nested     */
-    /* arrays to a sequence whose child ids are the element indices. These      */
-    /* collect such a sequence into this profile's heap-free containers. They   */
-    /* mirror sofab::StringSeq / BlobSeq / MessageSeq in corelib-cpp so both    */
-    /* C++ outputs read the same; the difference is the storage they fill —     */
-    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.    */
+    /* Wrapper-sequence collectors and encode helpers                         */
+    /*                                                                        */
+    /* MESSAGE_SPEC §5 lowers an array of strings, blobs, structs or nested   */
+    /* arrays to a sequence whose child ids are the element indices. These    */
+    /* collect such a sequence into this profile's heap-free containers. They  */
+    /* mirror sofab::StringSeq / BlobSeq / MessageSeq in corelib-cpp so both  */
+    /* C++ outputs read the same; the difference is the storage they fill —   */
+    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.  */
     /* ---------------------------------------------------------------------- */
 
     /**
@@ -2307,8 +2307,10 @@ namespace sofab
         }
     };
 
-    /// The `blob` counterpart of @ref FixedStringSeq; same placement and bound
-    /// rules, filling @ref FixedBytes slots.
+    /*!
+     * The `blob` counterpart of @ref FixedStringSeq; same placement and bound
+     * rules, filling @ref FixedBytes slots.
+     */
     template <typename Container>
     struct FixedBlobSeq : IStreamMessage
     {
@@ -2342,8 +2344,8 @@ namespace sofab
     struct StringSeq : IStreamMessage
     {
         std::vector<std::string> *out = nullptr;
-        long cap = -1;      ///< Schema `count` N, or -1 for unbounded.
-        long elemMax = -1;  ///< Element `maxlen`, or -1 for unbounded.
+        long cap = -1;      //!< Schema `count` N, or -1 for unbounded.
+        long elemMax = -1;  //!< Element `maxlen`, or -1 for unbounded.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
         {
@@ -2364,13 +2366,15 @@ namespace sofab
         }
     };
 
-    /// The `blob` counterpart of @ref StringSeq; same placement and bound rules,
-    /// filling `std::vector<std::uint8_t>` slots.
+    /*!
+     * The `blob` counterpart of @ref StringSeq; same placement and bound rules,
+     * filling `std::vector<std::uint8_t>` slots.
+     */
     struct BlobSeq : IStreamMessage
     {
         std::vector<std::vector<uint8_t>> *out = nullptr;
-        long cap = -1;      ///< Schema `count` N, or -1 for unbounded.
-        long elemMax = -1;  ///< Element `maxlen`, or -1 for unbounded.
+        long cap = -1;      //!< Schema `count` N, or -1 for unbounded.
+        long elemMax = -1;  //!< Element `maxlen`, or -1 for unbounded.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
         {
@@ -2414,12 +2418,13 @@ namespace sofab
 
     /**
      * @brief Collects a struct/union or nested-array wrapper sequence into a
-     *        `std::vector<T>` — the `allow_dynamic` heap fallback.
+     *        `std::vector<T>` — the `allow_dynamic` storage mode.
      *
-     * The inline-storage counterpart is @ref FixedMessageSeq; this one exists for
-     * fields a schema leaves unbounded, which this profile only accepts under
-     * `allow_dynamic`. Named to match `sofab::MessageSeq` in corelib-cpp so both
-     * C++ outputs read alike.
+     * The inline-storage counterpart is @ref FixedMessageSeq, which takes its
+     * bound from the container's capacity. A `std::vector` has none, so the
+     * schema `count` rides in as @ref cap — the bound is the same either way,
+     * only where it is enforced differs. Named to match `sofab::MessageSeq` in
+     * corelib-cpp so both C++ outputs read alike.
      *
      * @tparam T Element type.
      */
@@ -2427,7 +2432,7 @@ namespace sofab
     struct MessageSeq : IStreamMessage
     {
         std::vector<T> *out = nullptr;
-        long cap = -1;   ///< Schema `count` N, or -1; an id at or past N is INVALID (§5.1/§7).
+        long cap = -1;   //!< Schema `count` N, or -1; an id at or past N is INVALID (§5.1/§7).
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
         {
