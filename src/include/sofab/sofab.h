@@ -46,15 +46,13 @@ typedef enum
                                  //!< Distinct from SOFAB_RET_OK (a complete message
                                  //!< boundary) and SOFAB_RET_E_INVALID_MSG (malformed).
     /* Error codes follow. */
-    SOFAB_RET_E_ARGUMENT,        //!< Invalid argument
-    SOFAB_RET_E_USAGE,           //!< Invalid usage: the call cannot be carried out at
-                                 //!< all (e.g. a destination width no wire type fits,
-                                 //!< or a descriptor field type that does not exist).
-                                 //!< NOT reported when a read's type merely contradicts
-                                 //!< the delivered field: that is two peers disagreeing
-                                 //!< about an id, not a defect in the caller, so the
-                                 //!< field is skipped and counted instead — see
-                                 //!< sofab_istream_skipped.
+    SOFAB_RET_E_ARGUMENT,        //!< The caller handed the library a value it cannot act
+                                 //!< on: an id above SOFAB_ID_MAX, a destination or
+                                 //!< descriptor width that is not 1/2/4/8, a descriptor
+                                 //!< field type that does not exist, or (with strict
+                                 //!< UTF-8 on) a `string` that is not valid UTF-8.
+                                 //!< Always a defect in the calling code, never in the
+                                 //!< data on the wire.
     SOFAB_RET_E_BUFFER_FULL,     //!< Sofab serialization failed due to buffer overflow
     SOFAB_RET_E_INVALID_MSG,     //!< Sofab deserialization failed due to invalid message
 } sofab_ret_t;

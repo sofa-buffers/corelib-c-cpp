@@ -333,7 +333,7 @@ extern sofab_ret_t sofab_object_encode (
                     val = *CAST_TO(uint64_t *, src, field->offset);
 #endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
                 else
-                    return SOFAB_RET_E_USAGE; // Unsupported size (8 requires 64-bit values)
+                    return SOFAB_RET_E_ARGUMENT; // Unsupported size (8 requires 64-bit values)
 
                 ret = sofab_ostream_write_unsigned(ctx, field->id, val);
                 break;
@@ -353,7 +353,7 @@ extern sofab_ret_t sofab_object_encode (
                     sval = *CAST_TO(int64_t *, src, field->offset);
 #endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
                 else
-                    return SOFAB_RET_E_USAGE; // Unsupported size (8 requires 64-bit values)
+                    return SOFAB_RET_E_ARGUMENT; // Unsupported size (8 requires 64-bit values)
 
                 ret = sofab_ostream_write_signed(ctx, field->id, sval);
                 break;
@@ -449,7 +449,7 @@ extern sofab_ret_t sofab_object_encode (
 
             default:
                 // Unsupported field type in descriptor
-                return SOFAB_RET_E_USAGE;
+                return SOFAB_RET_E_ARGUMENT;
         }
     }
 #undef _SOFAB_ENCODE_LIMIT

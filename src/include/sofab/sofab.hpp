@@ -98,7 +98,6 @@ namespace sofab
                                                 //!< feed more bytes. Distinct from @c None (complete)
                                                 //!< and @c InvalidMessage (malformed).
         // Error codes follow.
-        UsageError = SOFAB_RET_E_USAGE,         //!< Invalid usage (e.g. type mismatch on read).
         BufferFull = SOFAB_RET_E_BUFFER_FULL,   //!< Output buffer overflowed during encoding.
         InvalidArgument = SOFAB_RET_E_ARGUMENT, //!< Invalid argument (e.g. field id out of range).
         InvalidMessage = SOFAB_RET_E_INVALID_MSG //!< Malformed message encountered while decoding.
@@ -705,6 +704,8 @@ namespace sofab
         sofab_ostream_t ctx_;           //!< Underlying C output stream context.
         uint8_t *buffer_;               //!< Pointer to the active encode buffer.
         flushCallback flushCallback_;   //!< Optional user flush callback.
+        uint8_t failed_ = 0;            //!< Sticky: first failing write's sofab_ret_t
+                                        //!< (0 = none). See @ref ok.
 
         /*! @brief Invoke the user flush callback (if any) with @p len buffered bytes. */
         void onFlushCallback(size_t len) noexcept
@@ -1119,8 +1120,42 @@ namespace sofab
         /*! @brief Wrap a C return code in a @ref Result bound to this stream. */
         inline Result result(sofab_ret_t ret) noexcept
         {
+            // Remember the first failure. A caller may chain writes and read the
+            // verdict off the returned Result, but generated serialize() bodies
+            // issue each write on its own and discard the result, so without this
+            // a full buffer would leave no trace anywhere.
+            if (failed_ == 0 && ret != SOFAB_RET_OK)
+            {
+                failed_ = (uint8_t)ret;
+            }
+
             return Result{*this, ret};
         }
+
+    public:
+        /*!
+         * @brief Whether every write on this stream has succeeded.
+         *
+         * Sticky and independent of how the writes were issued — chained or one
+         * at a time with the result discarded. The usual reason it turns false is
+         * @ref Error::BufferFull on a stream over caller storage
+         * (@ref OStreamView), where the destination can be smaller than the
+         * message.
+         *
+         * @return true while no write has failed.
+         */
+        [[nodiscard]] bool ok() const noexcept { return failed_ == 0; }
+
+        /*!
+         * @brief The first failure this stream saw, or @ref Error::None.
+         * @return The error code of the first failing write.
+         */
+        [[nodiscard]] Error error() const noexcept
+        {
+            return static_cast<Error>(failed_);
+        }
+
+    protected:
     };
 
     /*!
@@ -1240,6 +1275,53 @@ namespace sofab
             buffer_ = bufferOwner_.data();
             flushCallback_ = callback;
             sofab_ostream_init(&ctx_, buffer_, N, Offset, static_flush_callback, this);
+        }
+    };
+
+    /*!
+     * @brief Output stream over a buffer the caller already owns.
+     *
+     * Neither allocates nor copies: encoding writes straight into @p buffer. The
+     * counterpart to @ref OStreamInline (buffer inside the object) and @ref
+     * OStream (buffer held by a @c shared_ptr) — this is the one to use when the
+     * destination already exists: a DMA or radio frame, a slot in a ring buffer,
+     * or the @c dst of a generated @c encodeTo.
+     *
+     * The buffer must outlive the stream, and it is @b not restored if encoding
+     * fails: a write past @p buflen ends in @ref Error::BufferFull with the bytes
+     * written so far already in place. That is the price of not staging the
+     * output elsewhere first — a caller needing all-or-nothing encodes into
+     * scratch storage and copies on success.
+     */
+    class OStreamView : public OStreamImpl
+    {
+    public:
+        /*!
+         * @brief Construct over caller storage.
+         * @param buffer  Destination; must outlive this stream.
+         * @param buflen  Usable size of @p buffer in bytes.
+         * @param offset  Initial write offset within the buffer (default 0).
+         */
+        OStreamView(uint8_t *buffer, size_t buflen, size_t offset = 0) noexcept
+        {
+            buffer_ = buffer;
+            sofab_ostream_init(&ctx_, buffer_, buflen, offset, nullptr, nullptr);
+        }
+
+        /*!
+         * @brief Construct over caller storage with a flush callback.
+         * @param callback  Invoked with buffered bytes when the buffer fills or on flush().
+         * @param buffer    Destination; must outlive this stream.
+         * @param buflen    Usable size of @p buffer in bytes.
+         * @param offset    Initial write offset within the buffer (default 0).
+         */
+        OStreamView(
+            flushCallback callback, uint8_t *buffer, size_t buflen,
+            size_t offset = 0) noexcept
+        {
+            buffer_ = buffer;
+            flushCallback_ = callback;
+            sofab_ostream_init(&ctx_, buffer_, buflen, offset, static_flush_callback, this);
         }
     };
 

@@ -106,7 +106,7 @@ static sofab_ret_t replay(sofab_ostream_t *os, const op_t *op)
         case K_SEQ_BEGIN: return sofab_ostream_write_sequence_begin(os, op->id);
         case K_SEQ_END:   return sofab_ostream_write_sequence_end(os);
     }
-    return SOFAB_RET_E_USAGE;
+    return SOFAB_RET_E_ARGUMENT;
 }
 
 /* JSON emission *************************************************************/

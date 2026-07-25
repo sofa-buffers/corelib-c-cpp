@@ -230,7 +230,7 @@ extern void sofab_istream_invalidate (sofab_istream_t *ctx);
  * This counter makes those skips visible. A non-zero value on a message that
  * decoded successfully means the two sides disagree about what an id means —
  * useful in a log or a health metric, and the signal that used to be reported as
- * @ref SOFAB_RET_E_USAGE. The count saturates at 255; only zero versus non-zero
+ * a usage error. The count saturates at 255; only zero versus non-zero
  * carries meaning. It is cleared by @ref sofab_istream_init.
  *
  * @param ctx  Pointer to the input stream context.

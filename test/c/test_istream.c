@@ -447,7 +447,7 @@ static void test_usage_invalid_target_len_varint_unsigned (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_ARGUMENT, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
@@ -469,7 +469,7 @@ static void test_usage_invalid_target_len_varint_signed (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_ARGUMENT, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 

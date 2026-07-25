@@ -262,7 +262,7 @@ extern sofab_ret_t sofab_object_init (
  * @param src       Pointer to the source object to serialize.
  *
  * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code
- *         (e.g. SOFAB_RET_E_USAGE for an unsupported descriptor field type,
+ *         (e.g. SOFAB_RET_E_ARGUMENT for an unsupported descriptor field type,
  *         or a write error propagated from the output stream).
  */
 extern sofab_ret_t sofab_object_encode (

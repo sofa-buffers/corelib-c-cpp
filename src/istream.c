@@ -643,8 +643,8 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     // store unsigned value in target buffer
                     if (_store_scalar(ctx->target_ptr, ctx->target_len, unsigned_value) != 0)
                     {
-                        // invalid target length
-                        return SOFAB_RET_E_USAGE;
+                        // target width is not 1/2/4/8: a bad read_* argument
+                        return SOFAB_RET_E_ARGUMENT;
                     }
 
                     // optional: check integer overflow
@@ -686,8 +686,8 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     if (_store_scalar(ctx->target_ptr, ctx->target_len,
                             (sofab_unsigned_t)signed_value) != 0)
                     {
-                        // invalid target length
-                        return SOFAB_RET_E_USAGE;
+                        // target width is not 1/2/4/8: a bad read_* argument
+                        return SOFAB_RET_E_ARGUMENT;
                     }
 
                     // optional: check integer overflow

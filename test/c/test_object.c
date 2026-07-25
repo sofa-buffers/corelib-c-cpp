@@ -493,7 +493,7 @@ static void test_object_serialize_invalid_unsigned_size (void)
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     sofab_ret_t ret = sofab_object_encode(&ctx, &_info_invalid_unsigned, &data);
 
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_USAGE, "ret != SOFAB_RET_E_USAGE");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 //
@@ -528,7 +528,7 @@ static void test_object_serialize_invalid_signed_size (void)
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     sofab_ret_t ret = sofab_object_encode(&ctx, &_info_invalid_signed, &data);
 
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_USAGE, "ret != SOFAB_RET_E_USAGE");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 //
@@ -562,7 +562,7 @@ static void test_object_serialize_invalid_field_type (void)
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     sofab_ret_t ret = sofab_object_encode(&ctx, &_info_invalid_field_type, &data);
 
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_USAGE, "ret != SOFAB_RET_E_USAGE");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 //
@@ -1402,7 +1402,7 @@ static void test_object_message_unknown_id_still_skipped (void)
 //
 // issue #100: MESSAGE_SPEC §7.3 — a matched field whose header wire type (wire
 // type + fixlen subtype) contradicts the declared type must be SKIPPED, exactly
-// like an unknown id, not rejected with E_USAGE. The single-byte header packs
+// like an unknown id, not rejected as an error. The single-byte header packs
 // (id << 3) | wire_type; a fixlen word packs (length << 3) | fixlen_subtype.
 //
 
