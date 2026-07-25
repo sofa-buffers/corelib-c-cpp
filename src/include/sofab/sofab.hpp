@@ -16,6 +16,7 @@
 /* includes *******************************************************************/
 #include <array>
 #include <concepts>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <span>
@@ -97,7 +98,6 @@ namespace sofab
                                                 //!< feed more bytes. Distinct from @c None (complete)
                                                 //!< and @c InvalidMessage (malformed).
         // Error codes follow.
-        UsageError = SOFAB_RET_E_USAGE,         //!< Invalid usage (e.g. type mismatch on read).
         BufferFull = SOFAB_RET_E_BUFFER_FULL,   //!< Output buffer overflowed during encoding.
         InvalidArgument = SOFAB_RET_E_ARGUMENT, //!< Invalid argument (e.g. field id out of range).
         InvalidMessage = SOFAB_RET_E_INVALID_MSG //!< Malformed message encountered while decoding.
@@ -704,6 +704,8 @@ namespace sofab
         sofab_ostream_t ctx_;           //!< Underlying C output stream context.
         uint8_t *buffer_;               //!< Pointer to the active encode buffer.
         flushCallback flushCallback_;   //!< Optional user flush callback.
+        uint8_t failed_ = 0;            //!< Sticky: first failing write's sofab_ret_t
+                                        //!< (0 = none). See @ref ok.
 
         /*! @brief Invoke the user flush callback (if any) with @p len buffered bytes. */
         void onFlushCallback(size_t len) noexcept
@@ -1118,8 +1120,42 @@ namespace sofab
         /*! @brief Wrap a C return code in a @ref Result bound to this stream. */
         inline Result result(sofab_ret_t ret) noexcept
         {
+            // Remember the first failure. A caller may chain writes and read the
+            // verdict off the returned Result, but generated serialize() bodies
+            // issue each write on its own and discard the result, so without this
+            // a full buffer would leave no trace anywhere.
+            if (failed_ == 0 && ret != SOFAB_RET_OK)
+            {
+                failed_ = (uint8_t)ret;
+            }
+
             return Result{*this, ret};
         }
+
+    public:
+        /*!
+         * @brief Whether every write on this stream has succeeded.
+         *
+         * Sticky and independent of how the writes were issued — chained or one
+         * at a time with the result discarded. The usual reason it turns false is
+         * @ref Error::BufferFull on a stream over caller storage
+         * (@ref OStreamView), where the destination can be smaller than the
+         * message.
+         *
+         * @return true while no write has failed.
+         */
+        [[nodiscard]] bool ok() const noexcept { return failed_ == 0; }
+
+        /*!
+         * @brief The first failure this stream saw, or @ref Error::None.
+         * @return The error code of the first failing write.
+         */
+        [[nodiscard]] Error error() const noexcept
+        {
+            return static_cast<Error>(failed_);
+        }
+
+    protected:
     };
 
     /*!
@@ -1239,6 +1275,53 @@ namespace sofab
             buffer_ = bufferOwner_.data();
             flushCallback_ = callback;
             sofab_ostream_init(&ctx_, buffer_, N, Offset, static_flush_callback, this);
+        }
+    };
+
+    /*!
+     * @brief Output stream over a buffer the caller already owns.
+     *
+     * Neither allocates nor copies: encoding writes straight into @p buffer. The
+     * counterpart to @ref OStreamInline (buffer inside the object) and @ref
+     * OStream (buffer held by a @c shared_ptr) — this is the one to use when the
+     * destination already exists: a DMA or radio frame, a slot in a ring buffer,
+     * or the @c dst of a generated @c encodeTo.
+     *
+     * The buffer must outlive the stream, and it is @b not restored if encoding
+     * fails: a write past @p buflen ends in @ref Error::BufferFull with the bytes
+     * written so far already in place. That is the price of not staging the
+     * output elsewhere first — a caller needing all-or-nothing encodes into
+     * scratch storage and copies on success.
+     */
+    class OStreamView : public OStreamImpl
+    {
+    public:
+        /*!
+         * @brief Construct over caller storage.
+         * @param buffer  Destination; must outlive this stream.
+         * @param buflen  Usable size of @p buffer in bytes.
+         * @param offset  Initial write offset within the buffer (default 0).
+         */
+        OStreamView(uint8_t *buffer, size_t buflen, size_t offset = 0) noexcept
+        {
+            buffer_ = buffer;
+            sofab_ostream_init(&ctx_, buffer_, buflen, offset, nullptr, nullptr);
+        }
+
+        /*!
+         * @brief Construct over caller storage with a flush callback.
+         * @param callback  Invoked with buffered bytes when the buffer fills or on flush().
+         * @param buffer    Destination; must outlive this stream.
+         * @param buflen    Usable size of @p buffer in bytes.
+         * @param offset    Initial write offset within the buffer (default 0).
+         */
+        OStreamView(
+            flushCallback callback, uint8_t *buffer, size_t buflen,
+            size_t offset = 0) noexcept
+        {
+            buffer_ = buffer;
+            flushCallback_ = callback;
+            sofab_ostream_init(&ctx_, buffer_, buflen, offset, static_flush_callback, this);
         }
     };
 
@@ -1371,6 +1454,24 @@ namespace sofab
         sofab_istream_decoder_t arrayDecoder_;
 
         IStreamImpl() noexcept = default;
+
+        // Count a §7.3 skip the C core cannot see. The core counts a skip when a
+        // bound read contradicts the wire; the reads that must check the type
+        // *before* they touch their destination (readString, readBlob,
+        // readSequence) decline without ever binding, so from the core's side
+        // they are indistinguishable from a callback that simply was not
+        // interested. Counting here keeps sofab_istream_skipped meaning the same
+        // thing whichever side detected the contradiction. Saturating, like the
+        // core's own increment.
+        void noteSkip_() noexcept
+        {
+#if SOFAB_SKIP_COUNTER
+            if (ctx_.skipped < 0xFF)
+            {
+                ctx_.skipped++;
+            }
+#endif
+        }
 
     public:
         /*!
@@ -1727,6 +1828,211 @@ namespace sofab
         }
 
         /*!
+         * @brief Bind a string field, sizing the destination first.
+         *
+         * A string destination has to be given its logical length before the read
+         * binds it, and that is a change to the destination — so unlike a scalar
+         * read it cannot be issued unconditionally and left to the decoder to
+         * unbind. This checks the delivered type first (MESSAGE_SPEC §7.3) and
+         * touches @p value only if the field really is a string: a contradicting
+         * field leaves the destination exactly as it was and is skipped like an
+         * unknown id.
+         *
+         * Accepts both storage shapes: a @ref FixedString (inline, @c set_len)
+         * and a @c std::string (@c resize), so the same call works in the no-heap
+         * and the dynamic profile.
+         *
+         * @param value   Destination string.
+         * @param size    Field length, as delivered to the field callback.
+         * @param maxlen  Schema `maxlen`, or -1 for no bound.
+         */
+        template <typename T>
+        void readString(T &value, size_t size, long maxlen = -1) noexcept
+        {
+            if (wire() != Wire::Fixlen || fixType() != Fix::String)
+            {
+                noteSkip_();
+                return;
+            }
+
+            // MESSAGE_SPEC §7.1: a declared bound rejects, it never truncates.
+            // Checked before the destination is sized, so an over-long field
+            // cannot make the receiver allocate what the bound exists to prevent.
+            if (maxlen >= 0 && size > static_cast<size_t>(maxlen))
+            {
+                invalidate();
+                return;
+            }
+
+            if constexpr (requires { value.set_len(size); })
+            {
+                value.set_len(size);
+            }
+            else
+            {
+                value.resize(size);
+            }
+
+            // a zero-length string binds no target: there is nothing to fill
+            if (value.size())
+            {
+                read(value);
+            }
+        }
+
+        /*!
+         * @brief Bind a blob field, sizing the destination first.
+         *
+         * The blob counterpart of @ref readString, and for the same reason: the
+         * destination must be sized before it is bound, so the delivered type is
+         * checked before @p value is touched (MESSAGE_SPEC §7.3).
+         *
+         * @param value   Destination byte buffer (@ref FixedBytes or
+         *                @c std::vector<uint8_t>).
+         * @param size    Field length, as delivered to the field callback.
+         * @param maxlen  Schema `maxlen`, or -1 for no bound.
+         */
+        template <typename T>
+        void readBlob(T &value, size_t size, long maxlen = -1) noexcept
+        {
+            if (wire() != Wire::Fixlen || fixType() != Fix::Blob)
+            {
+                noteSkip_();
+                return;
+            }
+
+            // §7.1, as for readString above.
+            if (maxlen >= 0 && size > static_cast<size_t>(maxlen))
+            {
+                invalidate();
+                return;
+            }
+
+            if constexpr (requires { value.set_len(size); })
+            {
+                value.set_len(size);
+            }
+            else
+            {
+                value.resize(size);
+            }
+
+            // Bind the destination's own size, not the wire length: a wire length
+            // beyond the declared bound is then rejected as INVALID by the C
+            // decoder rather than silently truncated (MESSAGE_SPEC §7.1).
+            read(value.data(), value.size());
+        }
+
+        /*!
+         * @brief Bind a native scalar array, preparing the destination first.
+         *
+         * Like @ref readString, this exists because the destination is touched
+         * before it is bound — an inline @c std::array is reset so elements the
+         * encoder trimmed off the tail decode as the element default rather than
+         * as a schema default (MESSAGE_SPEC §3), and a @c std::vector is sized to
+         * the wire count. Both must wait until the delivered field is known to be
+         * an array of this element type (§7.3), and the count must be checked
+         * against the schema bound before a resize, so an over-count message
+         * cannot make the receiver allocate what the bound exists to prevent.
+         *
+         * @param out        Destination array or vector.
+         * @param wireCount  Element count delivered to the field callback.
+         * @param cap        Schema `count`, or -1 for no bound.
+         */
+        template <typename C>
+        void readArray(C &out, size_t wireCount = 0, long cap = -1) noexcept
+        {
+            using Elem = typename C::value_type;
+
+            bool tagOk;
+            if constexpr (std::is_same_v<Elem, float>)
+            {
+                tagOk = wire() == Wire::ArrayFixlen && fixType() == Fix::Fp32;
+            }
+            else if constexpr (std::is_same_v<Elem, double>)
+            {
+                tagOk = wire() == Wire::ArrayFixlen && fixType() == Fix::Fp64;
+            }
+            else if constexpr (std::is_signed_v<Elem>)
+            {
+                tagOk = wire() == Wire::ArraySigned;
+            }
+            else
+            {
+                tagOk = wire() == Wire::ArrayUnsigned;
+            }
+
+            if (!tagOk)
+            {
+                noteSkip_();
+                return;
+            }
+
+            if (cap >= 0 && wireCount > static_cast<size_t>(cap))
+            {
+                invalidate();
+                return;
+            }
+
+            if constexpr (requires { out.resize(wireCount); })
+            {
+                out.resize(wireCount);
+            }
+            else
+            {
+                out = C{};
+            }
+
+            read(out);
+        }
+
+        /*!
+         * @brief Bind a wrapper-array field through a collector, clearing the
+         *        destination first.
+         *
+         * A wrapper array arrives as a sequence whose element index is the field
+         * id (MESSAGE_SPEC §5.1); @p collector turns those elements into entries
+         * of @p out. The destination is emptied first — a wrapper array replaces
+         * rather than merges (§7.4) — and that, again, is a change that must not
+         * happen for a field which turns out not to be a sequence at all.
+         *
+         * @param collector  Collector for the element type (e.g. @ref FixedStringSeq).
+         * @param out        Destination container; must outlive decoding.
+         */
+        template <typename C, typename Out>
+        void readSequence(C &collector, Out &out) noexcept
+        {
+            if (wire() != Wire::SequenceStart)
+            {
+                noteSkip_();
+                return;
+            }
+
+            out.clear();
+            collector.out = &out;
+            read(collector);
+        }
+
+        /*!
+         * @brief Number of fields skipped because their wire type contradicted
+         *        the destination bound for them.
+         *
+         * Facade over @ref sofab_istream_skipped. Not an error count: a skip is
+         * how a reader and a writer built from different revisions of a schema
+         * keep talking (MESSAGE_SPEC §7.3). A non-zero value after a successful
+         * decode means the two sides disagree about what an id means, which is
+         * worth a log line or a health metric. Saturates at 255.
+         *
+         * @return Number of type-contradicting fields skipped.
+         */
+#if SOFAB_SKIP_COUNTER
+        [[nodiscard]] uint8_t skipped() const noexcept
+        {
+            return sofab_istream_skipped(&ctx_);
+        }
+#endif
+
+        /*!
          * @brief Decode a sequence of variable-length string elements into a vector.
          *
          * Each element is emplaced into `out` and the C read target is bound to
@@ -1884,6 +2190,29 @@ namespace sofab
     };
 
     /*!
+     * @brief A message that both encodes and decodes: exactly
+     *        @ref OStreamMessage + @ref IStreamMessage.
+     *
+     * Almost every message is both, so spelling out the pair at every declaration
+     * is noise. This is an empty intermediate base — no storage, no vtable slot of
+     * its own, identical layout to inheriting the two directly — so it is a naming
+     * convenience and nothing else:
+     *
+     * ```cpp
+     * struct Telemetry : sofab::Message {
+     *     sofab::OStreamImpl::Result serialize(sofab::OStreamImpl &os) const noexcept override;
+     *     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t, size_t) noexcept override;
+     * };
+     * ```
+     *
+     * Both @ref sofab::InputMessage and @ref sofab::OutputMessage are satisfied
+     * through it. Inherit a single side directly when a type really is one-way.
+     */
+    struct Message : OStreamMessage, IStreamMessage
+    {
+    };
+
+    /*!
      * @brief Self-contained decoder that owns a message instance.
      *
      * Wires a @ref IStreamMessage subclass to an input stream so fed bytes are
@@ -1929,6 +2258,224 @@ namespace sofab
             return data_;
         }
     };
+
+    /* ---------------------------------------------------------------------- */
+    /* Wrapper-sequence collectors and encode helpers                         */
+    /*                                                                        */
+    /* MESSAGE_SPEC §5 lowers an array of strings, blobs, structs or nested   */
+    /* arrays to a sequence whose child ids are the element indices. These    */
+    /* collect such a sequence into this profile's heap-free containers. They  */
+    /* mirror sofab::StringSeq / BlobSeq / MessageSeq in corelib-cpp so both  */
+    /* C++ outputs read the same; the difference is the storage they fill —   */
+    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.  */
+    /* ---------------------------------------------------------------------- */
+
+    /**
+     * @brief Collects a `string` wrapper sequence into inline storage.
+     *
+     * An element is *placed* at its index id rather than appended: a default
+     * (empty) element is omitted on the wire (§2), so the vector is grown with
+     * empty slots up to the id and the value stored there. Inline storage never
+     * reallocates, so an element bound earlier stays address-stable while later
+     * slots grow — which the deferred C decoder relies on.
+     *
+     * An index at or past the fixed capacity N is a schema-bound violation
+     * (§5.1/§7) and is rejected with @ref IStreamImpl::invalidate, before the fill
+     * loop. That also bounds an over-index amplification: InlineVector's
+     * emplace_back is a no-op once full, so an unguarded loop would spin forever
+     * on such an index (issue #126).
+     *
+     * @tparam Container Inline vector of @ref FixedString.
+     */
+    template <typename Container>
+    struct FixedStringSeq : IStreamMessage
+    {
+        Container *out = nullptr;
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::String) return; /* §7.3 */
+            if (static_cast<size_t>(id) >= out->capacity())
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &s = (*out)[id];
+            s.set_len(size);
+            if (size) is.read(s);
+        }
+    };
+
+    /*!
+     * The `blob` counterpart of @ref FixedStringSeq; same placement and bound
+     * rules, filling @ref FixedBytes slots.
+     */
+    template <typename Container>
+    struct FixedBlobSeq : IStreamMessage
+    {
+        Container *out = nullptr;
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::Blob) return; /* §7.3 */
+            if (static_cast<size_t>(id) >= out->capacity())
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &b = (*out)[id];
+            b.set_len(size);
+            if (size) is.read(b.data(), b.size());
+        }
+    };
+
+    /**
+     * @brief Collects a `string` wrapper sequence into a `std::vector<std::string>`.
+     *
+     * The heap counterpart of @ref FixedStringSeq, for the `allow_dynamic`
+     * storage mode: the schema's `count` and element `maxlen` still bind, they
+     * just are not the container's capacity any more, so both are checked here.
+     * An index at or past @ref cap is a schema-bound violation (§5.1/§7), as is
+     * an element longer than @ref elemMax. Named to match `sofab::StringSeq` in
+     * corelib-cpp so both C++ outputs read alike.
+     */
+    struct StringSeq : IStreamMessage
+    {
+        std::vector<std::string> *out = nullptr;
+        long cap = -1;      //!< Schema `count` N, or -1 for unbounded.
+        long elemMax = -1;  //!< Element `maxlen`, or -1 for unbounded.
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::String)
+            {
+                return; /* §7.3 */
+            }
+            if ((cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
+                || (elemMax >= 0 && size > static_cast<size_t>(elemMax)))
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &s = (*out)[id];
+            s.assign(size, '\0');
+            if (size) is.read(s);
+        }
+    };
+
+    /*!
+     * The `blob` counterpart of @ref StringSeq; same placement and bound rules,
+     * filling `std::vector<std::uint8_t>` slots.
+     */
+    struct BlobSeq : IStreamMessage
+    {
+        std::vector<std::vector<uint8_t>> *out = nullptr;
+        long cap = -1;      //!< Schema `count` N, or -1 for unbounded.
+        long elemMax = -1;  //!< Element `maxlen`, or -1 for unbounded.
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
+        {
+            if (is.wire() != Wire::Fixlen || is.fixType() != Fix::Blob)
+            {
+                return; /* §7.3 */
+            }
+            if ((cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
+                || (elemMax >= 0 && size > static_cast<size_t>(elemMax)))
+            {
+                is.invalidate();
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) out->emplace_back();
+            auto &b = (*out)[id];
+            b.resize(size);
+            if (size) is.read(b.data(), b.size());
+        }
+    };
+
+    /**
+     * @brief Collects a struct/union or nested-array wrapper sequence into inline
+     *        storage.
+     *
+     * Elements arrive in order, so each is emplaced and read in turn:
+     * @ref IStreamImpl::read descends into a struct element's own sub-sequence, or
+     * reads a nested array row, exactly as for a scalar field.
+     *
+     * @tparam Container Inline vector of the element type.
+     */
+    template <typename Container>
+    struct FixedMessageSeq : IStreamMessage
+    {
+        Container *out = nullptr;
+
+        void deserialize(IStreamImpl &is, sofab_id_t, size_t, size_t) noexcept override
+        {
+            is.read(out->emplace_back());
+        }
+    };
+
+    /**
+     * @brief Collects a struct/union or nested-array wrapper sequence into a
+     *        `std::vector<T>` — the `allow_dynamic` storage mode.
+     *
+     * The inline-storage counterpart is @ref FixedMessageSeq, which takes its
+     * bound from the container's capacity. A `std::vector` has none, so the
+     * schema `count` rides in as @ref cap — the bound is the same either way,
+     * only where it is enforced differs. Named to match `sofab::MessageSeq` in
+     * corelib-cpp so both C++ outputs read alike.
+     *
+     * @tparam T Element type.
+     */
+    template <typename T>
+    struct MessageSeq : IStreamMessage
+    {
+        std::vector<T> *out = nullptr;
+        long cap = -1;   //!< Schema `count` N, or -1; an id at or past N is INVALID (§5.1/§7).
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
+        {
+            if (cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
+            {
+                is.invalidate();
+                return;
+            }
+            T &row = out->emplace_back();
+            /* A count-less native-array row is a std::vector the read fills only up
+             * to its current size, so size it to the row's wire count first.
+             * Struct/union rows and fixed std::array rows have no resize(). */
+            if constexpr (requires { row.resize(count); } && !std::is_base_of_v<IStreamMessage, T>)
+                row.resize(count);
+            is.read(row);
+        }
+    };
+
+    /**
+     * @brief Narrow a fixed-count array to its non-default prefix, for encode.
+     *
+     * MESSAGE_SPEC §3: a `count: N` array's canonical encoding carries `M` = one
+     * past the last element that differs from the element default, and the decoder
+     * refills `[M, N)` from the schema count. The stream emits whatever container
+     * it is handed, so the value is narrowed first. A dynamic array has no N to
+     * refill from, so its trailing defaults are significant and it is not trimmed.
+     *
+     * Elements compare by **byte image**, never `operator==`: `-0.0 == 0.0` holds
+     * in C++, but `-0.0` is a distinct value that must survive the round-trip, and
+     * a NaN payload likewise never matches the default.
+     *
+     * @param a Contiguous container of trivially-copyable elements.
+     * @return A span over `[0, M)`.
+     */
+    template <typename C>
+    std::span<const typename C::value_type> trimTail(const C &a) noexcept
+    {
+        using Elem = typename C::value_type;
+        const Elem zero{};
+        size_t n = a.size();
+        while (n > 0 && std::memcmp(&a[n - 1], &zero, sizeof(Elem)) == 0) --n;
+        return std::span<const Elem>(a.data(), n);
+    }
 };
 
 /** @} */ // end of defgroup

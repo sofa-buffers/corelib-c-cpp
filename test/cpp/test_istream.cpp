@@ -1347,3 +1347,114 @@ TEST_CASE("IStream: blob + string sequence round-trip into fixed inline containe
         REQUIRE(result.code() == sofab::Error::InvalidMessage);
     }
 }
+// A message bound entirely through the type-checking reads — readString,
+// readBlob and readSequence — which is what the generator emits for the
+// corelib: c-cpp profile. Each of those destinations has to be sized (or
+// cleared) before it is bound, so the read has to establish the delivered type
+// first; a scalar read needs none of that, because the decoder can unbind it
+// after the fact without the destination ever having been touched.
+class TypeCheckedObject : public sofab::IStreamMessage
+{
+public:
+    struct StrSeq : sofab::IStreamMessage
+    {
+        sofab::InlineVector<sofab::FixedString<8>, 4> *out = nullptr;
+        void deserialize(sofab::IStreamImpl &is, sofab::id, size_t size, size_t) noexcept override
+        {
+            auto &s = out->emplace_back();
+            s.set_len(size);
+            if (size) is.read(s);
+        }
+    } strSeq_;
+
+    uint32_t                                      scalar = 0;
+    sofab::FixedString<8>                         name;
+    sofab::FixedBytes<8>                          blob;
+    sofab::InlineVector<sofab::FixedString<8>, 4> tags;
+
+    void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
+    {
+        switch (id)
+        {
+            case 0: is.read(scalar);              break;
+            case 1: is.readString(name, size);    break;
+            case 2: is.readBlob(blob, size);      break;
+            case 3: is.readSequence(strSeq_, tags); break;
+            default: break;
+        }
+    }
+
+    TypeCheckedObject *operator->() noexcept { return this; }
+};
+
+TEST_CASE("IStream: the type-checking reads round-trip their fields")
+{
+    const std::vector<uint8_t> blob = {1, 2, 3};
+    sofab::OStream os{256};
+    os.write(0, uint32_t{7});
+    os.write(1, std::string_view{"couch"});
+    os.write(2, blob.data(), static_cast<int32_t>(blob.size()));
+    os.sequenceBegin(3);
+    os.write(0, std::string_view{"a"});
+    os.write(1, std::string_view{"bb"});
+    os.sequenceEnd();
+
+    sofab::IStreamObject<TypeCheckedObject> istream;
+    REQUIRE(istream.feed(os.data(), os.bytesUsed()).ok());
+
+    REQUIRE(istream->scalar == 7);
+    REQUIRE(istream->name == std::string_view{"couch"});
+    REQUIRE(istream->blob.size() == blob.size());
+    REQUIRE(std::equal(istream->blob.begin(), istream->blob.end(), blob.begin()));
+    REQUIRE(istream->tags.size() == 2);
+    REQUIRE(istream->tags[0] == std::string_view{"a"});
+    REQUIRE(istream->tags[1] == std::string_view{"bb"});
+#if SOFAB_SKIP_COUNTER
+    REQUIRE(istream.skipped() == 0);
+#endif
+}
+
+TEST_CASE("IStream: a field whose wire type contradicts the read is skipped intact")
+{
+    // MESSAGE_SPEC §7.3: every id below carries a type the destination does not
+    // read. None of them may leave a mark: the decode succeeds, each destination
+    // keeps the value it had, and the skips are counted.
+    sofab::OStream os{256};
+    os.write(0, std::string_view{"not a scalar"});  // string  -> read(uint32_t)
+    os.write(1, uint32_t{42});                      // varint  -> readString
+    os.write(2, std::string_view{"not a blob"});    // string  -> readBlob
+    os.write(3, uint32_t{9});                       // varint  -> readSequence
+
+    sofab::IStreamObject<TypeCheckedObject> istream;
+    istream->name.set_len(0);
+    istream->tags.push_back(sofab::FixedString<8>{});
+
+    auto result = istream.feed(os.data(), os.bytesUsed());
+    REQUIRE(result.ok());
+
+    REQUIRE(istream->scalar == 0);        // untouched
+    REQUIRE(istream->name.size() == 0);   // never re-sized by the string read
+    REQUIRE(istream->blob.size() == 0);   // never re-sized by the blob read
+    REQUIRE(istream->tags.size() == 1);   // never cleared by the sequence read
+#if SOFAB_SKIP_COUNTER
+    REQUIRE(istream.skipped() == 4);
+#endif
+}
+
+TEST_CASE("IStream: a skipped field does not disturb the fields around it")
+{
+    sofab::OStream os{256};
+    os.write(1, uint32_t{42});                  // contradicts readString -> skipped
+    os.write(2, std::vector<uint8_t>{7, 7}.data(), 2);
+    os.write(0, uint32_t{3});
+
+    sofab::IStreamObject<TypeCheckedObject> istream;
+    REQUIRE(istream.feed(os.data(), os.bytesUsed()).ok());
+
+    REQUIRE(istream->name.size() == 0);
+    REQUIRE(istream->blob.size() == 2);   // the field after the skip still decodes
+    REQUIRE(istream->scalar == 3);
+#if SOFAB_SKIP_COUNTER
+    REQUIRE(istream.skipped() == 1);
+#endif
+}

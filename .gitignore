@@ -1,4 +1,5 @@
 build
+build-*
 
 # Local secrets — never commit
 .env

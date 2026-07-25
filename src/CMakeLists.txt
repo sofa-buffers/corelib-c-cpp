@@ -67,6 +67,16 @@ if(SOFAB_ENABLE_STRICT_UTF8)
     target_compile_definitions(sofabuffers PUBLIC SOFAB_ENABLE_STRICT_UTF8)
 endif()
 
+# The §7.3 skip counter is opt-IN for the same reason: it is a diagnostic no
+# decode reads, and this corelib pays for nothing it does not need. Measured cost
+# when ON is 16-24 bytes of .text (tools/footprint.sh), no .data/.bss. PUBLIC so
+# downstream headers — in particular the C++ wrapper's skipped() — resolve
+# SOFAB_SKIP_COUNTER exactly as the library did.
+option(SOFAB_ENABLE_SKIP_COUNTER "Count fields skipped on a §7.3 type contradiction" OFF)
+if(SOFAB_ENABLE_SKIP_COUNTER)
+    target_compile_definitions(sofabuffers PUBLIC SOFAB_ENABLE_SKIP_COUNTER)
+endif()
+
 find_program(SIZE_EXECUTABLE NAMES size)
 if(SIZE_EXECUTABLE)
     add_custom_command(TARGET sofabuffers POST_BUILD

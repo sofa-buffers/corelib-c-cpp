@@ -23,56 +23,6 @@
 /* prototypes *****************************************************************/
 
 /* static vars ****************************************************************/
-/*!
- * @brief In the minimal profile the §7.3 wire-type map degenerates to identity.
- *
- * When fixlen, array and sequence support are all compiled out, the only field
- * types that can reach @ref sofab_object_field_cb are @c UNSIGNED and @c SIGNED
- * (the istream rejects every other wire type as @c INVALID before the callback),
- * and for those the expected wire opt equals @c field->type (0x0 / 0x1). The
- * lookup table below and its bounds check are then dead weight, so the §7.3
- * check collapses to a direct @c field->type comparison and the table vanishes.
- */
-#if defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && \
-    defined(SOFAB_DISABLE_ARRAY_SUPPORT)  && \
-    defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-#  define _WIRETYPE_MAP_IS_IDENTITY 1
-#endif
-
-#if !defined(_WIRETYPE_MAP_IS_IDENTITY)
-/*!
- * @brief Expected wire opt (field type + fixlen subtype, low 6 bits) for each
- *        descriptor field type, indexed by @c SOFAB_OBJECT_FIELDTYPE_*.
- *
- * MESSAGE_SPEC §7.3: on decode a field whose header wire type does not match the
- * one its declared type maps to — for @c fixlen including the subtype — is
- * skipped exactly like an unknown id, and is @e not reported as a usage error or
- * as @c INVALID. @ref sofab_object_field_cb compares the actual wire opt (held in
- * @c ctx->target_opt on entry, subtype already merged for fixlen) against this
- * table before binding a target; a mismatch leaves the target unbound so the
- * istream skips the field. The @c STRINGTERM bit (0x40) is a read-side option,
- * absent from the wire, so the comparison masks it out (§7.3 depth is 0x3F).
- */
-static const uint8_t _expected_wire_opt[] = {
-    [SOFAB_OBJECT_FIELDTYPE_UNSIGNED]       = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED),
-    [SOFAB_OBJECT_FIELDTYPE_SIGNED]         = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED),
-    [SOFAB_OBJECT_FIELDTYPE_FP32]           = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32),
-    [SOFAB_OBJECT_FIELDTYPE_FP64]           = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64),
-    [SOFAB_OBJECT_FIELDTYPE_STRING]         = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING),
-    [SOFAB_OBJECT_FIELDTYPE_BLOB]           = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB),
-    [SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED] = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED),
-    [SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED]   = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED),
-    [SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32]     = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
-                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32),
-    [SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64]     = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
-                                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64),
-    [SOFAB_OBJECT_FIELDTYPE_SEQUENCE]       = SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START),
-};
-#endif /* !defined(_WIRETYPE_MAP_IS_IDENTITY) */
 
 /* functions ******************************************************************/
 /*!
@@ -383,7 +333,7 @@ extern sofab_ret_t sofab_object_encode (
                     val = *CAST_TO(uint64_t *, src, field->offset);
 #endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
                 else
-                    return SOFAB_RET_E_USAGE; // Unsupported size (8 requires 64-bit values)
+                    return SOFAB_RET_E_ARGUMENT; // Unsupported size (8 requires 64-bit values)
 
                 ret = sofab_ostream_write_unsigned(ctx, field->id, val);
                 break;
@@ -403,7 +353,7 @@ extern sofab_ret_t sofab_object_encode (
                     sval = *CAST_TO(int64_t *, src, field->offset);
 #endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
                 else
-                    return SOFAB_RET_E_USAGE; // Unsupported size (8 requires 64-bit values)
+                    return SOFAB_RET_E_ARGUMENT; // Unsupported size (8 requires 64-bit values)
 
                 ret = sofab_ostream_write_signed(ctx, field->id, sval);
                 break;
@@ -499,7 +449,7 @@ extern sofab_ret_t sofab_object_encode (
 
             default:
                 // Unsupported field type in descriptor
-                return SOFAB_RET_E_USAGE;
+                return SOFAB_RET_E_ARGUMENT;
         }
     }
 #undef _SOFAB_ENCODE_LIMIT
@@ -525,25 +475,11 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
             continue;
         }
 
-        /* MESSAGE_SPEC §7.3: the id matches, but if the header wire type
-         * contradicts the declared type (wire type + fixlen subtype, mask
-         * 0x3F) the field is skipped like an unknown id — not rejected. Bind no
-         * target and return, leaving target_ptr NULL so the istream consumes
-         * (or, for a sequence, skips) the field. A descriptor type outside the
-         * table (0x0..0xA) falls through to the switch's default (also a skip). */
-#if defined(_WIRETYPE_MAP_IS_IDENTITY)
-        if ((ctx->target_opt ^ field->type) & 0x07)
-        {
-            return;
-        }
-#else
-        if (field->type < (sizeof _expected_wire_opt / sizeof _expected_wire_opt[0])
-            && ((ctx->target_opt ^ _expected_wire_opt[field->type]) & 0x3F))
-        {
-            return;
-        }
-#endif
-
+        /* MESSAGE_SPEC §7.3 (a header wire type that contradicts the declared
+         * type is skipped like an unknown id) needs no check for a branch that
+         * only binds: the istream unbinds a contradicting read and skips the
+         * field on its own. Two branches below do more than bind, and those
+         * check first -- see the comments there. */
         switch (field->type)
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
@@ -571,6 +507,18 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 break;
 
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
+                /* A sized blob writes used_len whether or not the bind survives,
+                 * so a contradicting field would zero the length of the value
+                 * already there. The bind alone would be safe; this is not, so
+                 * settle the wire type (and the fixlen subtype) first. */
+                if (field->nested_idx != 0
+                    && (ctx->target_opt & 0x3F)
+                        != (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB)))
+                {
+                    break;
+                }
+
                 sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
                 if (field->nested_idx != 0)
                 {
@@ -616,6 +564,18 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
             {
                 if (decoder->depth == 0) break; // Sequence depth exceeded
+
+                /* The wrapper reset below (MESSAGE_SPEC §7.4) is a side effect on
+                 * the destination, so unlike a plain bind it cannot be left to
+                 * the istream to undo: a field whose wire type contradicts would
+                 * have emptied the array before being skipped. Settle §7.3 here.
+                 * It also spares the istream a decoder push it would only have to
+                 * pop again. */
+                if ((ctx->target_opt & 0x07)
+                    != SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START))
+                {
+                    break;
+                }
 
                 // pointer arithmetic to get next decoder handle in array
                 // (bounds are checked via depth above)

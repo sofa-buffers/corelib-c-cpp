@@ -493,7 +493,7 @@ static void test_object_serialize_invalid_unsigned_size (void)
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     sofab_ret_t ret = sofab_object_encode(&ctx, &_info_invalid_unsigned, &data);
 
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_USAGE, "ret != SOFAB_RET_E_USAGE");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 //
@@ -528,7 +528,7 @@ static void test_object_serialize_invalid_signed_size (void)
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     sofab_ret_t ret = sofab_object_encode(&ctx, &_info_invalid_signed, &data);
 
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_USAGE, "ret != SOFAB_RET_E_USAGE");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 //
@@ -562,7 +562,7 @@ static void test_object_serialize_invalid_field_type (void)
     sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
     sofab_ret_t ret = sofab_object_encode(&ctx, &_info_invalid_field_type, &data);
 
-    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_USAGE, "ret != SOFAB_RET_E_USAGE");
+    TEST_ASSERT_EQUAL_MESSAGE(ret, SOFAB_RET_E_ARGUMENT, "ret != SOFAB_RET_E_ARGUMENT");
 }
 
 //
@@ -1402,7 +1402,7 @@ static void test_object_message_unknown_id_still_skipped (void)
 //
 // issue #100: MESSAGE_SPEC §7.3 — a matched field whose header wire type (wire
 // type + fixlen subtype) contradicts the declared type must be SKIPPED, exactly
-// like an unknown id, not rejected with E_USAGE. The single-byte header packs
+// like an unknown id, not rejected as an error. The single-byte header packs
 // (id << 3) | wire_type; a fixlen word packs (length << 3) | fixlen_subtype.
 //
 
@@ -1478,6 +1478,29 @@ static void test_object_wiretype_sequence_for_scalar_skipped (void)
     const uint8_t buf[] = {0x06, 0x07};
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wt_msg, &msg, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_UINT8(0, msg.u8);
+}
+
+/* MESSAGE_SPEC §7.3 + §7.4: a wrapper-array id that arrives with a contradicting
+ * wire type is skipped -- and skipped means the array keeps what it had. The
+ * §7.4 replace-whole reset runs when the wrapper is opened, so it has to sit
+ * behind the type decision; otherwise a single mistyped occurrence empties an
+ * array it was never entitled to touch. */
+static void test_object_wiretype_wrapper_for_scalar_keeps_array (void)
+{
+    _overidx_str_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+
+    /* fill element 0 legitimately: SEQUENCE_START id 200, string id 0 = "a" */
+    const uint8_t fill[] = {0xC6, 0x0C, 0x02, 0x0A, 0x61, 0x07};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, fill, sizeof(fill)));
+    TEST_ASSERT_EQUAL_STRING("a", msg.arr.strings[0]);
+
+    /* same id 200, now an unsigned varint: skipped, the array survives intact */
+    const uint8_t clash[] = {0xC0, 0x0C, 0x2A};
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, clash, sizeof(clash)));
+    TEST_ASSERT_EQUAL_STRING("a", msg.arr.strings[0]);
 }
 
 static void test_object_wiretype_fixlen_subtype_skipped (void)
@@ -1839,6 +1862,7 @@ int test_object_main (void)
     RUN_TEST(test_object_wiretype_scalar_for_sequence_skipped);
     RUN_TEST(test_object_wiretype_sequence_for_scalar_skipped);
     RUN_TEST(test_object_wiretype_fixlen_subtype_skipped);
+    RUN_TEST(test_object_wiretype_wrapper_for_scalar_keeps_array);
 
     RUN_TEST(test_object_wrapper_reopen_replaces);
     RUN_TEST(test_object_wrapper_reopen_replaces_blob);

@@ -239,7 +239,12 @@ static void test_feed_buffer_stream (void)
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
-static void test_usage_invalid_field_type (void)
+/* MESSAGE_SPEC §7.3: a field whose wire type contradicts the type the callback
+ * bound carries no value for that target, so it is skipped like an unknown id.
+ * The decode succeeds, the destination keeps the value it had, and the skip is
+ * counted so a reader can tell that the two sides disagree about the id. */
+
+static void test_wiretype_varint_for_fp32_skipped (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -249,7 +254,7 @@ static void test_usage_invalid_field_type (void)
     test_single_field_t test =
     {
         .expected_id = 0,
-        .target_type = FIELD_TYPE_FP32, // invalid type test (fp32 != u64)
+        .target_type = FIELD_TYPE_FP32, // wire carries a varint, the read binds fp32
         .target_ptr = &value,
         .target_size = sizeof(value),
         .calls = 0
@@ -257,11 +262,15 @@ static void test_usage_invalid_field_type (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL_UINT64(0x55, value);
+#if SOFAB_SKIP_COUNTER
+    TEST_ASSERT_EQUAL_UINT8(1, sofab_istream_skipped(&ctx));
+#endif
 }
 
-static void test_usage_invalid_field_type_fixlen (void)
+static void test_wiretype_array_for_string_skipped (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -271,7 +280,7 @@ static void test_usage_invalid_field_type_fixlen (void)
     test_single_field_t test =
     {
         .expected_id = 0,
-        .target_type = FIELD_TYPE_STRING, // invalid field type (string != i8_array)
+        .target_type = FIELD_TYPE_STRING, // wire carries an i8 array, the read binds string
         .target_ptr = &value,
         .target_size = sizeof(value),
         .calls = 0
@@ -279,11 +288,15 @@ static void test_usage_invalid_field_type_fixlen (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL_UINT8(0x55, value);
+#if SOFAB_SKIP_COUNTER
+    TEST_ASSERT_EQUAL_UINT8(1, sofab_istream_skipped(&ctx));
+#endif
 }
 
-static void test_usage_invalid_field_type_array (void)
+static void test_wiretype_string_for_u8_skipped (void)
 {
     sofab_istream_t ctx;
     sofab_ret_t ret;
@@ -293,7 +306,7 @@ static void test_usage_invalid_field_type_array (void)
     test_single_field_t test =
     {
         .expected_id = 0,
-        .target_type = FIELD_TYPE_INT8U, // invalid field type (u8 != string)
+        .target_type = FIELD_TYPE_INT8U, // wire carries a string, the read binds u8
         .target_ptr = &value,
         .target_size = sizeof(value),
         .calls = 0
@@ -301,8 +314,119 @@ static void test_usage_invalid_field_type_array (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL_UINT8(0x55, value);
+#if SOFAB_SKIP_COUNTER
+    TEST_ASSERT_EQUAL_UINT8(1, sofab_istream_skipped(&ctx));
+#endif
+}
+
+typedef struct
+{
+    uint8_t a;
+    uint8_t b;
+} test_two_fields_t;
+
+static void _two_fields_callback (
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    test_two_fields_t *out = (test_two_fields_t *)usrptr;
+
+    switch (id)
+    {
+        case 0:
+            sofab_istream_read_u8(ctx, &out->a);
+            break;
+        case 1:
+            sofab_istream_read_u8(ctx, &out->b);
+            break;
+        default:
+            break;
+    }
+}
+
+static void test_wiretype_skip_resyncs (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    /* id 0: string "Hi" (the read binds u8 -> skipped)
+     * id 1: unsigned varint 42 (must still decode: the skip consumed exactly
+     *       the contradicting field and not a byte more) */
+    const uint8_t buffer[] = {0x02, 0x12, 0x48, 0x69, 0x08, 0x2A};
+
+    test_two_fields_t out = {0, 0};
+
+    sofab_istream_init(&ctx, _two_fields_callback, &out);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(0, out.a);
+    TEST_ASSERT_EQUAL_UINT8(42, out.b);
+#if SOFAB_SKIP_COUNTER
+    TEST_ASSERT_EQUAL_UINT8(1, sofab_istream_skipped(&ctx));
+#endif
+}
+
+static sofab_istream_decoder_t _wiretype_child_decoder;
+static int _wiretype_child_calls;
+
+static void _wiretype_child_callback (
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)ctx;
+    (void)id;
+    (void)size;
+    (void)count;
+    (void)usrptr;
+
+    _wiretype_child_calls++;
+}
+
+static void _sequence_for_scalar_callback (
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    test_two_fields_t *out = (test_two_fields_t *)usrptr;
+
+    switch (id)
+    {
+        case 0:
+            sofab_istream_read_sequence(
+                ctx, &_wiretype_child_decoder, _wiretype_child_callback, NULL);
+            break;
+        case 1:
+            sofab_istream_read_u8(ctx, &out->b);
+            break;
+        default:
+            break;
+    }
+}
+
+static void test_wiretype_sequence_for_scalar_pops_decoder (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    /* id 0: unsigned varint 5, but the callback opens a sequence for it. Reading
+     * a sequence is the one read that pushes a decoder onto the chain, so the
+     * skip has to pop it again -- otherwise every later field would be delivered
+     * to the child callback, whose decoder the caller considers finished (and
+     * which is typically a local). id 1 must arrive at the top-level callback. */
+    const uint8_t buffer[] = {0x00, 0x05, 0x08, 0x2A};
+
+    test_two_fields_t out = {0, 0};
+    _wiretype_child_calls = 0;
+
+    sofab_istream_init(&ctx, _sequence_for_scalar_callback, &out);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_INT(0, _wiretype_child_calls);
+    TEST_ASSERT_EQUAL_UINT8(42, out.b);
+#if SOFAB_SKIP_COUNTER
+    TEST_ASSERT_EQUAL_UINT8(1, sofab_istream_skipped(&ctx));
+#endif
 }
 
 static void test_usage_invalid_target_len_varint_unsigned (void)
@@ -323,7 +447,7 @@ static void test_usage_invalid_target_len_varint_unsigned (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_ARGUMENT, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
@@ -345,7 +469,7 @@ static void test_usage_invalid_target_len_varint_signed (void)
 
     sofab_istream_init(&ctx, _single_field_callback, &test);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
-    TEST_ASSERT_EQUAL(SOFAB_RET_E_USAGE, ret);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_ARGUMENT, ret);
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
@@ -2838,9 +2962,11 @@ int test_istream_main (void)
     RUN_TEST(test_init);
     RUN_TEST(test_feed_buffer);
     RUN_TEST(test_feed_buffer_stream);
-    RUN_TEST(test_usage_invalid_field_type);
-    RUN_TEST(test_usage_invalid_field_type_fixlen);
-    RUN_TEST(test_usage_invalid_field_type_array);
+    RUN_TEST(test_wiretype_varint_for_fp32_skipped);
+    RUN_TEST(test_wiretype_array_for_string_skipped);
+    RUN_TEST(test_wiretype_string_for_u8_skipped);
+    RUN_TEST(test_wiretype_skip_resyncs);
+    RUN_TEST(test_wiretype_sequence_for_scalar_pops_decoder);
     RUN_TEST(test_usage_invalid_target_len_varint_unsigned);
     RUN_TEST(test_usage_invalid_target_len_varint_signed);
     RUN_TEST(test_read_nothing);

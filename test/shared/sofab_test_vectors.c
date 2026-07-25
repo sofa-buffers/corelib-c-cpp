@@ -358,7 +358,7 @@ static void enc_flush_cb(sofab_ostream_t *os, const uint8_t *data, size_t len, v
  * compiles in reduced builds; vectors needing a disabled feature are skipped
  * before they ever reach here (see the capability filter in run_all), so a
  * guarded-out body is unreachable at run time and just falls through to the
- * E_USAGE return. All case labels are kept so -Wswitch stays satisfied. */
+ * E_ARGUMENT return. All case labels are kept so -Wswitch stays satisfied. */
 static sofab_ret_t replay_op(sofab_ostream_t *os, const op_t *op)
 {
     switch (op->kind)
@@ -431,13 +431,13 @@ static sofab_ret_t replay_op(sofab_ostream_t *os, const op_t *op)
                 case EL_FP32: break;
 #endif
             }
-            return SOFAB_RET_E_USAGE;
+            return SOFAB_RET_E_ARGUMENT;
         }
 #else
             break;
 #endif /* !SOFAB_DISABLE_ARRAY_SUPPORT */
     }
-    return SOFAB_RET_E_USAGE;
+    return SOFAB_RET_E_ARGUMENT;
 }
 
 /* Encode all ops. tiny_size==0 -> single big buffer (no flush callback);
