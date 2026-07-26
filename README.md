@@ -247,9 +247,9 @@ message_point_init(&in);
 message_point_decode(&in, buf, used);  /* in.x == 3, in.y == 4 */
 ```
 
-For **C++** (`sofabgen --lang cpp`) it emits a struct deriving
-`sofab::OStreamMessage` / `sofab::IStreamMessage` with `encode()` / `decode()`
-helpers over the same wire format:
+For **C++** (`sofabgen --lang cpp`) it emits a struct deriving `sofab::Message`
+(the `sofab::OStreamMessage` + `sofab::IStreamMessage` pair) with `encode()` /
+`decode()` helpers over the same wire format:
 
 ```cpp
 Point pt; pt.x = 3; pt.y = 4;
