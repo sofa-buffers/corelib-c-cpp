@@ -807,18 +807,65 @@ namespace sofab
             }
 
             /*!
-             * @brief Chained sequence-begin marker (no-op if a prior call failed).
-             * @param id  Field identifier of the nested sequence.
+             * @brief Chained nested-message field write that is omitted when the
+             *        message is all-default (no-op if a prior call failed).
+             * @param id     Field identifier.
+             * @param value  Nested message to encode.
              * @return This Result, carrying the first error encountered (if any).
+             * @see OStreamImpl::writeLazy
              */
-            Result sequenceBegin(sofab_id_t id) noexcept
+            template <typename T>
+            Result writeLazy(sofab_id_t id, const T &value) noexcept
             {
                 if (error_ != Error::None)
                 {
                     return *this;
                 }
 
-                auto res = ostream_.sequenceBegin(id);
+                auto res = ostream_.writeLazy(id, value);
+                if (!res.ok())
+                {
+                    error_ = res.code();
+                }
+
+                return *this;
+            }
+
+            /*!
+             * @brief Chained frame-keeping sequence-end (no-op if a prior call failed).
+             * @return This Result, carrying the first error encountered (if any).
+             * @see OStreamImpl::sequenceEndKeep
+             */
+            Result sequenceEndKeep() noexcept
+            {
+                if (error_ != Error::None)
+                {
+                    return *this;
+                }
+
+                auto res = ostream_.sequenceEndKeep();
+                if (!res.ok())
+                {
+                    error_ = res.code();
+                }
+
+                return *this;
+            }
+
+            /*!
+             * @brief Chained lazy sequence-begin (no-op if a prior call failed).
+             * @param id  Field identifier of the nested sequence.
+             * @return This Result, carrying the first error encountered (if any).
+             * @see OStreamImpl::sequenceBeginLazy
+             */
+            Result sequenceBeginLazy(sofab_id_t id) noexcept
+            {
+                if (error_ != Error::None)
+                {
+                    return *this;
+                }
+
+                auto res = ostream_.sequenceBeginLazy(id);
                 if (!res.ok())
                 {
                     error_ = res.code();
@@ -982,13 +1029,17 @@ namespace sofab
             }
             else if constexpr (std::is_base_of_v<OStreamMessage, T>)
             {
-                ret = sequenceBegin(id).rawCode();
+                /* The ELEMENT form: the frame is kept even when the nested message
+                 * writes nothing, because element presence carries a wrapper
+                 * array's length (MESSAGE_SPEC §5.1). A nested message FIELD, which
+                 * may vanish when all-default, is @ref writeLazy. */
+                ret = sequenceBeginLazy(id).rawCode();
                 if (ret == SOFAB_RET_OK)
                 {
                     ret = value.serialize(static_cast<OStreamImpl&>(*this)).rawCode();
                     if (ret == SOFAB_RET_OK)
                     {
-                        ret = sequenceEnd().rawCode();
+                        ret = sequenceEndKeep().rawCode();
                     }
                 }
             }
@@ -1067,6 +1118,43 @@ namespace sofab
         }
 
         /*!
+         * @brief Encode a nested message **field**, omitting it when all-default.
+         *
+         * Same as @ref write for an @ref OStreamMessage, except it closes with
+         * @ref sequenceEnd rather than @ref sequenceEndKeep: the nested @c serialize
+         * omits every child
+         * that equals its default, so "not one child was written" is exactly "the
+         * object equals its declared default" -- evaluated per child field,
+         * recursively -- and the field is then dropped instead of emitted as an
+         * empty frame (MESSAGE_SPEC §2).
+         *
+         * Use it for a @c struct / @c union **field**. Keep plain @ref write for an
+         * array **element**: element presence carries a dynamic array's length
+         * (§5.1), so an all-default element stays framed.
+         *
+         * @param id     Field identifier.
+         * @param value  Nested message to encode.
+         * @return @ref Result for fluent chaining and error inspection.
+         */
+        template <typename T>
+        Result writeLazy(sofab_id_t id, const T &value) noexcept
+        {
+            static_assert(std::is_base_of_v<OStreamMessage, T>,
+                "writeLazy() takes a nested message; plain write() covers every other type");
+            sofab_ret_t ret = sequenceBeginLazy(id).rawCode();
+            if (ret == SOFAB_RET_OK)
+            {
+                ret = value.serialize(static_cast<OStreamImpl&>(*this)).rawCode();
+                if (ret == SOFAB_RET_OK)
+                {
+                    ret = sequenceEnd().rawCode();
+                }
+            }
+
+            return result(ret);
+        }
+
+        /*!
          * @brief Encode a raw binary blob field.
          * @param id     Field identifier.
          * @param value  Pointer to the bytes to write.
@@ -1096,24 +1184,57 @@ namespace sofab
             return result(SOFAB_RET_OK);
         }
 
+
         /*!
-         * @brief Open a nested sequence; subsequent writes use a fresh id scope
-         *        until the matching @ref sequenceEnd.
+         * @brief Open a nested sequence whose header is held back until it turns
+         *        out to have content.
+         *
+         * MESSAGE_SPEC §2 omits a sequence-typed field whose value equals its
+         * declared default, and "not one child was written" is exactly that
+         * condition -- evaluated per child field, recursively, for free. Closing
+         * such a sequence with nothing in it emits **nothing** instead of a
+         * two-byte empty frame, so an all-default message becomes the empty byte
+         * string. The predicate never touches a byte image, so struct padding
+         * cannot influence it.
+         *
+         * Use the eager @ref sequenceBegin where an empty frame carries meaning:
+         * the §4.9 primitive itself, and the explicitly empty array of a field that
+         * declares a non-empty default (§2, §3).
+         *
          * @param id  Field identifier of the sequence.
          * @return @ref Result for fluent chaining and error inspection.
          */
-        Result sequenceBegin(sofab_id_t id) noexcept
+        Result sequenceBeginLazy(sofab_id_t id) noexcept
         {
-            return result(sofab_ostream_write_sequence_begin(&ctx_, id));
+            return result(sofab_ostream_write_sequence_begin_lazy(&ctx_, id));
         }
 
         /*!
-         * @brief Close the most recently opened nested sequence.
+         * @brief Close the current nested sequence, letting it vanish if it got no
+         *        content (MESSAGE_SPEC §2).
          * @return @ref Result for fluent chaining and error inspection.
          */
         Result sequenceEnd() noexcept
         {
             return result(sofab_ostream_write_sequence_end(&ctx_));
+        }
+
+        /*!
+         * @brief Close the current nested sequence, keeping its frame even without
+         *        content.
+         *
+         * Emits the held-back headers -- this frame's and every enclosing one's --
+         * and then the end marker, so an empty sequence reaches the wire as
+         * begin + end. Required wherever the frame carries information beyond its
+         * contents: a wrapper-array ELEMENT (presence carries a dynamic array's
+         * length, MESSAGE_SPEC §5.1), and an array field already known to differ
+         * from a non-empty declared default (§2, §3).
+         *
+         * @return @ref Result for fluent chaining and error inspection.
+         */
+        Result sequenceEndKeep() noexcept
+        {
+            return result(sofab_ostream_write_sequence_end_keep(&ctx_));
         }
 
     private:

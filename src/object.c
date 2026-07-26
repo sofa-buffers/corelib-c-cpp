@@ -298,16 +298,31 @@ extern sofab_ret_t sofab_object_encode (
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
         /*
-         * A SEQUENCE (nested object) is always framed and recursed into; whether
-         * its children appear is decided per inner field below. It is never
-         * omitted by a whole-object memcmp/_iszero over its raw storage, which
-         * would also compare struct padding and mishandle non-zero nested
-         * defaults (a logically-default child is not all-zero). Only leaf fields
-         * are skipped when they equal their default. When SEQUENCE support is
-         * compiled out this guard vanishes, leaving the original code unchanged.
+         * MESSAGE_SPEC §2: the ≠-default test is per field, and a SEQUENCE
+         * (nested object) is no exception -- a sequence opens an id scope and
+         * nothing more (CORELIB_PLAN §3), so it carries no value of its own and
+         * an all-default one carries no information. _field_is_default compares a
+         * SEQUENCE **per child field, recursively** against the nested
+         * descriptor's declared-default image, never as a raw byte image, so
+         * struct padding never enters the decision and a non-zero nested default
+         * is handled by the same per-field test as everywhere else. Absence
+         * reconstructs exactly that default (sofab_object_init), so the omission
+         * is value-preserving by construction.
+         *
+         * A holder whose value *differs* from its default is still framed, and
+         * the trailing-run trim above may then leave it empty -- that empty
+         * wrapper is the explicit-empty form of §2/§3, which is what keeps a
+         * non-empty declared array default expressible.
+         *
+         * Scope: field-level only. Inside a wrapper holder (info->fixed_seq) the
+         * "fields" are the array's element slots, and §2 keeps a sequence-form
+         * ELEMENT framed even when all-default, because element presence is what
+         * carries a dynamic array's length (highest present id + 1, §5.1);
+         * eliding an interior one is FUTURE.md A1, not this rule. Only the
+         * *trailing* run elides, which n_emit above already did.
          */
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-        if (field->type != SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
+        if (field->type != SOFAB_OBJECT_FIELDTYPE_SEQUENCE || !info->fixed_seq)
 #endif
         {
             if (_field_is_default(info, field, src))

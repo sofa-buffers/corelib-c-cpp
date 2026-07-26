@@ -732,7 +732,7 @@ static void test_object_roundtrip_empty_sequence_before_sequence (void)
 {
     regr_msg_t in;
     memset(&in, 0, sizeof(in));
-    /* leave `a` all-default -> emitted as an empty wrapper; only `b` carries data */
+    /* leave `a` all-default -> omitted entirely (§2); only `b` carries data */
     strncpy(in.b.s, "hello", sizeof(in.b.s));
     in.b.y = 0xABCD;
 
@@ -763,11 +763,13 @@ static void test_object_roundtrip_empty_sequence_before_sequence (void)
 //
 
 /*
- * A nested object (SEQUENCE) whose fields are all at their default is emitted as
- * an EMPTY wrapper sequence, never dropped: presence is decided per inner field,
- * so the framing is always written and the wrapper is simply empty. Previously a
- * whole-object memcmp/_iszero could drop the sequence entirely, which diverges
- * from the per-field model and is sensitive to struct padding.
+ * MESSAGE_SPEC §2: a nested object (SEQUENCE) whose fields are all at their
+ * default is OMITTED, not framed empty -- the ≠-default test is per field and a
+ * sequence is no exception. The predicate is the recursive per-child comparison
+ * of _field_is_default, never a whole-object memcmp/_iszero over raw storage
+ * (which would compare struct padding and mishandle a non-zero nested default).
+ * Absence reconstructs the same value via sofab_object_init, so dropping the two
+ * framing bytes is value-preserving.
  */
 typedef struct
 {
@@ -802,27 +804,85 @@ static const sofab_object_descr_t *const _info_nested_defseq_msg[] =
 static const sofab_object_descr_t _info_defseq_msg =
     SOFAB_OBJECT_DESCR(_info_fields_defseq_msg, 1, _info_nested_defseq_msg, 1);
 
-static void test_object_default_sequence_emitted_empty (void)
+static size_t _defseq_encode (const defseq_msg_t *in, uint8_t *out, size_t outlen)
+{
+    sofab_ostream_t octx;
+    sofab_ostream_init(&octx, out, outlen, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, &_info_defseq_msg, in), "encode failed");
+    return sofab_ostream_flush(&octx);
+}
+
+static void test_object_default_sequence_omitted (void)
 {
     defseq_msg_t in;
     memset(&in, 0, sizeof(in)); /* inner all-default */
 
-    sofab_ostream_t octx;
     uint8_t buffer[32];
-    sofab_ostream_init(&octx, buffer, sizeof(buffer), 0, NULL, NULL);
-    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
-        sofab_object_encode(&octx, &_info_defseq_msg, &in), "encode failed");
-    size_t used = sofab_ostream_flush(&octx);
+    size_t used = _defseq_encode(&in, buffer, sizeof(buffer));
 
     /*
-     * Emitted as an empty wrapper sequence for field id 7 -- NOT dropped:
-     * sequence_begin(7) = (7<<3)|0b110 = 0x3e, sequence_end = 0b111 = 0x07.
+     * Omitted entirely: the pre-§2-uniform encoder wrote the empty wrapper
+     * sequence_begin(7) = (7<<3)|0b110 = 0x3e plus sequence_end 0x07. The whole
+     * message is all-default, so the canonical encoding is the empty byte string.
      */
-    static const uint8_t expected[] = { 0x3e, 0x07 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used,
+        "an all-default nested sequence must be omitted, not framed empty");
+}
+
+/* A single non-default child is enough to bring the frame back. */
+static void test_object_nondefault_sequence_framed (void)
+{
+    defseq_msg_t in;
+    memset(&in, 0, sizeof(in));
+    in.inner.y = 3;
+
+    uint8_t buffer[32];
+    size_t used = _defseq_encode(&in, buffer, sizeof(buffer));
+
+    /* 3e = seq_begin(7); 08 03 = id 1 unsigned 3; 07 = seq_end. */
+    static const uint8_t expected[] = { 0x3e, 0x08, 0x03, 0x07 };
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-        "default nested sequence must be emitted as an empty wrapper, not dropped");
+        "a sequence with a non-default child must still be framed");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used,
-        "default nested sequence bytes mismatch");
+        "framed nested sequence bytes mismatch");
+}
+
+/*
+ * The omission is value-preserving: the zero-byte message and the empty frame
+ * both decode to the all-default value, so the empty frame stays acceptable as a
+ * non-canonical encoding of it (§2 accept-and-normalize).
+ */
+static void test_object_default_sequence_roundtrips_both_forms (void)
+{
+    static const uint8_t empty_frame[] = { 0x3e, 0x07 };
+    const uint8_t *forms[] = { NULL, empty_frame };
+    const size_t lens[] = { 0, sizeof(empty_frame) };
+
+    for (size_t f = 0; f < 2; f++)
+    {
+        defseq_msg_t out;
+        memset(&out, 0x55, sizeof(out));
+        sofab_object_init(&_info_defseq_msg, &out);
+
+        struct
+        {
+            sofab_istream_t ctx;
+            sofab_object_decoder_t decoder[4];
+        } dec;
+        memset(&dec, 0, sizeof(dec));
+        dec.decoder[0].info = &_info_defseq_msg;
+        dec.decoder[0].dst = (uint8_t *)&out;
+        dec.decoder[0].depth = sizeof(dec.decoder) / sizeof(dec.decoder[0]) - 1;
+        sofab_istream_init(&dec.ctx, sofab_object_field_cb, (void *)&dec.decoder[0]);
+
+        /* A zero-length feed is legal and returns the outcome so far. */
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+            sofab_istream_feed(&dec.ctx, forms[f] != NULL ? (const void *)forms[f] : (const void *)empty_frame, lens[f]),
+            "decode failed");
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, out.inner.x, "inner.x must be the default");
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, out.inner.y, "inner.y must be the default");
+    }
 }
 
 //
@@ -1659,17 +1719,18 @@ static void test_object_wrapper_reopen_replaces_blob (void)
     TEST_ASSERT_EQUAL_UINT8(0, msg.arr.l1);
     TEST_ASSERT_EQUAL_UINT8(0, msg.arr.l2);
 
-    /* and it re-encodes as an empty wrapper (begin C6 0C, end 07) — never as a
-     * stale "00 00" blob for element 0. */
+    /* and it re-encodes as *nothing* — never as a stale "00 00" blob for element 0.
+     * The empty array equals the field's declared default (no default declared →
+     * the empty collection), so §2 omits the field; the empty wrapper C6 0C 07 the
+     * input carried is a non-canonical encoding of the same value and normalizes
+     * away here. */
     uint8_t out[32];
     sofab_ostream_t octx;
     sofab_ostream_init(&octx, out, sizeof(out), 0, NULL, NULL);
     TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
         sofab_object_encode(&octx, &_bwrap_msg, &msg), "re-encode failed");
     size_t used = sofab_ostream_flush(&octx);
-    const uint8_t expected_empty[] = { 0xC6, 0x0C, 0x07 };
-    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected_empty), used, "re-encoded wrapper not empty");
-    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_empty, out, used, "re-encoded wrapper bytes");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used, "re-encoded empty wrapper must be omitted");
 }
 
 //
@@ -1723,16 +1784,16 @@ static size_t _se_encode (const _se_msg_t *m, uint8_t *out, size_t cap)
 
 static void test_object_struct_wrapper_all_default_empty (void)
 {
-    /* every element all-default -> M = 0 -> the whole [0,N) run elides -> the
-     * canonical empty wrapper C6 0C 07 (pre-fix: five empty seq frames). */
+    /* every element all-default -> M = 0 -> the whole [0,N) run elides, and with
+     * nothing left the wrapper itself equals the holder's declared default, so the
+     * field is omitted (§2/§5.1). Was C6 0C 07 (empty wrapper) before §2 became
+     * uniform, and five empty seq frames before the trailing-run trim. */
     _se_msg_t m;
     memset(&m, 0, sizeof(m));
     uint8_t out[64];
     size_t used = _se_encode(&m, out, sizeof(out));
-    const uint8_t expected[] = { 0xC6, 0x0C, 0x07 };
-    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-        "all-default array-of-struct must re-encode as an empty wrapper");
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used,
+        "all-default array-of-struct must be omitted, not framed empty");
 }
 
 static void test_object_struct_wrapper_trailing_run_trimmed (void)
@@ -1845,7 +1906,9 @@ int test_object_main (void)
     RUN_TEST(test_object_deserialize_invalid_nested_depth);
     RUN_TEST(test_object_deserialize_invalid_field_type);
 
-    RUN_TEST(test_object_default_sequence_emitted_empty);
+    RUN_TEST(test_object_default_sequence_omitted);
+    RUN_TEST(test_object_nondefault_sequence_framed);
+    RUN_TEST(test_object_default_sequence_roundtrips_both_forms);
     RUN_TEST(test_object_roundtrip_empty_sequence_before_sequence);
     RUN_TEST(test_object_string_default_omission);
     RUN_TEST(test_object_blob_sized);

@@ -1089,6 +1089,120 @@ static void test_write_nested_sequence (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
 }
 
+/* --- lazy sequence framing (MESSAGE_SPEC §2) ------------------------------- */
+
+/*!
+ * @brief Encode with a fresh 64-byte stream and compare the produced bytes.
+ */
+#define LAZY_CHECK(what, expected_arr, body)                                       \
+    do {                                                                           \
+        sofab_ostream_t ctx;                                                       \
+        uint8_t buffer[64];                                                        \
+        memset(buffer, 0x55, sizeof(buffer));                                      \
+        sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);            \
+        body;                                                                      \
+        size_t used = sofab_ostream_flush(&ctx);                                   \
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected_arr), used, what);         \
+        TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_arr, buffer, used, what);    \
+    } while (0)
+
+/* An all-default sequence carries no information, so nothing is emitted -- where
+ * the eager API writes the two-byte empty frame. */
+static void test_lazy_sequence_without_content_emits_nothing (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t buffer[64];
+    memset(buffer, 0x55, sizeof(buffer));
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+    sofab_ostream_write_sequence_end(&ctx);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_flush(&ctx),
+        "an empty lazy sequence must emit nothing");
+}
+
+/* The eager API keeps writing the §4.9 empty-sequence primitive, which is also the
+ * explicit-empty wrapper of §2/§3. */
+static void test_eager_sequence_without_content_still_frames (void)
+{
+    const uint8_t expected[] = {0x0E, 0x07};
+    LAZY_CHECK("eager empty sequence must stay framed", expected, {
+        sofab_ostream_write_sequence_begin(&ctx, 1);
+        sofab_ostream_write_sequence_end(&ctx);
+    });
+}
+
+/* One child field commits the whole held-back run, outermost header first. */
+static void test_lazy_sequence_commits_run_on_first_content (void)
+{
+    const uint8_t expected[] = {0x0E, 0x16, 0x00, 0x2A, 0x07, 0x07};
+    LAZY_CHECK("held-back run must commit outermost-first", expected, {
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
+        sofab_ostream_write_unsigned(&ctx, 0, 42);
+        sofab_ostream_write_sequence_end(&ctx);
+        sofab_ostream_write_sequence_end(&ctx);
+    });
+}
+
+/* Only the empty inner sequence drops; the outer one has content and is framed. */
+static void test_lazy_sequence_drops_only_empty_inner (void)
+{
+    const uint8_t expected[] = {0x0E, 0x00, 0x2A, 0x07};
+    LAZY_CHECK("only the empty inner sequence may drop", expected, {
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
+        sofab_ostream_write_sequence_end(&ctx);
+        sofab_ostream_write_unsigned(&ctx, 0, 42);
+        sofab_ostream_write_sequence_end(&ctx);
+    });
+}
+
+/* Mixing the two APIs: an eager inner frame is content for the lazy outer one. */
+static void test_eager_inner_frame_commits_lazy_outer (void)
+{
+    const uint8_t expected[] = {0x0E, 0x16, 0x07, 0x07};
+    LAZY_CHECK("an eager inner frame must commit the lazy outer one", expected, {
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+        sofab_ostream_write_sequence_begin(&ctx, 2);
+        sofab_ostream_write_sequence_end(&ctx);
+        sofab_ostream_write_sequence_end(&ctx);
+    });
+}
+
+/* Held-back headers are not in the buffer yet, so a buffer smaller than the
+ * message produces the same bytes as a large one: the chunked-encode guarantee is
+ * unaffected by the hold-back. */
+static uint8_t _lazy_sink[16];
+static size_t _lazy_sink_len;
+
+static void _lazy_flush_cb (sofab_ostream_t *ctx, const uint8_t *data, size_t len, void *usrptr)
+{
+    (void)ctx; (void)usrptr;
+    memcpy(_lazy_sink + _lazy_sink_len, data, len);
+    _lazy_sink_len += len;
+}
+
+static void test_lazy_framing_is_buffer_size_independent (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t buffer[3];
+
+    _lazy_sink_len = 0;
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, _lazy_flush_cb, NULL);
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
+    sofab_ostream_write_sequence_end(&ctx);
+    sofab_ostream_write_unsigned(&ctx, 0, 42);
+    sofab_ostream_write_sequence_end(&ctx);
+    sofab_ostream_flush(&ctx);
+
+    const uint8_t expected[] = {0x0E, 0x00, 0x2A, 0x07};
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), _lazy_sink_len,
+        "lazy framing must not depend on the buffer size");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, _lazy_sink, _lazy_sink_len,
+        "chunked lazy framing bytes mismatch");
+}
+
 static void test_write_nested_sequence_with_array (void)
 {
     sofab_ostream_t ctx;
@@ -1334,6 +1448,13 @@ int test_ostream_main (void)
     RUN_TEST(test_write_array_of_fp64_specials);
 
     RUN_TEST(test_write_nested_sequence);
+    RUN_TEST(test_lazy_sequence_without_content_emits_nothing);
+    RUN_TEST(test_eager_sequence_without_content_still_frames);
+    RUN_TEST(test_lazy_sequence_commits_run_on_first_content);
+    RUN_TEST(test_lazy_sequence_drops_only_empty_inner);
+    RUN_TEST(test_eager_inner_frame_commits_lazy_outer);
+    RUN_TEST(test_lazy_framing_is_buffer_size_independent);
+
     RUN_TEST(test_write_nested_sequence_with_array);
     RUN_TEST(test_write_nested_sequence_multilevel);
 

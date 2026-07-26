@@ -82,7 +82,17 @@ static void op_seqe (oplist_t *l)              { push(l, (op_t){.kind = K_SEQ_EN
 
 /* replay through the real encoder *******************************************/
 
-static sofab_ret_t replay(sofab_ostream_t *os, const op_t *op)
+/*!
+ * @brief Replay one op into an output stream.
+ *
+ * @param os        Output stream.
+ * @param op        Op to replay.
+ * @param lazy_seq  Open a sequence with the lazy primitive, so an all-default one
+ *                  is omitted rather than framed empty (MESSAGE_SPEC §2). Set for
+ *                  the sparse-canonical pass only; the dense pass is the
+ *                  primitive-layer ground truth and always frames.
+ */
+static sofab_ret_t replay(sofab_ostream_t *os, const op_t *op, int lazy_seq)
 {
     switch (op->kind)
     {
@@ -103,7 +113,8 @@ static sofab_ret_t replay(sofab_ostream_t *os, const op_t *op)
         case K_ARR_I64:   return sofab_ostream_write_array_of_i64(os, op->id, op->arr, op->count);
         case K_ARR_FP32:  return sofab_ostream_write_array_of_fp32(os, op->id, op->arr, op->count);
         case K_ARR_FP64:  return sofab_ostream_write_array_of_fp64(os, op->id, op->arr, op->count);
-        case K_SEQ_BEGIN: return sofab_ostream_write_sequence_begin(os, op->id);
+        case K_SEQ_BEGIN: return lazy_seq ? sofab_ostream_write_sequence_begin_lazy(os, op->id)
+                                          : sofab_ostream_write_sequence_begin(os, op->id);
         case K_SEQ_END:   return sofab_ostream_write_sequence_end(os);
     }
     return SOFAB_RET_E_ARGUMENT;
@@ -366,7 +377,7 @@ static void emit_vector_skip(FILE *o, const char *name, const char *group,
 
     for (size_t i = 0; i < l->n; ++i)
     {
-        if (replay(&os, &l->ops[i]) != SOFAB_RET_OK)
+        if (replay(&os, &l->ops[i], 0) != SOFAB_RET_OK)
         {
             fprintf(stderr, "encode failed in vector '%s' at op %zu\n", name, i);
             return;
@@ -376,9 +387,12 @@ static void emit_vector_skip(FILE *o, const char *name, const char *group,
 
     /*
      * Sparse-canonical form: replay again, omitting every leaf op equal to its
-     * type default; sequences stay framed. This is the byte-exact target for a
-     * sparse encoder (the generated non-C backends), while "serialized" (dense)
-     * remains the primitive-layer ground truth and the decoder's skip input.
+     * type default and opening every sequence LAZILY, so a sequence left without
+     * content is omitted rather than framed empty (MESSAGE_SPEC §2 -- the
+     * ≠-default test is per field and a sequence is no exception). This is the
+     * byte-exact target for a sparse encoder (the generated non-C backends), while
+     * "serialized" (dense) remains the primitive-layer ground truth and the
+     * decoder's skip input.
      */
     uint8_t sbuffer[1024];
     sofab_ostream_t sos;
@@ -386,7 +400,7 @@ static void emit_vector_skip(FILE *o, const char *name, const char *group,
     for (size_t i = 0; i < l->n; ++i)
     {
         if (is_default_leaf(&l->ops[i])) continue;
-        if (replay(&sos, &l->ops[i]) != SOFAB_RET_OK)
+        if (replay(&sos, &l->ops[i], 1) != SOFAB_RET_OK)
         {
             fprintf(stderr, "sparse encode failed in vector '%s' at op %zu\n", name, i);
             return;
@@ -1004,7 +1018,7 @@ int main(void)
     fprintf(o, "  \"notes\": {\n");
     fprintf(o, "    \"byte_order\": \"little-endian\",\n");
     fprintf(o, "    \"serialized.hex\": \"lowercase hex of the full (dense) message; primitive-layer ground truth and the decoder's skip input\",\n");
-    fprintf(o, "    \"serialized_sparse.hex\": \"lowercase hex of the sparse-canonical message (MESSAGE_SPEC S2): every leaf field equal to its type default is omitted, sequences stay framed; byte-exact target for a sparse encoder\",\n");
+    fprintf(o, "    \"serialized_sparse.hex\": \"lowercase hex of the sparse-canonical message (MESSAGE_SPEC S2): every leaf field equal to its type default is omitted, and a sequence left without content is omitted too (not framed empty); byte-exact target for a sparse encoder\",\n");
     fprintf(o, "    \"integers\": \"decimal JSON number literals (full u64/i64 range)\",\n");
     fprintf(o, "    \"floats\": \"finite values as JSON numbers; +/-infinity as the strings 'inf'/'-inf'\",\n");
     fprintf(o, "    \"blob.value_hex\": \"lowercase hex of the blob payload\",\n");

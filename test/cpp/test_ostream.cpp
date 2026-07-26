@@ -303,16 +303,21 @@ TEST_CASE("OStream: overflow by id via sequence begin")
 {
     sofab::OStream ostream{2};
 
-    auto result = ostream.sequenceBegin(SOFAB_ID_MAX);
+    // The header is held back, so the overflow surfaces where it is emitted:
+    // sequenceEndKeep() commits the run before writing the end marker.
+    ostream.sequenceBeginLazy(SOFAB_ID_MAX);
+    auto result = ostream.sequenceEndKeep();
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
 
 TEST_CASE("OStream: overflow by id via sequence end")
 {
-    sofab::OStream ostream{1};
+    // Five bytes take the SOFAB_ID_MAX header exactly; the end marker is the byte
+    // that no longer fits.
+    sofab::OStream ostream{5};
 
-    ostream.sequenceBegin(SOFAB_ID_MAX);
-    auto result = ostream.sequenceEnd();
+    ostream.sequenceBeginLazy(SOFAB_ID_MAX);
+    auto result = ostream.sequenceEndKeep();
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
 
@@ -441,10 +446,13 @@ TEST_CASE("OStream: overflow by fluent sequence begin")
 {
     sofab::OStream ostream{3};
 
+    // write() fills the buffer; both begins are held back, so the failure lands on
+    // the call that emits them.
     auto result = ostream
         .write(0, 4711u)
-        .sequenceBegin(1)
-        .sequenceBegin(2);
+        .sequenceBeginLazy(1)
+        .sequenceBeginLazy(2)
+        .sequenceEndKeep();
 
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
@@ -453,11 +461,12 @@ TEST_CASE("OStream: overflow by fluent sequence end")
 {
     sofab::OStream ostream{4};
 
+    // Three bytes of payload leave one free: the committed header takes it, and the
+    // end marker overflows.
     auto result = ostream
         .write(0, 4711u)
-        .sequenceBegin(1)
-        .sequenceEnd()
-        .sequenceEnd();
+        .sequenceBeginLazy(1)
+        .sequenceEndKeep();
 
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
@@ -1003,7 +1012,7 @@ TEST_CASE("OStream: write nested sequence")
     sofab::OStream ostream{64};
 
     ostream.write(0, 42u);
-    ostream.sequenceBegin(1);
+    ostream.sequenceBeginLazy(1);
     {
         ostream.write(0, 42u);
         ostream.write(2, -42);
@@ -1022,7 +1031,7 @@ TEST_CASE("OStream: write nested sequence fluent")
     sofab::OStream ostream{64};
 
     ostream.write(0, 42u)
-        .sequenceBegin(1)
+        .sequenceBeginLazy(1)
             .write(0, 42u)
             .write(2, -42)
         .sequenceEnd()
@@ -1041,7 +1050,7 @@ TEST_CASE("OStream: write nested sequence with array fluent")
     sofab::OStream ostream{64};
 
     ostream.write(0, 42u)
-        .sequenceBegin(3)
+        .sequenceBeginLazy(3)
             .write(0, 42u)
             .write(3, std::array<int32_t, 3>{-42, -43, -44})
         .sequenceEnd()
@@ -1062,7 +1071,7 @@ TEST_CASE("OStream: write nested sequence multilevel")
 
     for (int i = 0; i < 10; i++)
     {
-        ostream.sequenceBegin(1)
+        ostream.sequenceBeginLazy(1)
             .write(0, 42u)
             .write(2, -42);
     }

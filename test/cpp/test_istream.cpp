@@ -522,13 +522,13 @@ TEST_CASE("IStream: round-trip blob and variable-length-element arrays")
     ostream.write(1, blob.data(), static_cast<int32_t>(blob.size()));
 
     // field 2: sequence of string elements
-    ostream.sequenceBegin(2);
+    ostream.sequenceBeginLazy(2);
     for (const auto &s : strings)
         ostream.write(7, std::string_view{s});
     ostream.sequenceEnd();
 
     // field 3: sequence of blob elements
-    ostream.sequenceBegin(3);
+    ostream.sequenceBeginLazy(3);
     for (const auto &b : blobs)
         ostream.write(8, b.data(), static_cast<int32_t>(b.size()));
     ostream.sequenceEnd();
@@ -861,7 +861,7 @@ TEST_CASE("IStream: round-trip nested message into object")
 
     ostream
         .write(1, 7u)                   // parent header
-        .sequenceBegin(2)               // nested child (fresh id scope)
+        .sequenceBeginLazy(2)               // nested child (fresh id scope)
             .write(1, 42u)              //   child id
             .write(2, 3.1415f)          //   child value
         .sequenceEnd()
@@ -1296,7 +1296,7 @@ TEST_CASE("IStream: blob + string sequence round-trip into fixed inline containe
 
     sofab::OStream ostream{256};
     ostream.write(1, blob.data(), static_cast<int32_t>(blob.size()));
-    ostream.sequenceBegin(2);
+    ostream.sequenceBeginLazy(2);
     for (const auto &s : strings)
         ostream.write(7, std::string_view{s});
     ostream.sequenceEnd();
@@ -1394,7 +1394,7 @@ TEST_CASE("IStream: the type-checking reads round-trip their fields")
     os.write(0, uint32_t{7});
     os.write(1, std::string_view{"couch"});
     os.write(2, blob.data(), static_cast<int32_t>(blob.size()));
-    os.sequenceBegin(3);
+    os.sequenceBeginLazy(3);
     os.write(0, std::string_view{"a"});
     os.write(1, std::string_view{"bb"});
     os.sequenceEnd();
