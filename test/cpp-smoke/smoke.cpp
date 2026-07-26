@@ -107,7 +107,7 @@ int main()
     sofab::OStream ostream{256};
     ostream
         .write(1, 7u)                       // parent header
-        .sequenceBegin(2)                   // nested child (fresh id scope)
+        .sequenceBeginLazy(2)               // nested child (fresh id scope)
             .write(1, 42u)                  //   child id
             .write(2, 3.1415f)              //   child value (fp32)
         .sequenceEnd()
