@@ -1173,7 +1173,7 @@ TEST_CASE("OStream: write nested sequence multilevel")
 // A nested message that writes exactly the children differing from their
 // declared default -- the shape generated code has.  All-default => writes
 // nothing.
-class KeyValue : public sofab::OStreamMessage
+class KeyValue final : public sofab::OStreamMessage
 {
 public:
     uint32_t k = 0;
@@ -1195,7 +1195,7 @@ public:
 // The wrapper sequence of an array of KeyValue (§5): its children are the
 // elements, id == array index. Every element goes through the ELEMENT form
 // (plain write), whatever its value.
-class KeyValueArray : public sofab::OStreamMessage
+class KeyValueArray final : public sofab::OStreamMessage
 {
 public:
     std::vector<KeyValue> elements;
