@@ -1138,3 +1138,231 @@ TEST_CASE("OStream: write nested sequence multilevel")
     REQUIRE(used == sizeof(expected));
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
 }
+
+//
+// ---------------------------------------------------------------------------
+// MESSAGE_SPEC §2 vs §5.1 in the C++ wrapper: a FIELD is omitted, an ELEMENT
+// keeps its frame.
+//
+// This is the one place in the §2 port where getting it wrong corrupts a value
+// instead of costing bytes: a wrapper array's length is "highest present id + 1"
+// (§5.1), so an element that loses its frame shortens the decoded array.
+//
+// The two rules are two different calls on OStreamImpl, differing only in the
+// closer they hand to the hold-back trio in ostream.c:
+//   - writeLazy(id, msg) -> sequenceEnd()     : the nested-message FIELD form.
+//     The nested serialize() writes only children that differ from their default,
+//     so "not one child was written" is exactly "the value equals its declared
+//     default", and the held-back header is dropped (§2).
+//   - write(id, msg)     -> sequenceEndKeep() : the wrapper-array ELEMENT form.
+//     The held-back header is forced out even when the element wrote nothing,
+//     because element presence carries the array's length (§5.1).
+//
+// The pure-C path reaches the same bytes by a different mechanism and must stay
+// separate: sofab_object_encode() decides omission from the descriptor *before*
+// it opens anything (no hold-back window at all, canonical at every depth), and
+// its role check -- info->fixed_seq in object.c, not the field type -- is what
+// keeps an interior element framed. The expectations below are deliberately
+// byte-identical to their C descriptor-path counterparts in test/c/test_object.c
+// (test_object_struct_wrapper_all_default_empty / _interior_default_kept), which
+// pins that the two message layers agree on the wire while deciding it
+// independently. Do not "simplify" them into one path.
+// ---------------------------------------------------------------------------
+//
+
+// A nested message that writes exactly the children differing from their
+// declared default -- the shape generated code has.  All-default => writes
+// nothing.
+class KeyValue : public sofab::OStreamMessage
+{
+public:
+    uint32_t k = 0;
+    uint32_t v = 0;
+
+    KeyValue() noexcept = default;
+    KeyValue(uint32_t key, uint32_t value) noexcept : k{key}, v{value} { }
+
+    sofab::OStreamImpl::Result
+    serialize(sofab::OStreamImpl &_ostream) const noexcept override
+    {
+        return _ostream
+            .writeIf(0, k, k != 0)
+            .writeIf(1, v, v != 0)
+        ;
+    }
+};
+
+// The wrapper sequence of an array of KeyValue (§5): its children are the
+// elements, id == array index. Every element goes through the ELEMENT form
+// (plain write), whatever its value.
+class KeyValueArray : public sofab::OStreamMessage
+{
+public:
+    std::vector<KeyValue> elements;
+
+    sofab::OStreamImpl::Result
+    serialize(sofab::OStreamImpl &_ostream) const noexcept override
+    {
+        // Result is only constructible by the stream, so seed the chain with a
+        // success no-op; Result::write updates it in place and is sticky.
+        auto result = _ostream.writeIf(0, 0u, false);
+        for (size_t i = 0; i < elements.size(); i++)
+        {
+            result.write(static_cast<sofab_id_t>(i), elements[i]);
+        }
+
+        return result;
+    }
+};
+
+TEST_CASE("OStream: an all-default nested message FIELD is omitted")
+{
+    sofab::OStream ostream{64};
+    const KeyValue kv;  // every child at its declared default
+
+    ostream.write(0, 42u)
+        .writeLazy(10, kv)
+        .write(3, 7u);
+
+    auto used = ostream.bytesUsed();
+
+    // No 0x56 (sequence start, id 10) / 0x07 pair: the field is gone, and the
+    // fields around it are untouched.
+    const uint8_t expected[] = {0x00, 0x2A, 0x18, 0x07};
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: a nested message FIELD with content is framed")
+{
+    sofab::OStream ostream{64};
+    const KeyValue kv{1, 2};
+
+    ostream.write(0, 42u)
+        .writeLazy(10, kv)
+        .write(3, 7u);
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0x00, 0x2A,                         // id 0 = 42
+        0x56, 0x00, 0x01, 0x08, 0x02, 0x07, // id 10 = {k=1, v=2}
+        0x18, 0x07,                         // id 3 = 7
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: an all-default wrapper ELEMENT keeps its frame")
+{
+    sofab::OStream ostream{64};
+    KeyValueArray arr;
+    arr.elements.resize(2);  // two elements, both all-default
+
+    ostream.writeLazy(200, arr);
+
+    auto used = ostream.bytesUsed();
+
+    // Both elements are on the wire as empty frames. If the element closer
+    // dropped them the wrapper would write nothing, the field would then be
+    // omitted too, and a two-element array would decode as absent.
+    const uint8_t expected[] = {
+        0xC6, 0x0C,   // wrapper open (id 200)
+        0x06, 0x07,   // element 0: empty frame
+        0x0E, 0x07,   // element 1: empty frame
+        0x07,         // wrapper close
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: a trailing all-default ELEMENT keeps the array's length")
+{
+    sofab::OStream ostream{64};
+    KeyValueArray arr;
+    arr.elements.push_back(KeyValue{1, 2});
+    arr.elements.push_back(KeyValue{});   // all-default, and it is the last one
+
+    ostream.writeLazy(200, arr);
+
+    auto used = ostream.bytesUsed();
+
+    // Length is "highest present id + 1" (§5.1): dropping element 1 would decode
+    // as a one-element array. Only a *fixed-count* array elides its trailing
+    // default run, and that trim is the message layer's decision, not the
+    // stream's -- the ELEMENT form always frames what it is handed.
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07, // element 0 = {1, 2}
+        0x0E, 0x07,                         // element 1 = empty frame
+        0x07,
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: an interior all-default ELEMENT stays framed")
+{
+    sofab::OStream ostream{64};
+    KeyValueArray arr;
+    arr.elements.push_back(KeyValue{1, 2});
+    arr.elements.push_back(KeyValue{});
+    arr.elements.push_back(KeyValue{3, 4});
+
+    ostream.writeLazy(200, arr);
+
+    auto used = ostream.bytesUsed();
+
+    // Byte-identical to the C descriptor path's
+    // test_object_struct_wrapper_interior_default_kept (test/c/test_object.c):
+    // two message layers, two mechanisms, one wire form.
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07, // element 0 = {1, 2}
+        0x0E, 0x07,                         // element 1 = empty frame (interior)
+        0x16, 0x00, 0x03, 0x08, 0x04, 0x07, // element 2 = {3, 4}
+        0x07,
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: an array FIELD with no element is omitted")
+{
+    sofab::OStream ostream{64};
+    const KeyValueArray arr;   // no elements at all
+
+    ostream.writeLazy(200, arr);
+
+    // The wrapper wrote nothing, so the field equals its declared (empty)
+    // default and vanishes -- not an empty wrapper (0xC6 0x0C 0x07). Same
+    // outcome as the C path's test_object_struct_wrapper_all_default_empty.
+    REQUIRE(ostream.bytesUsed() == 0);
+}
+
+TEST_CASE("OStream: an all-default nested FIELD inside a framed ELEMENT")
+{
+    sofab::OStream ostream{64};
+
+    // element 0 of a wrapper array; the element itself holds one nested message
+    // FIELD (id 4) that is all-default. The element keeps its frame (§5.1), the
+    // field inside it disappears (§2) -- both rules, one encode.
+    ostream.sequenceBeginLazy(200);
+    {
+        const KeyValue inner;
+        ostream.sequenceBeginLazy(0);
+        ostream.writeLazy(4, inner);
+        ostream.sequenceEndKeep();
+    }
+    ostream.sequenceEnd();
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0xC6, 0x0C,   // wrapper open (id 200)
+        0x06, 0x07,   // element 0: framed, and empty -- its only field went away
+        0x07,         // wrapper close
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}

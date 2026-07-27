@@ -1170,6 +1170,56 @@ static void test_eager_inner_frame_commits_lazy_outer (void)
     });
 }
 
+/* The other closer, and the only thing that can put an empty frame on the wire
+ * via the lazy path: sofab_ostream_write_sequence_end_keep(). An array ELEMENT
+ * closes with it -- element presence carries the array's length (§5.1) -- while a
+ * FIELD closes with sofab_ostream_write_sequence_end() and vanishes (§2).
+ * Nothing in the C *object* path calls it: sofab_object_encode() decides omission
+ * from the descriptor before it opens anything, and its role test is
+ * info->fixed_seq (object.c), not this trio. The primitive exists for a message
+ * layer that only discovers content as it writes -- the C++ wrapper, and
+ * generated C -- so it is pinned here directly. */
+static void test_lazy_sequence_end_keep_forces_empty_frame (void)
+{
+    const uint8_t expected[] = {0x0E, 0x07};
+    LAZY_CHECK("end_keep must force out a contentless frame", expected, {
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+        sofab_ostream_write_sequence_end_keep(&ctx);
+    });
+}
+
+/* end_keep behaves like a write: it commits the whole held-back run, outermost
+ * header first, so the enclosing sequence is framed too. Without that, a kept
+ * element would sit inside a wrapper that was never opened. */
+static void test_lazy_sequence_end_keep_commits_outer_run (void)
+{
+    const uint8_t expected[] = {0x0E, 0x16, 0x07, 0x07};
+    LAZY_CHECK("end_keep must commit the enclosing run too", expected, {
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
+        sofab_ostream_write_sequence_end_keep(&ctx);   /* element: framed */
+        sofab_ostream_write_sequence_end(&ctx);        /* field: has content now */
+    });
+}
+
+/* The array shape where the two closers meet: a wrapper field (id 200) holding
+ * two all-default elements (ids 0 and 1). Byte-identical to the C++ wrapper's
+ * "an all-default wrapper ELEMENT keeps its frame" (test/cpp/test_ostream.cpp).
+ * Close the elements with the field closer instead and everything collapses --
+ * elements, wrapper and field -- so a two-element array decodes as absent. */
+static void test_lazy_wrapper_keeps_every_default_element (void)
+{
+    const uint8_t expected[] = {0xC6, 0x0C, 0x06, 0x07, 0x0E, 0x07, 0x07};
+    LAZY_CHECK("every wrapper element must keep its frame", expected, {
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 200);
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 0);
+        sofab_ostream_write_sequence_end_keep(&ctx);
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+        sofab_ostream_write_sequence_end_keep(&ctx);
+        sofab_ostream_write_sequence_end(&ctx);
+    });
+}
+
 static uint8_t _lazy_sink[256];
 static size_t _lazy_sink_len;
 
@@ -1649,6 +1699,9 @@ int test_ostream_main (void)
     RUN_TEST(test_lazy_sequence_commits_run_on_first_content);
     RUN_TEST(test_lazy_sequence_drops_only_empty_inner);
     RUN_TEST(test_eager_inner_frame_commits_lazy_outer);
+    RUN_TEST(test_lazy_sequence_end_keep_forces_empty_frame);
+    RUN_TEST(test_lazy_sequence_end_keep_commits_outer_run);
+    RUN_TEST(test_lazy_wrapper_keeps_every_default_element);
     RUN_TEST(test_lazy_committed_run_across_flush_matches_one_shot);
     RUN_TEST(test_lazy_window_at_bound_emits_nothing);
     RUN_TEST(test_lazy_window_beyond_bound_frames_eagerly);
