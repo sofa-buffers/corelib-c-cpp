@@ -10,9 +10,11 @@ name: "Matrix: C++ features"
 #   - Type-dispatch (FP64, INT64, ARRAY): degrade gracefully — using the type
 #     yields a static_assert, but the header still compiles and the smoke (which
 #     avoids those types) builds and round-trips. These are the "graceful" jobs.
-#   - Structural (FIXLEN, SEQUENCE): the wrapper rejects the build with a #error,
-#     because strings/blobs/floats and the nested-message API underpin it. These
-#     are the "rejected" jobs, which assert the #error fires.
+#   - Structural (FIXLEN, SEQUENCE, LAZY_SEQ): the wrapper rejects the build with
+#     a #error, because strings/blobs/floats and the nested-message API underpin
+#     it (LAZY_SEQ included: the wrapper's nested-message writes are the hold-back
+#     framing of MESSAGE_SPEC §2). These are the "rejected" jobs, which assert the
+#     #error fires.
 #
 # The full Catch2 unit tests stay max-only (build-gcc-x86_64 / build-clang-x86_64);
 # they use every type and cannot compile in reduced configs by design.
@@ -134,6 +136,23 @@ jobs:
           fi
           echo "$out"
           echo "$out" | grep -qF "requires SEQUENCE support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
+
+      # The wrapper's nested-message writes are defined in terms of the hold-back
+      # framing of MESSAGE_SPEC §2 (sequenceBeginLazy / sequenceEndKeep), which has
+      # no eager substitute producing the same bytes — so LAZY_SEQ is structural for
+      # C++ and the build must be rejected, not fail with "was not declared".
+      - name: no-lazy-seq (expect LAZY_SEQ #error)
+        run: |
+          cmake -S . -B build/no-lazy-seq \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT"
+          if out=$(cmake --build build/no-lazy-seq --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires LAZY_SEQ support" \
             || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
           echo "OK: build rejected with the expected #error."
 

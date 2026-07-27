@@ -30,11 +30,27 @@ rebuild it, see the generator in [`../test/vectorgen`](../test/vectorgen).
       "fields": [                        // ordered encode operations (the structure + values)
         { "op": "fp32", "id": 0, "value": 3.1415 }
       ],
-      "serialized": { "length": 6, "hex": "0220560e4940" }   // ground truth
+      "serialized": { "length": 6, "hex": "0220560e4940" },  // ground truth (dense)
+      "serialized_sparse": { "length": 6, "hex": "0220560e4940" }  // same message, sparse-canonical
     }
   ]
 }
 ```
+
+### The two byte columns
+
+Every vector carries both, and they answer different questions:
+
+| column | what it is | who asserts it |
+|---|---|---|
+| `serialized` | **dense** — the `fields` ops replayed one-for-one through the primitive encoder. The authoritative ground truth, and the input for every decode/skip scenario. | this repo's corelib suite, and every other `corelib-*` |
+| `serialized_sparse` | **sparse-canonical** ([MESSAGE_SPEC §2](https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md)) — every leaf equal to its type default omitted, and a sequence left without content omitted rather than framed empty (so an all-default message is the **empty** byte string) | the **generator**'s per-language conformance drivers, which encode *generated objects* |
+
+A corelib cannot produce the sparse form on its own: omission is decided against
+each field's *declared default*, which lives in the schema, one layer above the
+primitive API. So corelib suites assert `serialized` only — that is not a coverage
+gap, it is the layer boundary. The two columns are equal whenever no field of the
+vector is at its default.
 
 ### `fields` operations
 
@@ -49,6 +65,11 @@ rebuild it, see the generator in [`../test/vectorgen`](../test/vectorgen).
 | `array`           | `id`, `element_type`, `values`              | array; `element_type` ∈ `u8..u64`, `i8..i64`, `fp32`, `fp64` |
 | `sequence_begin`  | `id`                                        | open a nested sequence |
 | `sequence_end`    | —                                           | close the current sequence |
+
+The ops are the same for both byte columns; only the encoding differs. In the
+`serialized_sparse` pass every default leaf op is skipped and every
+`sequence_begin` is opened *lazily*, so a sequence whose ops all dropped out
+carries no content and is omitted whole — header and end marker both.
 
 ### Optional `requires`
 

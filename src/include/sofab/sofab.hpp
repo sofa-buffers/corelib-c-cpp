@@ -40,17 +40,24 @@
  *   matching branch turns into a clear static_assert, so code that never uses
  *   that type still compiles, while code that does gets a readable diagnostic.
  *
- *   Structural capabilities (FIXLEN, SEQUENCE) underpin concrete methods and
- *   the whole nested-message API (strings, blobs, floats, sequences, message
- *   objects) — i.e. most of the C++ surface. The wrapper cannot offer a
- *   coherent object API without them, so building the C++ layer with either
- *   disabled is rejected outright; use the C API directly for such configs.
+ *   Structural capabilities (FIXLEN, SEQUENCE, LAZY_SEQ) underpin concrete
+ *   methods and the whole nested-message API (strings, blobs, floats,
+ *   sequences, message objects) — i.e. most of the C++ surface. The wrapper
+ *   cannot offer a coherent object API without them, so building the C++ layer
+ *   with any of them disabled is rejected outright; use the C API directly for
+ *   such configs. LAZY_SEQ is structural for the same reason: the wrapper's
+ *   nested-message writes are defined in terms of the hold-back framing of
+ *   MESSAGE_SPEC §2, and sequenceBeginLazy()/sequenceEndKeep() have no eager
+ *   substitute that would produce the same bytes.
  */
 #if defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 #  error "sofab C++ wrapper requires FIXLEN support (strings, blobs, floats). Do not define SOFAB_DISABLE_FIXLEN_SUPPORT when building the C++ API; use the C API directly for fixlen-less builds."
 #endif
 #if defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 #  error "sofab C++ wrapper requires SEQUENCE support (nested messages, variable-length array reads). Do not define SOFAB_DISABLE_SEQUENCE_SUPPORT when building the C++ API; use the C API directly for sequence-less builds."
+#endif
+#if defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+#  error "sofab C++ wrapper requires LAZY_SEQ support (an all-default nested message is omitted, not framed empty — MESSAGE_SPEC §2). Do not define SOFAB_DISABLE_LAZY_SEQ_SUPPORT when building the C++ API; it is a footprint switch for pure-C consumers, which encode through sofab_object_encode()."
 #endif
 
 /*! @brief 1 if the wrapper exposes 64-bit float (double) fields, else 0
@@ -1197,9 +1204,19 @@ namespace sofab
          * string. The predicate never touches a byte image, so struct padding
          * cannot influence it.
          *
-         * Use the eager @ref sequenceBegin where an empty frame carries meaning:
-         * the §4.9 primitive itself, and the explicitly empty array of a field that
-         * declares a non-empty default (§2, §3).
+         * Where an empty frame carries meaning, close with @ref sequenceEndKeep
+         * instead: an array **element** (§5.1), the §4.9 empty-sequence primitive
+         * itself, and the explicitly empty array of a field that declares a
+         * non-empty default (§2, §3). The wrapper deliberately exposes no eager
+         * opener — the frame-or-not decision belongs to the closer, which is the
+         * one call site that knows the position in the schema. (The C core keeps
+         * @c sofab_ostream_write_sequence_begin() for @c sofab_object_encode().)
+         *
+         * **Bounded**: at most @c SOFAB_LAZY_SEQ_DEPTH (default 8) headers are
+         * held back at once; a sequence opened deeper than that is framed eagerly
+         * and keeps an empty frame it could have dropped — well-formed and
+         * value-identical, but not canonical. See @c SOFAB_LAZY_SEQ_DEPTH in
+         * @c sofab/ostream.h.
          *
          * @param id  Field identifier of the sequence.
          * @return @ref Result for fluent chaining and error inspection.

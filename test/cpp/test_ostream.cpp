@@ -1045,6 +1045,49 @@ TEST_CASE("OStream: write nested sequence fluent")
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
 }
 
+// The wrapper inherits the C core's documented hold-back bound
+// (SOFAB_LAZY_SEQ_DEPTH, CORELIB_PLAN §6): canonical up to it, eagerly framed --
+// well-formed but non-canonical -- beyond it. Pinned here too, because the C++
+// surface is where generated code meets it. See test_ostream.c for the byte-level
+// window tests and why a heap-free profile takes that allowance.
+TEST_CASE("OStream: contentless nesting up to the hold-back bound emits nothing")
+{
+    for (unsigned depth = 1; depth <= SOFAB_LAZY_SEQ_DEPTH; depth++)
+    {
+        sofab::OStream ostream{256};
+
+        for (unsigned i = 0; i < depth; i++) ostream.sequenceBeginLazy(1);
+        for (unsigned i = 0; i < depth; i++) ostream.sequenceEnd();
+
+        INFO("depth " << depth);
+        REQUIRE(ostream.bytesUsed() == 0);
+    }
+}
+
+TEST_CASE("OStream: contentless nesting past the hold-back bound frames eagerly")
+{
+    sofab::OStream ostream{256};
+    constexpr unsigned depth = 40;
+
+    for (unsigned i = 0; i < depth; i++) ostream.sequenceBeginLazy(1);
+    for (unsigned i = 0; i < depth; i++) ostream.sequenceEnd();
+
+    auto used = ostream.bytesUsed();
+    REQUIRE(used > 0);   // a bounded window cannot stay canonical at depth 40
+
+    // Only begin(1) headers and end markers, in equal numbers: the empty frames
+    // §2 would have omitted, which a decoder normalizes away.
+    const uint8_t *bytes = ostream.data();
+    size_t begins = 0, ends = 0;
+    for (size_t i = 0; i < used; i++)
+    {
+        if (bytes[i] == 0x0E) begins++;
+        else if (bytes[i] == 0x07) ends++;
+        else FAIL("unexpected byte in a contentless deep nesting");
+    }
+    REQUIRE(begins == ends);
+}
+
 TEST_CASE("OStream: write nested sequence with array fluent")
 {
     sofab::OStream ostream{64};

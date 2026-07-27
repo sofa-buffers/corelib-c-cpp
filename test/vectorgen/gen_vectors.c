@@ -345,8 +345,12 @@ static void emit_requires(FILE *o, uint32_t req)
  */
 /*
  * A leaf field equal to its type default (zero / empty) is omitted by a
- * sparse-canonical encoder (MESSAGE_SPEC S2). A SEQUENCE is always framed, so
- * seq_begin/seq_end and any non-default child survive; only default leaves drop.
+ * sparse-canonical encoder (MESSAGE_SPEC S2). This predicate covers LEAVES only:
+ * a sequence op is never dropped here, because whether its frame survives is not
+ * a property of the op but of what the ops inside it turn out to be. The sparse
+ * pass therefore replays every seq_begin/seq_end and lets the encoder decide --
+ * it opens them LAZILY, so a sequence left without content drops itself, header
+ * and end marker both (S2), while one with a surviving child stays framed.
  */
 static int is_default_leaf(const op_t *op)
 {
@@ -817,7 +821,14 @@ static void emit_all(FILE *o)
      * id gap the decoder restores; trailing default elements collapse. The
      * `serialized_sparse` here is auto-derived (is_default_leaf drops the empty
      * string ops), so these pin the element-level sparse wire the non-C backends
-     * must produce. The sequence is always framed even when fully default. */
+     * must produce.
+     *
+     * The wrapper itself is a FIELD, so S2 applies to it too: array_string_
+     * all_default below (every element empty) leaves the lazily opened wrapper
+     * without content, and the vector's serialized_sparse is the empty byte
+     * string. A wrapper-array ELEMENT that is itself a sequence would keep its
+     * frame (S5.1 -- element presence carries the length), but this primitive
+     * vector file has no struct/union arrays, so no vector exercises that. */
     {
         oplist_t l = {0};
         op_seqb(&l, 0);

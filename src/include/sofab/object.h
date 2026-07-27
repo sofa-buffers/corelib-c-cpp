@@ -257,6 +257,24 @@ extern sofab_ret_t sofab_object_init (
  * default-values object, or zero when none is set) are skipped. Nested objects
  * are written as sequences.
  *
+ * The skip rule covers a nested-object **field** too (MESSAGE_SPEC §2): one whose
+ * every child equals its default is omitted entirely rather than framed as an
+ * empty sequence, so an all-default object encodes to zero bytes. The comparison
+ * is per child field, recursively, against the nested descriptor's declared
+ * defaults — never a raw byte image — so struct padding cannot influence it and a
+ * non-zero nested default is handled like any other. Absence reconstructs exactly
+ * that default (@ref sofab_object_init), so the omission is value-preserving.
+ *
+ * The one position still framed unconditionally is a sequence-form **element** of
+ * a fixed-count sequence holder (@ref SOFAB_OBJECT_DESCR_SEQ): element presence is
+ * what carries the array's length (§5.1), so only the *trailing* run of default
+ * elements is trimmed, never an interior one.
+ *
+ * This descriptor-driven encoder uses none of the output stream's hold-back
+ * framing (@c sofab_ostream_write_sequence_begin_lazy): it tests a field against
+ * its default *before* opening anything, so it is canonical at every nesting
+ * depth and no @c SOFAB_LAZY_SEQ_DEPTH window applies to it.
+ *
  * @param ctx       Pointer to the output stream context.
  * @param info      Pointer to the object descriptor.
  * @param src       Pointer to the source object to serialize.

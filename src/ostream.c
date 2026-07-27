@@ -132,16 +132,6 @@ static sofab_unsigned_t _type_encode (sofab_unsigned_t var, int type)
     return ((var << 3) | (type & 0x07));
 }
 
-/*!
- * @brief Write a field header (id + type) to the buffer as a varint.
- *
- * @param ctx   Output stream context.
- * @param id    Field identifier (rejected if greater than @ref SOFAB_ID_MAX).
- * @param type  Field type tag.
- * @return SOFAB_RET_OK on success, SOFAB_RET_E_ARGUMENT for an out-of-range id,
- *         or SOFAB_RET_E_BUFFER_FULL on overflow.
- */
-SOFAB_NOINLINE
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
 /*!
  * @brief Write out the held-back sequence headers, outermost first.
@@ -171,6 +161,16 @@ static sofab_ret_t _commit_pending (sofab_ostream_t *ctx)
 }
 #endif /* SEQUENCE && LAZY_SEQ */
 
+/*!
+ * @brief Write a field header (id + type) to the buffer as a varint.
+ *
+ * @param ctx   Output stream context.
+ * @param id    Field identifier (rejected if greater than @ref SOFAB_ID_MAX).
+ * @param type  Field type tag.
+ * @return SOFAB_RET_OK on success, SOFAB_RET_E_ARGUMENT for an out-of-range id,
+ *         or SOFAB_RET_E_BUFFER_FULL on overflow.
+ */
+SOFAB_NOINLINE
 static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_type_t type)
 {
     if (id > SOFAB_ID_MAX)

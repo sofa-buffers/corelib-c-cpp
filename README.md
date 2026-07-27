@@ -299,9 +299,16 @@ features removes their code paths and shrinks the footprint.
 | `SOFAB_DISABLE_FIXLEN_SUPPORT` | off | Drop fixed-length fields: floats, strings, and blobs |
 | `SOFAB_DISABLE_ARRAY_SUPPORT` | off | Drop array fields (scalar arrays and fixed-length arrays) |
 | `SOFAB_DISABLE_SEQUENCE_SUPPORT` | off | Drop nested sequence framing |
+| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | off | Drop the hold-back sequence openers (`..._begin_lazy` / `..._end_keep`) and the pending-run state in `sofab_ostream_t`. See [Sequence framing](#sequence-framing-and-the-hold-back-window) — a pure-C consumer encoding through `sofab_object_encode()` never needs them. **Changes the `sofab_ostream_t` layout** (and is rejected by the C++ wrapper) |
 | `SOFAB_DISABLE_FP64_SUPPORT` | off | Drop 64-bit float (`fp64`); auto-defined where `double` is not 8 bytes |
 | `SOFAB_DISABLE_INT64_SUPPORT` | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
+
+One macro **tunes** rather than removes:
+
+| Macro | Default | Effect |
+| - | - | - |
+| `SOFAB_LAZY_SEQ_DEPTH` | `8` | How many nested sequence headers can be held back at once — this profile's **documented hold-back bound**, see [Sequence framing](#sequence-framing-and-the-hold-back-window). Costs 4&nbsp;B of RAM per output stream per level |
 
 Two knobs are **opt-IN** (off by default in this footprint corelib — see below):
 
@@ -340,8 +347,8 @@ dropped entirely with the `SOFAB_DISABLE_OBJECT_API` CMake option.
 
 The C++ wrapper honors these switches: type-dispatch capabilities
 (`FP64`/`INT64`/`ARRAY`) become a `static_assert` only when a disabled type is
-used, while the structural ones (`FIXLEN`/`SEQUENCE`) underpin most of the C++
-surface and are rejected outright with a `#error`.
+used, while the structural ones (`FIXLEN`/`SEQUENCE`/`LAZY_SEQ`) underpin most of
+the C++ surface and are rejected outright with a `#error`.
 
 > **`SOFAB_DISABLE_INT64_SUPPORT` — change only if you know what you are doing.**
 > It shrinks 64-bit varint math (smaller/faster on 32-bit MCUs) but has wire- and
@@ -356,6 +363,58 @@ surface and are rejected outright with a `#error`.
 >   header is a varint of `(id << 3) | type`.
 > - **Conformance:** the shipped test vectors include 64-bit values and won't
 >   decode in this mode.
+
+## Sequence framing and the hold-back window
+
+A nested structure is a **sequence**: a start marker, the child fields, an end
+marker. Whether that frame reaches the wire at all depends on the *position*
+([MESSAGE_SPEC §2](https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md)):
+
+- A sequence-typed **field** whose value equals its declared default is **omitted
+  entirely** — not framed empty. The ≠-default test is per field and a sequence is
+  no exception, so an all-default message encodes to **zero bytes**, and a
+  zero-byte input decodes to the all-default value.
+- A wrapper-array **element** is **always framed**, even when all-default: element
+  presence is what carries a dynamic array's length (§5.1). Dropping one would
+  change the array, not just its bytes.
+- An empty frame remains **valid input**. It is the non-canonical encoding of the
+  same value, and every decoder accepts it and normalizes it away — so encoders on
+  either side of this rule interoperate.
+
+The two message layers in this repo reach that outcome differently:
+
+- **C, `sofab_object_encode()`** — the descriptor knows the whole object, so it
+  tests each field against its default *before* opening anything. There is no
+  window and no bound involved; it is canonical at every nesting depth.
+- **C++ / generated code** — the predicate is spread across individual write
+  calls, so the *output stream* decides: `sofab_ostream_write_sequence_begin_lazy()`
+  (`OStream::sequenceBeginLazy`) **holds the header back**; the first field written
+  into any enclosing sequence emits the whole held-back run; and
+  `..._sequence_end()` (`sequenceEnd`) drops a frame that never got content, while
+  `..._sequence_end_keep()` (`sequenceEndKeep`) forces one out for an element
+  position. Held-back ids are stream state, not buffer content, so this never
+  changes the bytes a small output buffer produces.
+
+> **The bound: `SOFAB_LAZY_SEQ_DEPTH` (default 8).** This is a **heap-free**
+> corelib — it cannot grow the pending run on demand, so it bounds it, which
+> [CORELIB_PLAN §6](https://github.com/sofa-buffers/documentation/blob/main/CORELIB_PLAN.md)
+> permits a heap-free profile *provided the bound is documented*. In practice:
+>
+> - **Up to 8 nested lazily-opened sequences, output is canonical** — an
+>   all-default sequence field is omitted.
+> - **Deeper than that, the run is committed and the sequence is framed eagerly.**
+>   If it then turns out to be all-default, the two-byte empty frame stays on the
+>   wire. That output is **well-formed and decodes to the same value** (it is the
+>   non-canonical form above), so a bounded and an unbounded encoder interoperate;
+>   what it is not is byte-identical to an unbounded encoder's output.
+> - Raise it with `-DSOFAB_LAZY_SEQ_DEPTH=N` if a schema nests sequence *fields*
+>   deeper than 8 and byte-exact canonical output matters. Each level costs 4&nbsp;B
+>   of RAM per output stream. Nesting itself is **not** limited by this — that is
+>   `SOFAB_MAX_DEPTH` (255) and exceeding the hold-back window is never an error.
+>
+> An implementation that *can* allocate (the other corelibs) must hold back to the
+> full `SOFAB_MAX_DEPTH` and is canonical at every depth. The C object API above
+> already is; only the raw-stream path carries the window.
 
 ## Build & test
 
@@ -439,10 +498,10 @@ cost is `.text` (flash). Tables below are the size of the built static library
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.2KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.3KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.2KB | 0.0KB | 0.0KB |
-| atmega8 | ~7.4KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.5KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.5KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.6KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.8KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — same as above plus
 `SOFAB_ENABLE_STRICT_UTF8` (off by default). This is the only row where the
@@ -452,10 +511,18 @@ not pay:
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.5KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.5KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.5KB | 0.0KB | 0.0KB |
-| atmega8 | ~7.8KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.7KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.7KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.8KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.3KB | 0.0KB | 0.0KB |
+
+The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
+those *Full* rows (it added ~0.24&nbsp;KB on ARMv6-m and ~0.47&nbsp;KB on atmega8).
+A pure-C consumer that only encodes through `sofab_object_encode()` can take it
+back out with `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to
+3326&nbsp;B of `.text`, and `sofab_ostream_t` shrinks from 56&nbsp;B to
+20&nbsp;B per stream (the `SOFAB_LAZY_SEQ_DEPTH` pending run). The *Minimal* rows
+below are unaffected either way: they disable sequences outright.
 
 **Minimal configuration** — `SOFAB_DISABLE_FIXLEN_SUPPORT`,
 `SOFAB_DISABLE_ARRAY_SUPPORT`, `SOFAB_DISABLE_SEQUENCE_SUPPORT`,

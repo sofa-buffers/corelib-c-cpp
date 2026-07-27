@@ -6,6 +6,7 @@
  */
 
 #include "sofab/ostream.h"
+#include "sofab/istream.h"   /* the hold-back tests decode their own output */
 
 #include "unity.h"
 
@@ -1169,38 +1170,233 @@ static void test_eager_inner_frame_commits_lazy_outer (void)
     });
 }
 
-/* Held-back headers are not in the buffer yet, so a buffer smaller than the
- * message produces the same bytes as a large one: the chunked-encode guarantee is
- * unaffected by the hold-back. */
-static uint8_t _lazy_sink[16];
+static uint8_t _lazy_sink[256];
 static size_t _lazy_sink_len;
 
 static void _lazy_flush_cb (sofab_ostream_t *ctx, const uint8_t *data, size_t len, void *usrptr)
 {
     (void)ctx; (void)usrptr;
+    TEST_ASSERT_TRUE_MESSAGE(_lazy_sink_len + len <= sizeof(_lazy_sink), "sink overflow");
     memcpy(_lazy_sink + _lazy_sink_len, data, len);
     _lazy_sink_len += len;
 }
 
-static void test_lazy_framing_is_buffer_size_independent (void)
+/*! @brief The message every buffer size below must reproduce byte for byte.
+ *
+ * Ids 100/101/102 give two-byte sequence headers, so the committed run is six
+ * bytes -- wider than most of the buffers it is pushed through. */
+static void _lazy_flush_msg (sofab_ostream_t *ctx)
+{
+    sofab_ostream_write_sequence_begin_lazy(ctx, 100);
+    sofab_ostream_write_sequence_begin_lazy(ctx, 101);
+    sofab_ostream_write_sequence_begin_lazy(ctx, 102);
+    sofab_ostream_write_unsigned(ctx, 0, 42);   /* commits all three headers */
+    sofab_ostream_write_signed(ctx, 1, -7);
+    sofab_ostream_write_sequence_end(ctx);
+    sofab_ostream_write_sequence_begin_lazy(ctx, 103);
+    sofab_ostream_write_sequence_end(ctx);      /* contentless: drops */
+    sofab_ostream_write_sequence_end(ctx);
+    sofab_ostream_write_sequence_end(ctx);
+}
+
+/*
+ * A committed run that straddles a flush boundary yields byte-identical output
+ * to the one-shot encode -- at every buffer size from one byte up.
+ *
+ * What this does NOT show, and no test can, is a flush landing *while* a header
+ * is still held back. That is unreachable by construction: a held-back header is
+ * stream state (an id in ctx->pending), not buffer content, so holding one back
+ * cannot bring the buffer any closer to full; and the buffer only ever fills
+ * through a write, which commits the whole pending run before its own first byte
+ * is pushed. A pending run therefore can never straddle a flush. What can, and
+ * what the loop below drives through every split point, is the *committed* run:
+ * six bytes of headers emitted back-to-back through a buffer as small as one.
+ */
+static void test_lazy_committed_run_across_flush_matches_one_shot (void)
 {
     sofab_ostream_t ctx;
-    uint8_t buffer[3];
+    uint8_t oneshot[64];
 
-    _lazy_sink_len = 0;
-    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, _lazy_flush_cb, NULL);
-    sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+    sofab_ostream_init(&ctx, oneshot, sizeof(oneshot), 0, NULL, NULL);
+    _lazy_flush_msg(&ctx);
+    size_t oneshot_len = sofab_ostream_flush(&ctx);
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(6, oneshot_len, "expected a multi-byte message");
+
+    for (size_t buflen = 1; buflen <= 12; buflen++)
+    {
+        uint8_t small[12];
+        char msg[64];
+        snprintf(msg, sizeof(msg), "chunked encode differs at buflen %zu", buflen);
+
+        _lazy_sink_len = 0;
+        sofab_ostream_init(&ctx, small, buflen, 0, _lazy_flush_cb, NULL);
+        _lazy_flush_msg(&ctx);
+        sofab_ostream_flush(&ctx);
+
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(oneshot_len, _lazy_sink_len, msg);
+        TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(oneshot, _lazy_sink, oneshot_len, msg);
+    }
+}
+
+/* --- the hold-back window (CORELIB_PLAN §6, "How deep the hold-back reaches") -
+ *
+ * This is a heap-free profile, so it takes the allowance §6 grants exactly one
+ * kind of implementation: the pending run is bounded by SOFAB_LAZY_SEQ_DEPTH
+ * instead of reaching SOFAB_MAX_DEPTH. The tests below pin both halves of that
+ * documented bargain -- canonical up to the bound, well-formed-but-not-canonical
+ * beyond it -- so the bound cannot drift away from what ostream.h and the README
+ * promise. A port that CAN allocate must be canonical at every depth and would
+ * fail the second test by design; that is the point of documenting the bound.
+ */
+
+/*! @brief Nest @p depth lazy sequences of id 1, close them all contentless. */
+static size_t _lazy_nest_contentless (uint8_t *buf, size_t buflen, unsigned depth)
+{
+    sofab_ostream_t ctx;
+    sofab_ostream_init(&ctx, buf, buflen, 0, NULL, NULL);
+    for (unsigned i = 0; i < depth; i++)
+    {
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+            sofab_ostream_write_sequence_begin_lazy(&ctx, 1), "begin_lazy failed");
+    }
+    for (unsigned i = 0; i < depth; i++)
+    {
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+            sofab_ostream_write_sequence_end(&ctx), "sequence_end failed");
+    }
+    return sofab_ostream_flush(&ctx);
+}
+
+/* Up to the bound the encoder is canonical: nothing at all reaches the wire. */
+static void test_lazy_window_at_bound_emits_nothing (void)
+{
+    uint8_t buffer[256];
+
+    for (unsigned depth = 1; depth <= SOFAB_LAZY_SEQ_DEPTH; depth++)
+    {
+        char msg[80];
+        snprintf(msg, sizeof(msg),
+                 "%u contentless levels (<= SOFAB_LAZY_SEQ_DEPTH) must emit nothing", depth);
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _lazy_nest_contentless(buffer, sizeof(buffer), depth), msg);
+    }
+}
+
+/*
+ * One level past the bound the run is committed and framed eagerly, so the empty
+ * frames §2 would have omitted stay on the wire: SOFAB_LAZY_SEQ_DEPTH + 1 begins
+ * followed by as many ends (only the innermost sequence, held back again after
+ * the commit, still drops). Non-canonical by construction -- and this is the
+ * exact consequence SOFAB_LAZY_SEQ_DEPTH is documented to have.
+ */
+static void test_lazy_window_beyond_bound_frames_eagerly (void)
+{
+    uint8_t buffer[256];
+    const unsigned framed = SOFAB_LAZY_SEQ_DEPTH + 1;
+
+    for (unsigned depth = framed; depth <= framed + 1; depth++)
+    {
+        size_t used = _lazy_nest_contentless(buffer, sizeof(buffer), depth);
+
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(2 * framed, used,
+            "beyond the window the bounded profile frames eagerly");
+        for (unsigned i = 0; i < framed; i++)
+        {
+            TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x0E, buffer[i], "expected a sequence-begin(1) header");
+            TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x07, buffer[framed + i], "expected a sequence-end marker");
+        }
+    }
+}
+
+/*! @brief Field callback that counts the (unbound, hence skipped) top-level fields. */
+static void _count_fields_cb (sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)ctx; (void)size; (void)count;
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(1, id, "the only top-level field is the outer sequence");
+    (*(unsigned *)usrptr)++;
+}
+
+/*
+ * The non-canonical output stays interoperable: 40 levels -- far past the window,
+ * and the depth an allocating port would hold back in full -- decode as a
+ * COMPLETE message. Every emitted byte is either a begin(1) header or an end
+ * marker, in equal numbers, and the whole thing carries not one value-bearing
+ * field: the decoder sees a single empty top-level sequence, which is exactly the
+ * non-canonical form MESSAGE_SPEC §2 requires every decoder to accept and
+ * normalize back to the all-default value the canonical zero bytes denote. That
+ * both forms rebuild the same object is asserted one layer up, in
+ * test_object_default_sequence_roundtrips_both_forms (test_object.c).
+ */
+static void test_lazy_deep_nesting_is_wellformed_and_value_identical (void)
+{
+    uint8_t buffer[256];
+    size_t used = _lazy_nest_contentless(buffer, sizeof(buffer), 40);
+    size_t begins = 0, ends = 0;
+
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, used,
+        "a bounded window cannot stay canonical at depth 40 -- it frames eagerly");
+    for (size_t i = 0; i < used; i++)
+    {
+        if (buffer[i] == 0x0E) begins++;
+        else if (buffer[i] == 0x07) ends++;
+        else TEST_FAIL_MESSAGE("unexpected byte in a contentless deep nesting");
+    }
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(begins, ends, "unbalanced sequence framing");
+
+    unsigned fields = 0;
+    sofab_istream_t is;
+    sofab_istream_init(&is, _count_fields_cb, &fields);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_istream_feed(&is, buffer, used),
+        "the eagerly framed form must decode as a complete message");
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(1, fields,
+        "only the outer empty frame is visible; it carries no value");
+
+    /* And the canonical form of the same value is the empty byte string, which
+     * decodes to COMPLETE with nothing reported at all. */
+    fields = 0;
+    sofab_istream_init(&is, _count_fields_cb, &fields);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_istream_feed(&is, buffer, 0),
+        "the canonical zero-byte message must decode as complete");
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, fields, "zero bytes carry no fields");
+}
+
+/*
+ * Depth bookkeeping: after a run that overflowed the window and was committed
+ * eagerly, the pending state is back to empty, so the next sequence is held back
+ * again and a contentless one still drops. (If an overflow ever left npending
+ * stale, ctx->pending would stop being a suffix of the open sequences and this
+ * would emit a stray frame -- or drop a real one.)
+ */
+static void test_lazy_window_overflow_leaves_state_clean (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t buffer[256];
+
+    /* No flush callback, so sofab_ostream_flush() only reports the cumulative
+     * byte count; the cursor keeps advancing and the deltas below are what each
+     * step added. */
+    sofab_ostream_init(&ctx, buffer, sizeof(buffer), 0, NULL, NULL);
+    for (unsigned i = 0; i < SOFAB_LAZY_SEQ_DEPTH + 4; i++)
+        sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+    for (unsigned i = 0; i < SOFAB_LAZY_SEQ_DEPTH + 4; i++)
+        sofab_ostream_write_sequence_end(&ctx);
+    size_t after_overflow = sofab_ostream_flush(&ctx);
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, after_overflow, "expected eager frames past the window");
+
+    /* Same stream, now a shallow contentless sequence: it must vanish again. */
     sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
     sofab_ostream_write_sequence_end(&ctx);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(after_overflow, sofab_ostream_flush(&ctx),
+        "the window must be empty again after an overflow");
+
+    /* ...and a shallow one WITH content must still frame exactly once. */
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
     sofab_ostream_write_unsigned(&ctx, 0, 42);
     sofab_ostream_write_sequence_end(&ctx);
-    sofab_ostream_flush(&ctx);
-
-    const uint8_t expected[] = {0x0E, 0x00, 0x2A, 0x07};
-    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), _lazy_sink_len,
-        "lazy framing must not depend on the buffer size");
-    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, _lazy_sink, _lazy_sink_len,
-        "chunked lazy framing bytes mismatch");
+    const uint8_t expected[] = {0x16, 0x00, 0x2A, 0x07};
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(after_overflow + sizeof(expected), sofab_ostream_flush(&ctx),
+        "a post-overflow sequence must frame exactly once");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer + after_overflow, sizeof(expected),
+        "post-overflow framing bytes mismatch");
 }
 
 static void test_write_nested_sequence_with_array (void)
@@ -1453,7 +1649,11 @@ int test_ostream_main (void)
     RUN_TEST(test_lazy_sequence_commits_run_on_first_content);
     RUN_TEST(test_lazy_sequence_drops_only_empty_inner);
     RUN_TEST(test_eager_inner_frame_commits_lazy_outer);
-    RUN_TEST(test_lazy_framing_is_buffer_size_independent);
+    RUN_TEST(test_lazy_committed_run_across_flush_matches_one_shot);
+    RUN_TEST(test_lazy_window_at_bound_emits_nothing);
+    RUN_TEST(test_lazy_window_beyond_bound_frames_eagerly);
+    RUN_TEST(test_lazy_deep_nesting_is_wellformed_and_value_identical);
+    RUN_TEST(test_lazy_window_overflow_leaves_state_clean);
 
     RUN_TEST(test_write_nested_sequence_with_array);
     RUN_TEST(test_write_nested_sequence_multilevel);

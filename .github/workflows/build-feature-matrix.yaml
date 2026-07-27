@@ -96,6 +96,25 @@ jobs:
           cmake --build build/no-fixlen --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/no-fixlen/test/c/sofab_vectortest
 
+      # The hold-back openers compiled out, and with them the pending run in
+      # sofab_ostream_t. A pure-C consumer encodes through sofab_object_encode(),
+      # which decides omission per field before opening anything, so it never needs
+      # them — this leg proves the core still builds and round-trips without them.
+      - name: no-lazy-seq
+        run: |
+          cmake -S . -B build/no-lazy-seq $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT"
+          cmake --build build/no-lazy-seq --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-lazy-seq/test/c/sofab_vectortest
+
+      # The hold-back window is a documented, tunable bound (SOFAB_LAZY_SEQ_DEPTH,
+      # CORELIB_PLAN §6), so a build that moves it must still pass the suite: the
+      # bound costs canonicity past its depth, never validity.
+      - name: lazy-seq-depth-2
+        run: |
+          cmake -S . -B build/lazy-seq-depth-2 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_LAZY_SEQ_DEPTH=2"
+          cmake --build build/lazy-seq-depth-2 --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/lazy-seq-depth-2/test/c/sofab_vectortest
+
       - name: no-overflow-check
         run: |
           cmake -S . -B build/no-overflow-check $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"

@@ -660,15 +660,16 @@ static void test_object_deserialize_invalid_field_type (void)
 /*
  * Regression test: consecutive SEQUENCE fields must each select their own nested
  * descriptor (keyed off the static field->nested_idx), even when a preceding
- * sequence is empty.
+ * sequence contributes nothing to the wire.
  *
- * A SEQUENCE is always framed and recursed into -- only its leaf fields are
- * skipped when default, the wrapper itself is not -- so seq_a below is emitted as
- * an EMPTY wrapper. For each SEQUENCE, encoder and decoder must use that field's
- * own nested_idx; a naive running counter over emitted sequences would pick the
- * wrong nested_list entry and corrupt the stream.
+ * MESSAGE_SPEC §2 omits an all-default sequence FIELD outright instead of framing
+ * it empty, which makes this case sharper than it was before the rule: seq_a
+ * produces no bytes at all, so the only sequence on the wire is seq_b, at
+ * nested_idx 1. Encoder and decoder must still key off that field's own
+ * nested_idx; a naive running counter over *emitted* sequences would now hand
+ * seq_b the nested_list[0] descriptor and corrupt the stream.
  *
- * Layout: seq_a (nested_idx 0) is all-default -> emitted empty; seq_b
+ * Layout: seq_a (nested_idx 0) is all-default -> omitted entirely; seq_b
  * (nested_idx 1) carries data. seq_a and seq_b have deliberately different field
  * layouts so a wrong-descriptor encode is detectable. The round-trip must
  * preserve seq_b.
@@ -703,7 +704,7 @@ static const sofab_object_descr_t _info_regr_seq_b =
 
 typedef struct
 {
-    regr_seq_a_t a; /* sequence, all-default -> emitted as an empty wrapper */
+    regr_seq_a_t a; /* sequence, all-default -> omitted entirely (§2) */
     regr_seq_b_t b; /* sequence, carries data */
 } regr_msg_t;
 
@@ -742,6 +743,11 @@ static void test_object_roundtrip_empty_sequence_before_sequence (void)
     sofab_ret_t enc = sofab_object_encode(&octx, &_info_regr_msg, &in);
     size_t used = sofab_ostream_flush(&octx);
     TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, enc, "encode failed");
+    /* seq_a left no trace: the stream opens directly with seq_b's header,
+     * (1 << 3) | SEQUENCE_START = 0x0E. That is what makes the nested_idx of the
+     * *following* sequence differ from its position among the emitted ones. */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x0E, buffer[0],
+        "an all-default sequence field must be omitted, not framed empty");
 
     regr_msg_t out;
     memset(&out, 0x55, sizeof(out));
