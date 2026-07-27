@@ -1039,14 +1039,24 @@ namespace sofab
                 /* The ELEMENT form: the frame is kept even when the nested message
                  * writes nothing, because element presence carries a wrapper
                  * array's length (MESSAGE_SPEC §5.1). A nested message FIELD, which
-                 * may vanish when all-default, is @ref writeLazy. */
+                 * may vanish when all-default, is @ref writeLazy.
+                 *
+                 * The closer runs even when the nested serialize() fails, so the
+                 * sequence this call opened is always the sequence this call
+                 * closes. A failing serialize() is reachable on a perfectly
+                 * healthy stream -- write_fixlen rejects invalid UTF-8 with
+                 * E_ARGUMENT before emitting a byte under SOFAB_ENABLE_STRICT_UTF8
+                 * -- and leaving the frame open would put an unterminated sequence
+                 * on the wire and strand a slot of the bounded hold-back window.
+                 * The first failure is what the caller sees. */
                 ret = sequenceBeginLazy(id).rawCode();
                 if (ret == SOFAB_RET_OK)
                 {
                     ret = value.serialize(static_cast<OStreamImpl&>(*this)).rawCode();
+                    sofab_ret_t cret = sequenceEndKeep().rawCode();
                     if (ret == SOFAB_RET_OK)
                     {
-                        ret = sequenceEndKeep().rawCode();
+                        ret = cret;
                     }
                 }
             }
@@ -1139,6 +1149,11 @@ namespace sofab
          * array **element**: element presence carries a dynamic array's length
          * (§5.1), so an all-default element stays framed.
          *
+         * As in @ref write, the closer runs even when the nested @c serialize
+         * fails (a strict-UTF-8 rejection does that on an otherwise healthy
+         * stream), so the sequence never stays open and the hold-back window never
+         * strands a slot. The first failure is the one returned.
+         *
          * @param id     Field identifier.
          * @param value  Nested message to encode.
          * @return @ref Result for fluent chaining and error inspection.
@@ -1152,9 +1167,10 @@ namespace sofab
             if (ret == SOFAB_RET_OK)
             {
                 ret = value.serialize(static_cast<OStreamImpl&>(*this)).rawCode();
+                sofab_ret_t cret = sequenceEnd().rawCode();
                 if (ret == SOFAB_RET_OK)
                 {
-                    ret = sequenceEnd().rawCode();
+                    ret = cret;
                 }
             }
 

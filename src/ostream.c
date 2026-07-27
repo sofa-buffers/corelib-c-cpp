@@ -139,25 +139,47 @@ static sofab_unsigned_t _type_encode (sofab_unsigned_t var, int type)
  * Runs at most once per non-default sequence, never per field, so it is kept out
  * of line: the hot writers only pay the npending test.
  *
+ * On SOFAB_RET_E_BUFFER_FULL the ids that did NOT reach the buffer stay pending:
+ * they are shifted down so ctx->pending still holds exactly the still-unwritten
+ * (innermost) run, and it still is a suffix of the open sequences — the ones
+ * dropped from it are on the wire, framed. Without that, a partial commit would
+ * forget the rest of the run, and the matching sofab_ostream_write_sequence_end()
+ * calls would emit end markers for headers that were never written, leaving an
+ * unbalanced (INVALID) stream even for a caller that installs a fresh buffer via
+ * sofab_ostream_buffer_set() and retries. Retained is not the same as atomic: the
+ * header that hit the wall may already have pushed the low bytes of its varint,
+ * exactly as every other writer here can (see _push_byte) — the retained run is
+ * what keeps the *bookkeeping* consistent, not a rollback of the buffer.
+ *
  * @param ctx  Output stream context.
  * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code.
  */
 SOFAB_NOINLINE
 static sofab_ret_t _commit_pending (sofab_ostream_t *ctx)
 {
+    sofab_ret_t ret = SOFAB_RET_OK;
     uint8_t n = ctx->npending;
+    uint8_t i = 0;
 
-    ctx->npending = 0;
-    for (uint8_t i = 0; i < n; i++)
+    for (; i < n; i++)
     {
         if (_varint_encode(ctx, _type_encode(ctx->pending[i],
                                             SOFAB_TYPE_SEQUENCE_START)) < 0)
         {
-            return SOFAB_RET_E_BUFFER_FULL;
+            ret = SOFAB_RET_E_BUFFER_FULL;
+            break;
         }
     }
 
-    return SOFAB_RET_OK;
+    /* Keep the ids from i on -- everything before it is framed already. On the
+     * success path i == n, so this is "npending = 0" plus an empty loop. */
+    ctx->npending = (uint8_t)(n - i);
+    for (uint8_t k = 0; k < ctx->npending; k++)
+    {
+        ctx->pending[k] = ctx->pending[i + k];
+    }
+
+    return ret;
 }
 #endif /* SEQUENCE && LAZY_SEQ */
 

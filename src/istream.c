@@ -478,14 +478,18 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     int dec;
 
     assert(ctx != NULL);
-    assert(data != NULL);
     /*
      * A zero-length feed is legal and returns the outcome so far (CORELIB_PLAN
      * §5.2: the status is a property of the bytes consumed, computable at any
      * byte boundary). It became reachable as a whole message once MESSAGE_SPEC §2
      * stopped framing an all-default sequence: an all-default message *is* the
      * empty byte string, and it denotes the all-default value.
+     *
+     * The canonical way to feed that message is feed(ctx, NULL, 0), so @p data is
+     * only required to point at something when there is something to read: no
+     * caller should have to invent a dummy pointer to say "no bytes".
      */
+    assert(datalen == 0 || data != NULL);
 
     // A callback may have already rejected the message on an earlier feed. The
     // flag is sticky, so short-circuit rather than decode bytes that belong to a

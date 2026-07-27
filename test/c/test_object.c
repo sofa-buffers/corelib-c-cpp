@@ -882,9 +882,12 @@ static void test_object_default_sequence_roundtrips_both_forms (void)
         dec.decoder[0].depth = sizeof(dec.decoder) / sizeof(dec.decoder[0]) - 1;
         sofab_istream_init(&dec.ctx, sofab_object_field_cb, (void *)&dec.decoder[0]);
 
-        /* A zero-length feed is legal and returns the outcome so far. */
+        /* A zero-length feed is legal and returns the outcome so far -- and the
+         * canonical all-default message is fed the natural way, as (NULL, 0):
+         * forms[0] IS NULL, no dummy pointer. This call therefore also pins that
+         * sofab_istream_feed() does not assert on a null zero-length feed. */
         TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
-            sofab_istream_feed(&dec.ctx, forms[f] != NULL ? (const void *)forms[f] : (const void *)empty_frame, lens[f]),
+            sofab_istream_feed(&dec.ctx, forms[f], lens[f]),
             "decode failed");
         TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, out.inner.x, "inner.x must be the default");
         TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, out.inner.y, "inner.y must be the default");
@@ -1629,6 +1632,47 @@ static void test_object_wrapper_reopen_replaces (void)
     TEST_ASSERT_EQUAL_STRING("",  msg.arr.strings[2]);
 }
 
+/*
+ * Reusing one destination for several messages: the decoder writes only what the
+ * wire carries, so the caller re-initialises between decodes. That has always
+ * been true for a leaf field; MESSAGE_SPEC §2 makes it visible for a whole
+ * sequence field, because an all-default one is now OMITTED rather than framed
+ * empty -- and the §7.4 wrapper-replace reset in object.c fires when a wrapper is
+ * OPENED, which an omitted field never does. sofab_object_init() is the reset,
+ * and it must reach into the nested holder, not just the top-level fields.
+ */
+static void test_object_reuse_needs_init_between_decodes (void)
+{
+    _wrap_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+
+    const uint8_t first[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x07 };  /* ["A","",""] */
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, first, sizeof(first)));
+    TEST_ASSERT_EQUAL_STRING("A", msg.arr.strings[0]);
+
+    /* The next message is all-default, i.e. the empty byte string (§2). Fed into
+     * the re-initialised destination it must yield the declared defaults -- the
+     * "A" of the previous message must not survive. */
+    sofab_object_init(&_wrap_msg, &msg);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, NULL, 0));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", msg.arr.strings[0],
+        "sofab_object_init must reset the nested wrapper before a re-used decode");
+    TEST_ASSERT_EQUAL_STRING("", msg.arr.strings[1]);
+    TEST_ASSERT_EQUAL_STRING("", msg.arr.strings[2]);
+
+    /* And the non-canonical form of that same message -- the empty wrapper frame
+     * -- still resets the array by itself, without any help from the caller:
+     * opening the wrapper is what triggers the §7.4 replace. */
+    const uint8_t reopen[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, reopen, sizeof(reopen)));
+    TEST_ASSERT_EQUAL_STRING("A", msg.arr.strings[0]);
+
+    const uint8_t empty_frame[] = { 0xC6, 0x0C, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, empty_frame, sizeof(empty_frame)));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", msg.arr.strings[0],
+        "an empty wrapper frame replaces the array whole (§7.4)");
+}
+
 static void test_object_wrapper_single_open_unchanged (void)
 {
     /* Control: both elements in ONE opening must still yield ["A", "B", ""]. */
@@ -1936,6 +1980,7 @@ int test_object_main (void)
     RUN_TEST(test_object_wrapper_reopen_replaces);
     RUN_TEST(test_object_wrapper_reopen_replaces_blob);
     RUN_TEST(test_object_wrapper_single_open_unchanged);
+    RUN_TEST(test_object_reuse_needs_init_between_decodes);
     RUN_TEST(test_object_struct_reopen_merges);
 
     RUN_TEST(test_object_struct_wrapper_all_default_empty);

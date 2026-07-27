@@ -1366,3 +1366,73 @@ TEST_CASE("OStream: an all-default nested FIELD inside a framed ELEMENT")
     REQUIRE(used == sizeof(expected));
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
 }
+
+//
+// ---------------------------------------------------------------------------
+// A nested serialize() that fails must not leave its sequence open.
+//
+// Reachable on a perfectly healthy stream: a write can be refused before it
+// emits a single byte -- sofab_ostream_write_fixlen returns E_ARGUMENT for
+// invalid UTF-8 under SOFAB_ENABLE_STRICT_UTF8, and any writer refuses an id
+// above SOFAB_ID_MAX. If write()/writeLazy() then skipped their closer, the
+// sequence they opened would stay open: the following field would be encoded
+// *inside* it and the message would decode as INCOMPLETE, with the leaked entry
+// also occupying a slot of the bounded hold-back window for the rest of the
+// encode. The failure is still reported -- the closer never masks it.
+// ---------------------------------------------------------------------------
+//
+
+// Writes one valid child, then fails on an out-of-range id (E_ARGUMENT, emitted
+// before any byte of that field). No opt-in build flag needed.
+class FailingMessage : public sofab::OStreamMessage
+{
+public:
+    sofab::OStreamImpl::Result
+    serialize(sofab::OStreamImpl &_ostream) const noexcept override
+    {
+        return _ostream
+            .write(0, 5u)
+            .write(static_cast<sofab::id>(SOFAB_ID_MAX) + 1u, 1u)
+        ;
+    }
+};
+
+TEST_CASE("OStream: a failing nested FIELD serialize still closes its sequence")
+{
+    sofab::OStream ostream{64};
+    const FailingMessage bad;
+
+    auto res = ostream.writeLazy(10, bad);
+    REQUIRE(res == sofab::Error::InvalidArgument);   // the failure is reported
+
+    ostream.write(3, 7u);
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0x56, 0x00, 0x05, 0x07, // id 10 = { id 0 = 5 }, closed despite the failure
+        0x18, 0x07,             // id 3 = 7 -- a sibling, NOT nested in id 10
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: a failing nested ELEMENT serialize still closes its sequence")
+{
+    sofab::OStream ostream{64};
+    const FailingMessage bad;
+
+    auto res = ostream.write(1, bad);                // the ELEMENT form
+    REQUIRE(res == sofab::Error::InvalidArgument);
+
+    ostream.write(2, 9u);
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0x0E, 0x00, 0x05, 0x07, // element 1 = { id 0 = 5 }, frame closed
+        0x10, 0x09,             // id 2 = 9 -- a sibling
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}

@@ -1090,7 +1090,7 @@ static void test_write_nested_sequence (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used, "buffer != expected");
 }
 
-/* --- lazy sequence framing (MESSAGE_SPEC §2) ------------------------------- */
+/* --- sequence framing (MESSAGE_SPEC §2) ------------------------------------ */
 
 /*!
  * @brief Encode with a fresh 64-byte stream and compare the produced bytes.
@@ -1107,6 +1107,26 @@ static void test_write_nested_sequence (void)
         TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_arr, buffer, used, what);    \
     } while (0)
 
+/* The eager API keeps writing the §4.9 empty-sequence primitive, which is also the
+ * explicit-empty wrapper of §2/§3. It is the only sequence API a
+ * SOFAB_DISABLE_LAZY_SEQ_SUPPORT build has, so this test stays outside the guard
+ * below. */
+static void test_eager_sequence_without_content_still_frames (void)
+{
+    const uint8_t expected[] = {0x0E, 0x07};
+    LAZY_CHECK("eager empty sequence must stay framed", expected, {
+        sofab_ostream_write_sequence_begin(&ctx, 1);
+        sofab_ostream_write_sequence_end(&ctx);
+    });
+}
+
+/* Everything from here to the end of this section exercises the hold-back
+ * openers, which SOFAB_DISABLE_LAZY_SEQ_SUPPORT compiles out (together with the
+ * pending run in sofab_ostream_t and SOFAB_LAZY_SEQ_DEPTH). Guarded so the whole
+ * hand-written C suite -- not just the flag-tolerant vector runner -- still
+ * compiles and runs in that configuration; the no-lazy CI leg does exactly that. */
+#if !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+
 /* An all-default sequence carries no information, so nothing is emitted -- where
  * the eager API writes the two-byte empty frame. */
 static void test_lazy_sequence_without_content_emits_nothing (void)
@@ -1119,17 +1139,6 @@ static void test_lazy_sequence_without_content_emits_nothing (void)
     sofab_ostream_write_sequence_end(&ctx);
     TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_flush(&ctx),
         "an empty lazy sequence must emit nothing");
-}
-
-/* The eager API keeps writing the §4.9 empty-sequence primitive, which is also the
- * explicit-empty wrapper of §2/§3. */
-static void test_eager_sequence_without_content_still_frames (void)
-{
-    const uint8_t expected[] = {0x0E, 0x07};
-    LAZY_CHECK("eager empty sequence must stay framed", expected, {
-        sofab_ostream_write_sequence_begin(&ctx, 1);
-        sofab_ostream_write_sequence_end(&ctx);
-    });
 }
 
 /* One child field commits the whole held-back run, outermost header first. */
@@ -1404,7 +1413,7 @@ static void test_lazy_deep_nesting_is_wellformed_and_value_identical (void)
      * decodes to COMPLETE with nothing reported at all. */
     fields = 0;
     sofab_istream_init(&is, _count_fields_cb, &fields);
-    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_istream_feed(&is, buffer, 0),
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_istream_feed(&is, NULL, 0),
         "the canonical zero-byte message must decode as complete");
     TEST_ASSERT_EQUAL_UINT_MESSAGE(0, fields, "zero bytes carry no fields");
 }
@@ -1448,6 +1457,67 @@ static void test_lazy_window_overflow_leaves_state_clean (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer + after_overflow, sizeof(expected),
         "post-overflow framing bytes mismatch");
 }
+
+/*
+ * The other way a commit can end early: the buffer runs out in the middle of the
+ * held-back run. The ids that did not make it must stay pending, because their
+ * sofab_ostream_write_sequence_end() calls are still coming -- a run dropped on
+ * the way out would leave end markers for headers that were never written, i.e.
+ * an unbalanced stream, even after the caller recovers.
+ *
+ * Reproduced with a one-byte buffer and no flush callback: two held-back headers,
+ * one byte of room. The recovery path is the documented one -- hand the stream a
+ * fresh buffer with sofab_ostream_buffer_set() and carry on -- and the two
+ * buffers concatenated must equal the one-shot encode byte for byte.
+ */
+static void test_lazy_commit_buffer_full_keeps_pending_run (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t oneshot[16];
+    uint8_t first[1];
+    uint8_t rest[16];
+
+    /* Reference: the same message through a buffer that never fills. */
+    sofab_ostream_init(&ctx, oneshot, sizeof(oneshot), 0, NULL, NULL);
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
+    sofab_ostream_write_unsigned(&ctx, 0, 42);
+    sofab_ostream_write_sequence_end(&ctx);
+    sofab_ostream_write_sequence_end(&ctx);
+    size_t oneshot_len = sofab_ostream_flush(&ctx);
+    const uint8_t reference[] = {0x0E, 0x16, 0x00, 0x2A, 0x07, 0x07};
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(reference), oneshot_len, "reference length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(reference, oneshot, oneshot_len, "reference bytes");
+
+    /* Now the same calls through a one-byte buffer with no flush callback. */
+    memset(first, 0x55, sizeof(first));
+    sofab_ostream_init(&ctx, first, sizeof(first), 0, NULL, NULL);
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 1);
+    sofab_ostream_write_sequence_begin_lazy(&ctx, 2);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_BUFFER_FULL,
+        sofab_ostream_write_unsigned(&ctx, 0, 42),
+        "the commit must report the full buffer");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(1, sofab_ostream_bytes_used(&ctx),
+        "exactly the one header that fits may be written");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x0E, first[0],
+        "the outermost held-back header is the one that fits");
+
+    /* Recover: a fresh buffer, then finish the message unchanged. The header that
+     * did not fit is still pending, so it comes out here. */
+    sofab_ostream_buffer_set(&ctx, rest, sizeof(rest), 0);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_ostream_write_unsigned(&ctx, 0, 42),
+        "the retried write must succeed on the fresh buffer");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_ostream_write_sequence_end(&ctx), "inner end");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_ostream_write_sequence_end(&ctx), "outer end");
+    size_t rest_len = sofab_ostream_flush(&ctx);
+
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(oneshot_len, 1 + rest_len,
+        "recovered stream length differs from the one-shot encode");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(oneshot + 1, rest, rest_len,
+        "recovered stream differs from the one-shot encode");
+}
+
+#endif /* !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT) */
 
 static void test_write_nested_sequence_with_array (void)
 {
@@ -1694,8 +1764,9 @@ int test_ostream_main (void)
     RUN_TEST(test_write_array_of_fp64_specials);
 
     RUN_TEST(test_write_nested_sequence);
-    RUN_TEST(test_lazy_sequence_without_content_emits_nothing);
     RUN_TEST(test_eager_sequence_without_content_still_frames);
+#if !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+    RUN_TEST(test_lazy_sequence_without_content_emits_nothing);
     RUN_TEST(test_lazy_sequence_commits_run_on_first_content);
     RUN_TEST(test_lazy_sequence_drops_only_empty_inner);
     RUN_TEST(test_eager_inner_frame_commits_lazy_outer);
@@ -1707,6 +1778,8 @@ int test_ostream_main (void)
     RUN_TEST(test_lazy_window_beyond_bound_frames_eagerly);
     RUN_TEST(test_lazy_deep_nesting_is_wellformed_and_value_identical);
     RUN_TEST(test_lazy_window_overflow_leaves_state_clean);
+    RUN_TEST(test_lazy_commit_buffer_full_keeps_pending_run);
+#endif /* !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT) */
 
     RUN_TEST(test_write_nested_sequence_with_array);
     RUN_TEST(test_write_nested_sequence_multilevel);

@@ -125,12 +125,21 @@ typedef void (*sofab_ostream_flush_cb_t) (
  * a schema nests sequence *fields* deeper than 8 and canonical output matters;
  * every extra level costs 4 bytes of RAM per output stream.
  *
+ * **Ceiling: 255.** The run counter (@c sofab_ostream::npending) is a @c uint8_t,
+ * so a larger window could not be counted; the preprocessor check below rejects such a
+ * build rather than let the counter wrap and silently lose a pending run. 255 is
+ * already past SOFAB_MAX_DEPTH-deep sequence *fields* being useful, and a profile
+ * that wants an unbounded window needs a heap, which this corelib does not have.
+ *
  * Not a wire-format limit and not a nesting limit: nesting itself is bounded by
  * SOFAB_MAX_DEPTH (255) and that check is unaffected — exceeding
  * SOFAB_LAZY_SEQ_DEPTH is never an error, only a loss of canonicity.
  */
 #  if !defined(SOFAB_LAZY_SEQ_DEPTH)
 #    define SOFAB_LAZY_SEQ_DEPTH 8
+#  endif
+#  if SOFAB_LAZY_SEQ_DEPTH < 1 || SOFAB_LAZY_SEQ_DEPTH > 255
+#    error "SOFAB_LAZY_SEQ_DEPTH must be 1..255 (npending is a uint8_t)"
 #  endif
 #endif /* SEQUENCE && LAZY_SEQ */
 
@@ -667,6 +676,15 @@ extern sofab_ret_t sofab_ostream_write_sequence_begin (sofab_ostream_t *ctx, sof
  * empty frame when it turns out to be all-default — well-formed and
  * value-identical, but not canonical. See @ref SOFAB_LAZY_SEQ_DEPTH for why this
  * heap-free profile takes that allowance and how to raise the bound.
+ *
+ * **On a full buffer**: whatever commits the run (a field write, an eager
+ * sequence_begin, sofab_ostream_write_sequence_end_keep(), or overflowing the
+ * window) can hit SOFAB_RET_E_BUFFER_FULL partway through it. The ids that did
+ * not reach the buffer stay held back, so a caller that supplies a fresh buffer
+ * with sofab_ostream_buffer_set() and retries emits them then — the pending run
+ * never silently loses a sequence whose end marker is still coming. As everywhere
+ * in this encoder, the *bytes* are not rolled back: the header that hit the wall
+ * may have left a partial varint behind.
  *
  * @param ctx    Pointer to the output stream context.
  * @param id     Field identifier representing the sequence.

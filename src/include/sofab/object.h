@@ -301,6 +301,15 @@ extern sofab_ret_t sofab_object_encode (
  * sequence-holder descriptor (see @ref SOFAB_OBJECT_DESCR_SEQ) it is an
  * over-index element and rejects the message via @ref sofab_istream_invalidate.
  *
+ * @warning **Initialize @c dst with @ref sofab_object_init before every message.**
+ * Decoding writes only the fields the wire actually carries; a field the sender
+ * omitted because it equals its default is not written, so whatever the
+ * destination already held stays. Re-using one object for a second message
+ * therefore keeps stale values unless it is re-initialized first. This applies to
+ * a @b sequence field as much as to a leaf one: MESSAGE_SPEC §2 omits an
+ * all-default sequence field outright, and the §7.4 wrapper-replace reset inside
+ * this callback only runs when a wrapper actually opens on the wire.
+ *
  * @param ctx     Pointer to the active input stream context.
  * @param id      Field ID reported by the decoder.
  * @param size    Size of the field value in bytes (unused; kept for the callback signature).

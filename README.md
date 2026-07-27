@@ -299,7 +299,7 @@ features removes their code paths and shrinks the footprint.
 | `SOFAB_DISABLE_FIXLEN_SUPPORT` | off | Drop fixed-length fields: floats, strings, and blobs |
 | `SOFAB_DISABLE_ARRAY_SUPPORT` | off | Drop array fields (scalar arrays and fixed-length arrays) |
 | `SOFAB_DISABLE_SEQUENCE_SUPPORT` | off | Drop nested sequence framing |
-| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | off | Drop the hold-back sequence openers (`..._begin_lazy` / `..._end_keep`) and the pending-run state in `sofab_ostream_t`. See [Sequence framing](#sequence-framing-and-the-hold-back-window) — a pure-C consumer encoding through `sofab_object_encode()` never needs them. **Changes the `sofab_ostream_t` layout** (and is rejected by the C++ wrapper) |
+| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | off | Drop the hold-back sequence openers (`..._begin_lazy` / `..._end_keep`) and the pending-run state in `sofab_ostream_t`. Takes back 276&nbsp;B of ARMv6-m `.text`, 36&nbsp;B of RAM per stream and 56&nbsp;Ir per typical encode — see [Sequence framing](#sequence-framing-and-the-hold-back-window); a pure-C consumer encoding through `sofab_object_encode()` never needs them. **Changes the `sofab_ostream_t` layout** (and is rejected by the C++ wrapper) |
 | `SOFAB_DISABLE_FP64_SUPPORT` | off | Drop 64-bit float (`fp64`); auto-defined where `double` is not 8 bytes |
 | `SOFAB_DISABLE_INT64_SUPPORT` | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
@@ -308,7 +308,7 @@ One macro **tunes** rather than removes:
 
 | Macro | Default | Effect |
 | - | - | - |
-| `SOFAB_LAZY_SEQ_DEPTH` | `8` | How many nested sequence headers can be held back at once — this profile's **documented hold-back bound**, see [Sequence framing](#sequence-framing-and-the-hold-back-window). Costs 4&nbsp;B of RAM per output stream per level |
+| `SOFAB_LAZY_SEQ_DEPTH` | `8` | How many nested sequence headers can be held back at once — this profile's **documented hold-back bound**, see [Sequence framing](#sequence-framing-and-the-hold-back-window). Costs 4&nbsp;B of RAM per output stream per level; must be **1…255** (the run counter is a `uint8_t`, and a build outside that range is rejected with an `#error`) |
 
 Two knobs are **opt-IN** (off by default in this footprint corelib — see below):
 
@@ -416,6 +416,25 @@ The two message layers in this repo reach that outcome differently:
 > full `SOFAB_MAX_DEPTH` and is canonical at every depth. The C object API above
 > already is; only the raw-stream path carries the window.
 
+**What the mechanism costs, and how to stop paying it.** The commit check lives in
+the one function every writer funnels through, so a default build pays it *per
+field* — including a pure-C consumer that encodes through `sofab_object_encode()`
+and never opens a lazy sequence at all. Measured with Callgrind (valgrind 3.26,
+`bench_c` at `-O3`, `cmake --build build --target run_bench_callgrind`):
+
+| Workload | default | `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | delta |
+| - | -: | -: | -: |
+| encode: typical message | 908 Ir/op | 852 Ir/op | **+56 Ir/op (+6.6 %)** |
+| encode: u64 array (1000) | 124 993 Ir/op | 124 987 Ir/op | +6 Ir/op (+0.005 %) |
+| decode: typical message | 2 039 Ir/op | 2 039 Ir/op | none |
+
+The cost is per *field header*, so a message of many small fields feels it and a
+message of few wide ones does not; decoding is untouched. Together with the
+276&nbsp;B of ARMv6-m `.text` and the 36&nbsp;B of per-stream RAM listed under
+[Footprint](#footprint), that is the whole price of the switch — and
+`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` takes all of it back for a build that only uses
+the descriptor-driven encoder.
+
 ## Build & test
 
 Build with CMake and a C99 / C++20 toolchain:
@@ -501,7 +520,7 @@ cost is `.text` (flash). Tables below are the size of the built static library
 | ARMv6-m | ~3.5KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~3.5KB | 0.0KB | 0.0KB |
 | RV32IMC | ~4.6KB | 0.0KB | 0.0KB |
-| atmega8 | ~7.8KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.9KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — same as above plus
 `SOFAB_ENABLE_STRICT_UTF8` (off by default). This is the only row where the
@@ -511,17 +530,19 @@ not pay:
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.7KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.7KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.8KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.8KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.8KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.9KB | 0.0KB | 0.0KB |
 | atmega8 | ~8.3KB | 0.0KB | 0.0KB |
 
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
-those *Full* rows (it added ~0.24&nbsp;KB on ARMv6-m and ~0.47&nbsp;KB on atmega8).
+those *Full* rows (it added ~0.27&nbsp;KB on ARMv6-m and ~0.50&nbsp;KB on atmega8).
 A pure-C consumer that only encodes through `sofab_object_encode()` can take it
 back out with `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to
 3326&nbsp;B of `.text`, and `sofab_ostream_t` shrinks from 56&nbsp;B to
-20&nbsp;B per stream (the `SOFAB_LAZY_SEQ_DEPTH` pending run). The *Minimal* rows
+20&nbsp;B per stream (the `SOFAB_LAZY_SEQ_DEPTH` pending run). Size is not all it
+costs: the same switch also drops 56&nbsp;Ir/op from a typical encode, measured in
+[Sequence framing](#sequence-framing-and-the-hold-back-window). The *Minimal* rows
 below are unaffected either way: they disable sequences outright.
 
 **Minimal configuration** — `SOFAB_DISABLE_FIXLEN_SUPPORT`,

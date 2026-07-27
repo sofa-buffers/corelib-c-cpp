@@ -131,10 +131,13 @@ static void _store_uint (void *p, uint8_t width, uint64_t val)
  * (every child field default), i.e. iff encoding it would emit an empty frame.
  * This is the encode-faithful notion a raw @ref _iszero byte scan cannot express —
  * an all-default nested struct is @e not all-zero when it carries non-zero
- * defaults, and its padding must be ignored. It powers MESSAGE_SPEC §5.1 trailing
- * elision of sequence-form wrapper elements (see @ref sofab_object_encode); the
- * per-field skip there must still @e not call this on a @e standalone SEQUENCE
- * field, which §2 keeps framed regardless.
+ * defaults, and its padding must be ignored. It powers two decisions in
+ * @ref sofab_object_encode: MESSAGE_SPEC §2 omission of a @e standalone SEQUENCE
+ * field (an all-default one is dropped, not framed empty), and §5.1 trailing
+ * elision of sequence-form wrapper elements. The per-field skip must @e not call
+ * this on a sequence-form ELEMENT of a wrapper holder (@c info->fixed_seq): there
+ * element presence carries the array's length, so §5.1 keeps it framed and only
+ * the trailing run elides.
  *
  * @param info  Descriptor owning @p field (source of the default image and, for a
  *              SEQUENCE, the nested descriptor).
@@ -610,6 +613,15 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 // reject over-index elements. Reset its slots to their defaults
                 // on open so a later occurrence overwrites rather than merges;
                 // structs and unions (fixed_seq == 0) keep merging untouched.
+                //
+                // Scope: this fires when a wrapper is OPENED on the wire, which
+                // is all §7.4 is about (occurrences *within* one message). It is
+                // not a per-decode reset of the destination: a wrapper field the
+                // message omits entirely — the canonical form of an all-default
+                // one since §2 — opens nothing here, so whatever the destination
+                // held stays. Re-using a destination across messages therefore
+                // requires sofab_object_init() between decodes, exactly as it
+                // always has for an omitted leaf field (see object.h).
                 if (nested->info->fixed_seq)
                 {
                     sofab_object_init(nested->info, nested->dst);

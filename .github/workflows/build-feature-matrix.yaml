@@ -100,11 +100,18 @@ jobs:
       # sofab_ostream_t. A pure-C consumer encodes through sofab_object_encode(),
       # which decides omission per field before opening anything, so it never needs
       # them — this leg proves the core still builds and round-trips without them.
+      #
+      # Unlike every other configuration here, this one takes away no wire
+      # capability: it is a full-featured build that a real pure-C consumer ships,
+      # so the hand-written unit suite must compile and pass in it as well, not
+      # only the flag-tolerant vector runner. The tests that call the hold-back
+      # openers are #if-guarded in test_ostream.c for exactly this build.
       - name: no-lazy-seq
         run: |
           cmake -S . -B build/no-lazy-seq $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT"
-          cmake --build build/no-lazy-seq --target sofab_vectortest --parallel $(nproc)
+          cmake --build build/no-lazy-seq --target sofab_vectortest sofabtest --parallel $(nproc)
           $RUN ./build/no-lazy-seq/test/c/sofab_vectortest
+          $RUN ./build/no-lazy-seq/test/c/sofabtest
 
       # The hold-back window is a documented, tunable bound (SOFAB_LAZY_SEQ_DEPTH,
       # CORELIB_PLAN §6), so a build that moves it must still pass the suite: the
@@ -114,6 +121,20 @@ jobs:
           cmake -S . -B build/lazy-seq-depth-2 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_LAZY_SEQ_DEPTH=2"
           cmake --build build/lazy-seq-depth-2 --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/lazy-seq-depth-2/test/c/sofab_vectortest
+
+      # ...but the tunable has a ceiling: the pending-run counter is a uint8_t, so
+      # a window of 256 would wrap it and silently lose a whole run. Such a build
+      # must be rejected at compile time, not miscompiled into wrong bytes.
+      - name: lazy-seq-depth-256 (expect #error)
+        run: |
+          cmake -S . -B build/lazy-seq-depth-256 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_LAZY_SEQ_DEPTH=256"
+          if out=$(cmake --build build/lazy-seq-depth-256 --target sofab_vectortest 2>&1); then
+            echo "$out"; echo "::error::Expected the over-wide hold-back window to be rejected."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "SOFAB_LAZY_SEQ_DEPTH must be 1..255" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
 
       - name: no-overflow-check
         run: |
