@@ -79,6 +79,16 @@ static void op_blob (oplist_t *l, uint32_t id, const void *v, int32_t n) { push(
 static void op_arr  (oplist_t *l, kind_t k, uint32_t id, const void *v, int32_t n) { push(l, (op_t){.kind = k, .id = id, .arr = v, .count = n}); }
 static void op_seqb (oplist_t *l, uint32_t id) { push(l, (op_t){.kind = K_SEQ_BEGIN, .id = id}); }
 static void op_seqe (oplist_t *l)              { push(l, (op_t){.kind = K_SEQ_END}); }
+/*!
+ * @brief Close a sequence that sits at an ELEMENT position of a wrapper array.
+ *
+ * MESSAGE_SPEC §5.1: element presence carries a dynamic array's length, so an
+ * all-default element keeps its frame while an all-default FIELD is omitted
+ * (§2). The op list has no schema, so the position cannot be inferred -- it is
+ * recorded here, on the closer, because the closer is the only place the two
+ * differ. The sparse pass honours it; the dense pass frames everything anyway.
+ */
+static void op_seqe_elem (oplist_t *l)         { push(l, (op_t){.kind = K_SEQ_END, .u = 1}); }
 
 /* replay through the real encoder *******************************************/
 
@@ -115,7 +125,9 @@ static sofab_ret_t replay(sofab_ostream_t *os, const op_t *op, int lazy_seq)
         case K_ARR_FP64:  return sofab_ostream_write_array_of_fp64(os, op->id, op->arr, op->count);
         case K_SEQ_BEGIN: return lazy_seq ? sofab_ostream_write_sequence_begin_lazy(os, op->id)
                                           : sofab_ostream_write_sequence_begin(os, op->id);
-        case K_SEQ_END:   return sofab_ostream_write_sequence_end(os);
+        case K_SEQ_END:   return (lazy_seq && op->u)
+                                 ? sofab_ostream_write_sequence_end_keep(os)
+                                 : sofab_ostream_write_sequence_end(os);
     }
     return SOFAB_RET_E_ARGUMENT;
 }
@@ -218,7 +230,9 @@ static void json_field(FILE *o, const char *indent, const op_t *op)
         case K_STRING:    fprintf(o, "\"op\": \"string\", \"id\": %" PRIu32 ", \"value\": ", op->id); json_string(o, op->str); break;
         case K_BLOB:      fprintf(o, "\"op\": \"blob\", \"id\": %" PRIu32 ", \"value_hex\": ", op->id); json_hex(o, op->arr, (size_t)op->count); break;
         case K_SEQ_BEGIN: fprintf(o, "\"op\": \"sequence_begin\", \"id\": %" PRIu32, op->id); break;
-        case K_SEQ_END:   fprintf(o, "\"op\": \"sequence_end\""); break;
+        case K_SEQ_END:   fprintf(o, "\"op\": \"sequence_end\"");
+                          if (op->u) fprintf(o, ", \"element\": true");
+                          break;
         default:
             fprintf(o, "\"op\": \"array\", \"id\": %" PRIu32 ", \"element_type\": \"%s\", \"values\": ",
                     op->id, array_element_type(op->kind));
@@ -859,6 +873,50 @@ static void emit_all(FILE *o)
         emit_vector(o, "array_string_all_default", "array/string",
                     "Array of only default (empty) string elements: every element "
                     "drops, so it encodes as the empty wrapper sequence.", &l);
+    }
+    {
+        /* MESSAGE_SPEC §5.1: a wrapper array whose ELEMENTS are sequences. The
+         * middle element carries only a default-valued leaf, so the sparse form
+         * drops its content -- and must still keep its FRAME, because element
+         * presence is what carries the array's length. This is the one case in
+         * the §2 change that corrupts a value rather than costing bytes, and it
+         * is the reason op_seqe_elem exists: replay the closer as `end` here and
+         * the element vanishes, shortening the decoded array from 3 to 2. */
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_seqb(&l, 0); op_u(&l, 0, 1); op_seqe_elem(&l);
+            op_seqb(&l, 1); op_u(&l, 0, 0); op_seqe_elem(&l);
+            op_seqb(&l, 2); op_u(&l, 0, 3); op_seqe_elem(&l);
+        op_seqe(&l);
+        emit_vector(o, "array_struct_interior_default_element", "array/struct",
+                    "Array of struct where the middle element holds only a "
+                    "default-valued leaf: sparse drops the leaf but KEEPS the "
+                    "element frame, so the array still decodes at length 3.", &l);
+    }
+    {
+        /* Every element all-default. The elements keep their frames, so the
+         * array is NOT empty -- [{},{}] and [] are different values, and the
+         * enclosing FIELD is therefore emitted rather than omitted (§2). */
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_seqb(&l, 0); op_seqe_elem(&l);
+            op_seqb(&l, 1); op_seqe_elem(&l);
+        op_seqe(&l);
+        emit_vector(o, "array_struct_all_default_elements", "array/struct",
+                    "Array of two all-default structs: both element frames "
+                    "survive, so [{},{}] stays distinguishable from [].", &l);
+    }
+    {
+        /* An array whose elements are themselves wrapper arrays (§5.3). No
+         * vector or corpus definition covered this shape before. */
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_seqb(&l, 0); op_str(&l, 0, "a"); op_seqe_elem(&l);
+            op_seqb(&l, 1); op_seqe_elem(&l);
+        op_seqe(&l);
+        emit_vector(o, "array_of_string_arrays", "array/nested",
+                    "Array of string arrays: the second row is empty and keeps "
+                    "its frame, so the outer array decodes at length 2.", &l);
     }
     {
         oplist_t l = {0};

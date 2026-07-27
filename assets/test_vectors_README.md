@@ -64,7 +64,16 @@ vector is at its default.
 | `blob`            | `id`, `value_hex`                           | binary blob |
 | `array`           | `id`, `element_type`, `values`              | array; `element_type` ∈ `u8..u64`, `i8..i64`, `fp32`, `fp64` |
 | `sequence_begin`  | `id`                                        | open a nested sequence |
-| `sequence_end`    | —                                           | close the current sequence |
+| `sequence_end`    | `element` (optional, `true`)                | close the current sequence; `element` marks a sequence sitting at an **element position** of a wrapper array |
+
+**`element` on a `sequence_end`.** An op list carries no schema, so nothing in it
+says whether a sequence is a *field* or an *element* of a wrapper array — and the
+two close differently (MESSAGE_SPEC §2 vs §5.1): a contentless field is omitted,
+a contentless element keeps its frame, because element presence is what carries a
+dynamic array's length. The flag records that distinction on the closer, the only
+place the two differ. It matters solely for the `serialized_sparse` column; the
+dense pass frames everything either way, so a driver that replays only
+`serialized` may ignore it.
 
 The ops are the same for both byte columns; only the encoding differs. In the
 `serialized_sparse` pass every default leaf op is skipped and every
