@@ -959,6 +959,54 @@ static void emit_all(FILE *o)
                     "the leading one leaves an id gap, the trailing one is the last "
                     "element and is written.", &l);
     }
+    {
+        /* MESSAGE_SPEC S7.3 at an ELEMENT position. An element whose header wire
+         * type contradicts the declared element type "MUST be skipped, exactly as a
+         * field with an unknown id is skipped" -- and an unknown id leaves nothing
+         * behind. So it does NOT occupy its id and does NOT count toward S5.1's
+         * *highest present id + 1*: the ids the length counts are the ones consumed
+         * as elements, not the ones that merely appeared on the wire.
+         *
+         * A schema-less consumer cannot see "declared type" and simply round-trips
+         * these bytes; the vector exists for the byte pattern and for the rule its
+         * description states -- two readings of S7.3-at-an-element drifted apart in
+         * exactly the gap where no vector was looking. Its control is the next
+         * vector (an EMPTY element IS present and DOES count); the two must never
+         * be collapsed into one rule.
+         *
+         * The scalar is non-default, so the dense and sparse columns are equal and
+         * the shape cannot be blamed on either pass. It is deliberately NOT marked
+         * op_last: an element that is skipped carries no length. */
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_u(&l, 0, 7);
+        op_seqe(&l);
+        emit_vector(o, "array_element_wire_type_mismatch", "array/struct",
+                    "Wrapper array whose element id 0 arrives as a SCALAR where the "
+                    "schema declares a sequence (struct) element. MESSAGE_SPEC S7.3: "
+                    "it MUST be skipped exactly as a field with an unknown id is "
+                    "skipped, so it does NOT occupy its id and does NOT count toward "
+                    "the array's length (S5.1) -- a schema-aware receiver "
+                    "reconstructs the slot from the element default, decodes the "
+                    "EMPTY array, and re-encodes these bytes as nothing at all (S2). "
+                    "Control: array_element_empty_frame_present.", &l);
+    }
+    {
+        /* The control the rule above must not swallow: a well-typed but EMPTY
+         * element frame is a PRESENT element. It counts, so the array is length 1.
+         * Only the wire-type-mismatched element stops counting. */
+        oplist_t l = {0};
+        op_seqb(&l, 0);
+            op_seqb(&l, 0); op_seqe_last(&l);
+        op_seqe(&l);
+        emit_vector(o, "array_element_empty_frame_present", "array/struct",
+                    "The control for array_element_wire_type_mismatch: element id 0 "
+                    "arrives as a well-typed but EMPTY frame. An empty element is a "
+                    "PRESENT element -- it counts toward the length (MESSAGE_SPEC "
+                    "S5.1), so the array decodes at length 1 and keeps the frame on "
+                    "re-encode. Only a wire-type-mismatched element (S7.3) stops "
+                    "counting; the two cases are not the same.", &l);
+    }
 
     /* --- full scale composite message (test_write_full_scale_example) --- */
     {
