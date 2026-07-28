@@ -44,46 +44,13 @@ static int _iszero (const void *ptr, size_t len)
     return 1;
 }
 
-#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-/*!
- * @brief Canonical element count for a fixed-length array (MESSAGE_SPEC §3).
- *
- * A @c count:N array carries exactly @p n logical elements, but its trailing run
- * of element defaults MUST NOT be emitted: the encoder writes @c M = one past the
- * index of the last element that differs from the element default (zero), and a
- * decoder refills @c [M, N) from the element default. The default is compared on
- * the raw @b byte image (via @ref _iszero), so a trailing @c -0.0 (sign bit set)
- * or any NaN is correctly @e not a default and stays on the wire.
- *
- * This trim lives only here on the C-only descriptor path — never in the
- * @c sofab_ostream_write_array_of_* writers, whose C++ callers pass dynamic
- * arrays with no @c N to refill from, so their trailing defaults are significant.
- *
- * @param base          Pointer to element 0.
- * @param n             Structural element count N (@c size / element_size).
- * @param element_size  Byte width of one element.
- * @return M, the canonical (trimmed) element count in @c [0, n].
- */
-static int32_t _array_trim_count (const void *base, size_t n, size_t element_size)
-{
-    const uint8_t *p = (const uint8_t *)base;
-
-    while (n > 0 && _iszero(p + (n - 1) * element_size, element_size))
-    {
-        n--;
-    }
-
-    return (int32_t)n;
-}
-#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
-
-#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /*!
  * @brief Load a host-endian unsigned integer of @p width (1/2/4/8) bytes.
  *
- * Reads a sized blob's companion used-length member, whose C type (and thus
- * width) the caller chooses; @p width comes from the descriptor's @c nested_idx.
- * An unsupported width yields 0 (treated as an empty blob).
+ * Reads the companion used-length member of a sized blob or a sized array, whose
+ * C type (and thus width) the caller chooses; @p width comes from the
+ * descriptor's @c nested_idx. An unsupported width yields 0 (treated as empty).
  */
 static uint64_t _load_uint (const void *p, uint8_t width)
 {
@@ -113,7 +80,103 @@ static void _store_uint (void *p, uint8_t width, uint64_t val)
         default: break;
     }
 }
-#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
+/*!
+ * @brief Byte width of a field's companion length member, or 0 when it has none.
+ *
+ * A BLOB or an ARRAY_* field carries its used length in a member declared
+ * immediately before its buffer; the descriptor stores only that member's width,
+ * in the @c nested_idx slot, which therefore doubles as the "is sized" flag
+ * (@ref SOFAB_OBJECT_FIELD_BLOB_SIZED, @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED). The
+ * type test is what keeps a SEQUENCE out of it: there @c nested_idx is the nested
+ * descriptor index, never a width.
+ */
+static uint8_t _sized_width (const sofab_object_descr_field_t *field)
+{
+    switch (field->type)
+    {
+        case SOFAB_OBJECT_FIELDTYPE_BLOB:
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
+            return field->nested_idx;
+        default:
+            return 0;
+    }
+}
+#endif /* fixlen or array support */
+
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+/*!
+ * @brief Element count to encode for a compact array field (MESSAGE_SPEC §3).
+ *
+ * A schema @c count:N is a @b capacity; the wire count @c M is the array's
+ * @b length, and @b every element the field holds is written — a trailing element
+ * equal to the element default included, because dropping it would shorten the
+ * array (@c [1,2,3,0,0] and @c [1,2,3] are different values).
+ *
+ * Where that length comes from depends on the descriptor:
+ * - @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED (@c nested_idx @c != @c 0) reads the
+ *   companion length member sitting immediately before the buffer, clamped to the
+ *   capacity;
+ * - a plain @ref SOFAB_OBJECT_FIELD_ARRAY has no length member, so its value
+ *   occupies the whole array and the count is the capacity itself.
+ *
+ * (Until 0.8.x this function was @c _array_trim_count and elided the trailing
+ * run of element defaults, refilled by a decoder to @c N. That pair was correct
+ * only while @c count meant a fixed length; under the capacity reading it
+ * silently shortens the value, so it is gone — MESSAGE_SPEC §3.)
+ *
+ * @param field  Field descriptor (array type).
+ * @param src    Object being encoded.
+ * @return The element count to write, in @c [0, N].
+ */
+static int32_t _array_count (const sofab_object_descr_field_t *field, const void *src)
+{
+    size_t n = field->size / field->element_size;   /* capacity N */
+    uint8_t width = _sized_width(field);
+
+    if (width != 0)
+    {
+        uint64_t used = _load_uint(
+            CAST_TO(const void *, src, field->offset - width), width);
+        if (used < (uint64_t)n) n = (size_t)used;
+    }
+
+    return (int32_t)n;
+}
+
+/*!
+ * @brief Record the received element count of a sized array on decode.
+ *
+ * MESSAGE_SPEC §3: the wire count @c M @b is the array's length, so a
+ * length-carrying descriptor (@ref SOFAB_OBJECT_FIELD_ARRAY_SIZED) stores it back
+ * into the companion member — the mirror of the sized-blob flow, and what makes a
+ * decode of @c M @c < @c N re-encode as @c M elements again instead of silently
+ * growing back to the capacity. A plain (capacity-only) array descriptor has
+ * nowhere to put it and this is a no-op; its trailing @c [M, N) slots are left at
+ * the element default by the istream.
+ *
+ * @param field  Field descriptor (array type).
+ * @param dst    Destination object.
+ * @param count  Element count delivered to the field callback (the wire count).
+ */
+static void _store_array_len (const sofab_object_descr_field_t *field,
+                              uint8_t *dst, size_t count)
+{
+    uint8_t width = _sized_width(field);
+    size_t cap;
+
+    if (width == 0) return;
+
+    /* An over-count message is rejected by the istream; clamp so the stored
+     * length can never exceed the buffer it describes in the meantime. */
+    cap = field->size / field->element_size;
+    _store_uint(dst + field->offset - width, width,
+                (uint64_t)(count < cap ? count : cap));
+}
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 /*!
  * @brief Test whether a field currently holds its default value (so it is
@@ -131,13 +194,20 @@ static void _store_uint (void *p, uint8_t width, uint64_t val)
  * (every child field default), i.e. iff encoding it would emit an empty frame.
  * This is the encode-faithful notion a raw @ref _iszero byte scan cannot express —
  * an all-default nested struct is @e not all-zero when it carries non-zero
- * defaults, and its padding must be ignored. It powers two decisions in
+ * defaults, and its padding must be ignored. It powers both omission decisions in
  * @ref sofab_object_encode: MESSAGE_SPEC §2 omission of a @e standalone SEQUENCE
- * field (an all-default one is dropped, not framed empty), and §5.1 trailing
- * elision of sequence-form wrapper elements. The per-field skip must @e not call
- * this on a sequence-form ELEMENT of a wrapper holder (@c info->fixed_seq): there
- * element presence carries the array's length, so §5.1 keeps it framed and only
- * the trailing run elides.
+ * field (an all-default one is dropped, not framed empty), and the §2/§5.1
+ * omission of an @e interior wrapper-array element, which since the capacity
+ * reading of §3 covers sequence-form elements too (they leave an id gap like any
+ * other default element). The element at a holder's @e last index is never tested
+ * against this — it always goes on the wire, because it is what carries the
+ * array's length.
+ *
+ * A @b sized array (@ref SOFAB_OBJECT_FIELD_ARRAY_SIZED) compares by length
+ * first, exactly like a sized blob: the storage past the used length is
+ * indeterminate, and an all-zero storage image would otherwise make a
+ * three-element @c [0,0,0] indistinguishable from the empty array and cost it its
+ * length.
  *
  * @param info  Descriptor owning @p field (source of the default image and, for a
  *              SEQUENCE, the nested descriptor).
@@ -191,6 +261,30 @@ static int _field_is_default (
     }
 #endif
 
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    {
+        uint8_t width = _sized_width(field);
+        if (width != 0 && field->type != SOFAB_OBJECT_FIELDTYPE_BLOB)
+        {
+            /* Sized array: length first (§3 -- the length is the value), then the
+             * used prefix against the default image. Without a default image the
+             * logical default is the empty array. */
+            uint64_t used = _load_uint(
+                CAST_TO(const void *, src, field->offset - width), width);
+            size_t cap = field->size / field->element_size;
+            if (used > (uint64_t)cap) used = (uint64_t)cap;
+
+            if (defaults == NULL) return used == 0;
+
+            if (_load_uint(CAST_TO(const void *, defaults, field->offset - width),
+                           width) != used)
+                return 0;
+            return memcmp(CAST_TO(const void *, defaults, field->offset), val,
+                          (size_t)used * field->element_size) == 0;
+        }
+    }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+
     if (defaults != NULL)
     {
         return memcmp(CAST_TO(const void *, defaults, field->offset),
@@ -231,23 +325,25 @@ extern sofab_ret_t sofab_object_init (
                 memset(CAST_TO(void *, obj, field->offset), 0, field->size);
             }
 
-#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
-            /* Sized blob: the used-length member sits nested_idx bytes before the
-             * buffer and is not covered by (offset, size); reset it too, mirroring
-             * _field_is_default / encode / decode which all address it at
-             * offset - nested_idx. Without this a §7.4 wrapper re-open leaves a
-             * stale length, so a dropped element survives as an all-zero blob. */
-            if (field->type == SOFAB_OBJECT_FIELDTYPE_BLOB && field->nested_idx != 0)
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+            /* Sized blob / sized array: the used-length member sits width bytes
+             * before the buffer and is not covered by (offset, size); reset it
+             * too, mirroring _field_is_default / encode / decode which all address
+             * it at offset - width. Without this a §7.4 wrapper re-open leaves a
+             * stale length, so a dropped element survives as an all-zero value. */
             {
-                uint64_t dlen = info->default_values != NULL
-                    ? _load_uint(CAST_TO(const void *, info->default_values,
-                                         field->offset - field->nested_idx),
-                                 field->nested_idx)
-                    : 0;
-                _store_uint(CAST_TO(void *, obj, field->offset - field->nested_idx),
-                            field->nested_idx, dlen);
+                uint8_t width = _sized_width(field);
+                if (width != 0)
+                {
+                    uint64_t dlen = info->default_values != NULL
+                        ? _load_uint(CAST_TO(const void *, info->default_values,
+                                             field->offset - width), width)
+                        : 0;
+                    _store_uint(CAST_TO(void *, obj, field->offset - width),
+                                width, dlen);
+                }
             }
-#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+#endif /* fixlen or array support */
         }
     }
 
@@ -265,38 +361,35 @@ extern sofab_ret_t sofab_object_encode (
     assert(src != NULL);
 
     /*
-     * MESSAGE_SPEC §5.1: a fixed-count wrapper holder elides its trailing run of
-     * all-default elements — sequence-form elements included. The element slots
-     * are ids 0..field_count-1; drop the maximal trailing run whose elements each
-     * equal their default so an all-default array-of-struct re-encodes as an empty
-     * wrapper (M = 0), matching the §3 trim already applied to scalar arrays by
-     * _array_trim_count. _field_is_default handles both element kinds uniformly
-     * (a SEQUENCE element recurses into its sub-object); leaf-element holders would
-     * also have their trailing run elided by the per-field skip below, so here the
-     * trim is only load-bearing for the sequence-form elements that skip never
-     * reaches. Confined to a fixed_seq holder, so a standalone struct field stays
-     * framed per §2.
+     * MESSAGE_SPEC §2/§5.1, positional element rule inside a wrapper-array holder
+     * (info->fixed_seq): a wrapper carries no length field, so the decoded length
+     * is *highest present id + 1* -- nothing that carries it may be elided, and
+     * everything else may be. The element at the LAST index is therefore always
+     * written (a leaf as its value, a sequence element as an empty frame), while
+     * an interior element equal to its default is omitted whatever its kind.
+     *
+     * "Last index" for a C holder: its field_count slots are ALL materialized and
+     * it carries no length member, so the value it holds occupies every slot and
+     * the last index is field_count - 1, unconditionally. The single exception is
+     * a holder whose every slot is default -- indistinguishable here from the
+     * empty array -- which the FIELD-level ≠-default test in the enclosing object
+     * omits whole (the canonical encoding of the empty array, §2), and which a
+     * re-decode reconstructs exactly.
+     *
+     * (Until 0.8.x this spot elided the trailing run of all-default elements,
+     * refilled to N by the decoder. §3 made `count` a capacity, so that trim
+     * shortens the value instead of compacting it, and it is gone.)
      */
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-    size_t n_emit = info->field_count;
-    if (info->fixed_seq)
-    {
-        while (n_emit > 0)
-        {
-            if (!_field_is_default(info, &info->field_list[n_emit - 1], src))
-                break;
-            n_emit--;
-        }
-    }
-#  define _SOFAB_ENCODE_LIMIT n_emit
+#  define _SOFAB_LAST_ELEMENT(i) (info->fixed_seq && (i) + 1 == info->field_count)
 #else
-    /* Without sequence support no fixed-count wrapper holder can be reached, so
-     * there is nothing to trim: the loop reads info->field_count directly and
-     * this path stays byte-identical to the pre-elision encoder (minimal profile). */
-#  define _SOFAB_ENCODE_LIMIT info->field_count
+    /* Without sequence support no wrapper holder can be reached, so no field is
+     * ever at an element position: the minimal profile keeps the plain per-field
+     * skip, byte for byte. */
+#  define _SOFAB_LAST_ELEMENT(i) 0
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
-    for (size_t i = 0; i < _SOFAB_ENCODE_LIMIT && ret == SOFAB_RET_OK; i++)
+    for (size_t i = 0; i < info->field_count && ret == SOFAB_RET_OK; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
@@ -312,21 +405,13 @@ extern sofab_ret_t sofab_object_encode (
          * reconstructs exactly that default (sofab_object_init), so the omission
          * is value-preserving by construction.
          *
-         * A holder whose value *differs* from its default is still framed, and
-         * the trailing-run trim above may then leave it empty -- that empty
-         * wrapper is the explicit-empty form of §2/§3, which is what keeps a
-         * non-empty declared array default expressible.
-         *
-         * Scope: field-level only. Inside a wrapper holder (info->fixed_seq) the
-         * "fields" are the array's element slots, and §2 keeps a sequence-form
-         * ELEMENT framed even when all-default, because element presence is what
-         * carries a dynamic array's length (highest present id + 1, §5.1);
-         * eliding an interior one is FUTURE.md A1, not this rule. Only the
-         * *trailing* run elides, which n_emit above already did.
+         * Inside a wrapper holder the same test decides an ELEMENT, with one
+         * positional exception: the last slot is written whatever it holds (the
+         * rule above). Everything before it is sparse -- a default leaf element is
+         * skipped and a default sequence-form element is not framed either, both
+         * leaving an id gap the decoder refills from the element default.
          */
-#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-        if (field->type != SOFAB_OBJECT_FIELDTYPE_SEQUENCE || !info->fixed_seq)
-#endif
+        if (!_SOFAB_LAST_ELEMENT(i))
         {
             if (_field_is_default(info, field, src))
             {
@@ -424,8 +509,7 @@ extern sofab_ret_t sofab_object_encode (
                         : sofab_ostream_write_array_of_unsigned;
                 ret = write_array(ctx, field->id,
                     CAST_TO(const void *, src, field->offset),
-                    _array_trim_count(CAST_TO(const void *, src, field->offset),
-                        field->size / field->element_size, field->element_size),
+                    _array_count(field, src),
                     field->element_size);
                 break;
             }
@@ -446,8 +530,7 @@ extern sofab_ret_t sofab_object_encode (
                 size_t element_size = is_fp64 ? sizeof(double) : sizeof(float);
                 ret = sofab_ostream_write_array_of_fixlen(ctx, field->id,
                     CAST_TO(const void *, src, field->offset),
-                    _array_trim_count(CAST_TO(const void *, src, field->offset),
-                        field->size / element_size, element_size),
+                    _array_count(field, src),
                     element_size,
                     is_fp64 ? SOFAB_FIXLENTYPE_FP64 : SOFAB_FIXLENTYPE_FP32);
                 break;
@@ -470,7 +553,7 @@ extern sofab_ret_t sofab_object_encode (
                 return SOFAB_RET_E_ARGUMENT;
         }
     }
-#undef _SOFAB_ENCODE_LIMIT
+#undef _SOFAB_LAST_ELEMENT
 
     return ret;
 }
@@ -483,7 +566,9 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 #if defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
     (void)size;   /* consumed only by the sized-blob branch (fixlen) below */
 #endif
-    (void)count;
+#if defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    (void)count;  /* consumed only by the sized-array branches (array) below */
+#endif
 
     for (size_t i = 0; i < info->field_count; i++)
     {
@@ -550,29 +635,62 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+            /* A SIZED array writes its length member whether or not the bind
+             * survives, so — exactly like the sized blob above — the wire type is
+             * settled first: a contradicting field (§7.3) would otherwise reset the
+             * length of the value already there. A plain array only binds, which
+             * the istream rolls back on its own. */
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
                 // unsigned and signed arrays differ only in the wire type tag
+                if (_sized_width(field) != 0
+                    && (ctx->target_opt & 0x07)
+                        != SOFAB_ISTREAM_OPT_FIELDTYPE(
+                            field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED
+                                ? SOFAB_TYPE_VARINTARRAY_SIGNED : SOFAB_TYPE_VARINTARRAY_UNSIGNED))
+                {
+                    break;
+                }
+
                 sofab_istream_read_array(ctx,
                     decoder->dst + field->offset,
                     field->size / field->element_size, field->element_size,
                     SOFAB_ISTREAM_OPT_FIELDTYPE(
                         field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED
                             ? SOFAB_TYPE_VARINTARRAY_SIGNED : SOFAB_TYPE_VARINTARRAY_UNSIGNED));
+                _store_array_len(field, decoder->dst, count);
                 break;
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
+                if (_sized_width(field) != 0
+                    && (ctx->target_opt & 0x3F)
+                        != (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32)))
+                {
+                    break;
+                }
+
                 sofab_istream_read_array_of_fp32(ctx,
                     (float *)(decoder->dst + field->offset),
                     field->size / sizeof(float));
+                _store_array_len(field, decoder->dst, count);
                 break;
 
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
+                if (_sized_width(field) != 0
+                    && (ctx->target_opt & 0x3F)
+                        != (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64)))
+                {
+                    break;
+                }
+
                 sofab_istream_read_array_of_fp64(ctx,
                     (double *)(decoder->dst + field->offset),
                     field->size / sizeof(double));
+                _store_array_len(field, decoder->dst, count);
                 break;
 #endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */

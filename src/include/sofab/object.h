@@ -60,10 +60,10 @@ extern "C" {
 #define SOFAB_OBJECT_FIELDTYPE_FP64     		0x3 /*!< 64-bit floating point (double). */
 #define SOFAB_OBJECT_FIELDTYPE_STRING   		0x4 /*!< Null-terminated string. */
 #define SOFAB_OBJECT_FIELDTYPE_BLOB     		0x5 /*!< Raw binary blob. Fixed full-capacity by default; a variable used-length variant is built with @ref SOFAB_OBJECT_FIELD_BLOB_SIZED (flagged via a non-zero @c nested_idx). */
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED	0x6 /*!< Array of unsigned integers. */
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED   	0x7 /*!< Array of signed integers. */
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32     	0x8 /*!< Array of 32-bit floats. */
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9 /*!< Array of 64-bit doubles. */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED	0x6 /*!< Array of unsigned integers. Fixed full-capacity by default; a length-carrying variant is built with @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED (flagged via a non-zero @c nested_idx). */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED   	0x7 /*!< Array of signed integers (sized variant as above). */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32     	0x8 /*!< Array of 32-bit floats (sized variant as above). */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9 /*!< Array of 64-bit doubles (sized variant as above). */
 #define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA /*!< Nested object (encoded as a sequence). */
 /*! @} */
 
@@ -111,8 +111,22 @@ extern "C" {
  */
 #define SOFAB_OBJECT_FIELD_BLOB_SIZED(id, obj, dfield, lfield) \
     { id, offsetof(obj, dfield), sizeof(((obj *)0)->dfield), \
-      (uint8_t)sizeof(((obj *)0)->lfield), SOFAB_OBJECT_FIELDTYPE_BLOB, \
+      (uint8_t)(sizeof(((obj *)0)->lfield) \
+                + SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, dfield, lfield)), \
+      SOFAB_OBJECT_FIELDTYPE_BLOB, \
       (sizeof(((obj *)0)->dfield) & 0xF) }
+
+/*!
+ * @brief Compile-time check that @p lfield immediately precedes @p dfield.
+ *
+ * Evaluates to 0, or fails to compile (negative array bound) when the two
+ * members are not adjacent — i.e. when the compiler inserted padding between
+ * them. Used by the @c *_SIZED field macros, whose descriptor records only the
+ * length's @e width and locates it at @c offset @c - @c width.
+ */
+#define SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, dfield, lfield) \
+    (0 * sizeof(char[(offsetof(obj, dfield) \
+                      == offsetof(obj, lfield) + sizeof(((obj *)0)->lfield)) ? 1 : -1]))
 
 /*!
  * @brief Build a nested-object (sequence) field descriptor.
@@ -144,6 +158,56 @@ extern "C" {
  */
 #define SOFAB_OBJECT_FIELD_ARRAY(id, obj, field, type) \
     { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field[0]) & 0xF) }
+
+/*!
+ * @brief Build a length-carrying (sized) array field descriptor.
+ *
+ * A plain @ref SOFAB_OBJECT_FIELD_ARRAY has nowhere to keep a length: it derives
+ * the element count from @c sizeof(field)/sizeof(field[0]), which is the array's
+ * @b capacity. MESSAGE_SPEC §3 makes the schema @c count a capacity too and the
+ * wire count @c M the array's @b length, with no element elided — so a capacity-
+ * only object can never hold an array shorter than @c N, and a decode of
+ * @c M @c < @c N followed by a re-encode silently lengthens the value back to
+ * @c N. A sized array fixes that the same way @ref SOFAB_OBJECT_FIELD_BLOB_SIZED
+ * fixes it for a blob: it pairs the fixed-capacity array @p dfield with a
+ * companion length member @p lfield holding how many elements are actually used
+ * (@c 0..N). On encode exactly @p lfield elements reach the wire — a trailing
+ * element equal to the element default included, because @c M is the length; on
+ * decode the received count is stored back into @p lfield. The capacity never
+ * reaches the wire.
+ *
+ * @warning @p lfield @b must immediately precede @p dfield in @p obj, and the
+ * two must be @b adjacent — @c offsetof(obj,dfield) @c == @c
+ * offsetof(obj,lfield)+sizeof(lfield). For a sized @e blob that is automatic: a
+ * byte buffer has alignment 1, so it abuts any length width. It is @b not
+ * automatic here. An element wider than a byte carries a stricter alignment, so a
+ * @e narrower length in front of it is padded away — @c { @c uint8_t @c len; @c
+ * uint32_t @c vals[4]; @c } places @c vals at offset 4, three bytes past the
+ * length, and the descriptor (which stores only the length's @e width and reads
+ * it at @c offset @c - @c width) would address the padding instead. This macro
+ * therefore does not assume the invariant, it @b asserts it: the adjacency is
+ * checked at compile time (@ref SOFAB_OBJECT_ASSERT_LEN_ADJACENT), so a padded
+ * pair is a build error rather than a silent misread. Declare the length at least
+ * as wide as one element — @c { @c uint32_t @c len; @c uint32_t @c vals[4]; @c }
+ * — or otherwise arrange the two members to leave no gap.
+ *
+ * The companion width @c sizeof(lfield) (one of 1/2/4/8) is stored in the
+ * descriptor's @c nested_idx slot, which also flags the array as sized: a plain
+ * @ref SOFAB_OBJECT_FIELD_ARRAY keeps @c nested_idx @c == @c 0 and encodes its
+ * full capacity.
+ *
+ * @param id      Field ID on the wire.
+ * @param obj     Enclosing struct type.
+ * @param dfield  Array member within @p obj (its size is the capacity).
+ * @param lfield  Used-length member (in elements), declared immediately before
+ *                @p dfield.
+ * @param type    Field type tag (one of the array @ref SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED "SOFAB_OBJECT_FIELDTYPE_ARRAY_*").
+ */
+#define SOFAB_OBJECT_FIELD_ARRAY_SIZED(id, obj, dfield, lfield, type) \
+    { id, offsetof(obj, dfield), sizeof(((obj *)0)->dfield), \
+      (uint8_t)(sizeof(((obj *)0)->lfield) \
+                + SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, dfield, lfield)), \
+      type, (sizeof(((obj *)0)->dfield[0]) & 0xF) }
 
 /*!
  * @brief Build an object descriptor (@ref sofab_object_descr_t) without defaults.
@@ -178,13 +242,21 @@ extern "C" {
 /*!
  * @brief Build a fixed-count sequence-holder object descriptor.
  *
- * Like @ref SOFAB_OBJECT_DESCR, but marks the descriptor as a fixed-count
- * sequence holder: one whose fields are exactly the element slots
- * @c 0 … @p field_count - 1 of a fixed-count @c string / @c blob / @c struct /
+ * Like @ref SOFAB_OBJECT_DESCR, but marks the descriptor as a wrapper-array
+ * holder: one whose fields are exactly the element slots
+ * @c 0 … @p field_count - 1 of a bounded @c string / @c blob / @c struct /
  * @c union array (which lowers to a wrapper sequence). For such a descriptor a
  * wire element id outside that range is an over-index element and is rejected as
  * @ref SOFAB_RET_E_INVALID_MSG on decode (MESSAGE_SPEC §7/§7.1), rather than
  * silently skipped the way a message ignores an unknown forward-compatible id.
+ *
+ * The flag also selects the **positional** sparse rule of MESSAGE_SPEC §2/§5.1
+ * on encode: inside a holder an element at an @e interior index equal to its
+ * default is omitted (leaving an id gap) whatever its kind, and the element at
+ * the @e last index is always written, because a wrapper carries no length and
+ * *highest present id + 1* is what recovers it. See @ref sofab_object_encode for
+ * what "last index" means for a C holder, whose @p field_count slots are all
+ * materialized.
  *
  * @param field_list    Array of @ref sofab_object_descr_field_t (the element slots).
  * @param field_count   Number of element slots (the array capacity N).
@@ -203,7 +275,7 @@ typedef struct
     const sofab_object_descr_id_t id;		/*!< Field ID (width per SOFAB_OBJECT_DESCR_PROFILE) */
     const sofab_object_descr_offset_t offset;	/*!< Offset within the object structure (width per profile) */
     const sofab_object_descr_size_t size;		/*!< Size of the field in bytes (width per profile) */
-    const uint8_t nested_idx;		/*!< Index into the nested object descriptor list */
+    const uint8_t nested_idx;		/*!< SEQUENCE: index into the nested object descriptor list. BLOB/ARRAY: byte width of the companion length member (0 = not sized), see @ref SOFAB_OBJECT_FIELD_BLOB_SIZED / @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED */
     const uint8_t type : 4;			/*!< Field type (4bit for types: 0x0..0xA) */
     const uint8_t element_size : 4;	/*!< Size of individual elements for arrays (4bit for type length: 1..8)*/
 } sofab_object_descr_field_t;
@@ -265,10 +337,32 @@ extern sofab_ret_t sofab_object_init (
  * non-zero nested default is handled like any other. Absence reconstructs exactly
  * that default (@ref sofab_object_init), so the omission is value-preserving.
  *
- * The one position still framed unconditionally is a sequence-form **element** of
- * a fixed-count sequence holder (@ref SOFAB_OBJECT_DESCR_SEQ): element presence is
- * what carries the array's length (§5.1), so only the *trailing* run of default
- * elements is trimmed, never an interior one.
+ * Inside a **wrapper-array holder** (@ref SOFAB_OBJECT_DESCR_SEQ) the fields are
+ * the array's element slots and the rule becomes **positional** (MESSAGE_SPEC
+ * §2/§5.1): a wrapper carries no length, so the decoded length is *highest present
+ * id + 1* and nothing that carries it may be elided.
+ * - An element at an **interior** index equal to its default is **omitted**,
+ *   leaving an id gap — a leaf is not written and a sequence-form element is not
+ *   framed either. Both kinds obey one rule; there is no trailing-run elision and
+ *   no fill-to-N.
+ * - The element at the **last** index is **always written**: a leaf as its
+ *   (default) value, a sequence element as an empty frame.
+ *
+ * **What "last index" means here.** A C holder materializes all @c field_count
+ * slots and carries no length member, so the value it holds always occupies every
+ * slot: the last index is @c field_count - 1, unconditionally. A holder whose
+ * every slot is default is the one exception — it is indistinguishable from the
+ * empty array, and the field-level ≠-default test above omits the whole wrapper
+ * (the canonical encoding of the empty array, §2), which is also what a re-decode
+ * reconstructs. Representing an array *shorter* than the capacity but not empty
+ * needs a length member the wrapper holder does not have yet — the wrapper-array
+ * counterpart of @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED.
+ *
+ * A compact scalar array encodes **every** element it holds (§3): its element
+ * count is the length member of @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED, or the full
+ * capacity for a plain @ref SOFAB_OBJECT_FIELD_ARRAY. A trailing element equal to
+ * the element default is *not* dropped — `[1,2,3,0,0]` and `[1,2,3]` are different
+ * values.
  *
  * This descriptor-driven encoder uses none of the output stream's hold-back
  * framing (@c sofab_ostream_write_sequence_begin_lazy): it tests a field against

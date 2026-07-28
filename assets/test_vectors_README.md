@@ -64,21 +64,24 @@ vector is at its default.
 | `blob`            | `id`, `value_hex`                           | binary blob |
 | `array`           | `id`, `element_type`, `values`              | array; `element_type` ∈ `u8..u64`, `i8..i64`, `fp32`, `fp64` |
 | `sequence_begin`  | `id`                                        | open a nested sequence |
-| `sequence_end`    | `element` (optional, `true`)                | close the current sequence; `element` marks a sequence sitting at an **element position** of a wrapper array |
+| `sequence_end`    | `element` (optional, `true`)                | close the current sequence; `element` marks the closer of the element at a wrapper array's **last index** |
 
-**`element` on a `sequence_end`.** An op list carries no schema, so nothing in it
-says whether a sequence is a *field* or an *element* of a wrapper array — and the
-two close differently (MESSAGE_SPEC §2 vs §5.1): a contentless field is omitted,
-a contentless element keeps its frame, because element presence is what carries a
-dynamic array's length. The flag records that distinction on the closer, the only
-place the two differ. It matters solely for the `serialized_sparse` column; the
-dense pass frames everything either way, so a driver that replays only
-`serialized` may ignore it.
+**`element` — the last element of a wrapper array.** The flag may appear on *any*
+op, leaf or `sequence_end`, and marks the op at a wrapper array's **last element
+index**. An op list carries no schema, so that position cannot be inferred, and it
+is the one position the sparse column never drops (MESSAGE_SPEC §2/§5.1): a
+wrapper carries no length, so the decoded length is *highest present id + 1* and
+the last element is always written — a leaf as its (possibly default) value, a
+sequence element as an **empty frame**. Every **interior** element equal to its
+default is omitted instead, leaf and sequence element alike, leaving an id gap.
+The flag matters solely for the `serialized_sparse` column; the dense pass writes
+everything either way, so a driver that replays only `serialized` may ignore it.
 
 The ops are the same for both byte columns; only the encoding differs. In the
-`serialized_sparse` pass every default leaf op is skipped and every
-`sequence_begin` is opened *lazily*, so a sequence whose ops all dropped out
-carries no content and is omitted whole — header and end marker both.
+`serialized_sparse` pass every default leaf op **that is not marked `element`** is
+skipped and every `sequence_begin` is opened *lazily*, so a sequence whose ops all
+dropped out carries no content and is omitted whole — header and end marker both,
+unless its closer is marked `element`.
 
 ### Optional `requires`
 

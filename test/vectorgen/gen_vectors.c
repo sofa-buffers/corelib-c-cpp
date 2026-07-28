@@ -57,6 +57,7 @@ typedef struct
     const char *str;   /* string payload                     */
     const void *arr;   /* array / blob payload (typed below) */
     int32_t     count; /* array element count / blob length  */
+    int         last;  /* op sits at a wrapper array's LAST element index */
 } op_t;
 
 typedef struct
@@ -80,15 +81,22 @@ static void op_arr  (oplist_t *l, kind_t k, uint32_t id, const void *v, int32_t 
 static void op_seqb (oplist_t *l, uint32_t id) { push(l, (op_t){.kind = K_SEQ_BEGIN, .id = id}); }
 static void op_seqe (oplist_t *l)              { push(l, (op_t){.kind = K_SEQ_END}); }
 /*!
- * @brief Close a sequence that sits at an ELEMENT position of a wrapper array.
+ * @brief Mark the op just pushed as a wrapper array's LAST element.
  *
- * MESSAGE_SPEC §5.1: element presence carries a dynamic array's length, so an
- * all-default element keeps its frame while an all-default FIELD is omitted
- * (§2). The op list has no schema, so the position cannot be inferred -- it is
- * recorded here, on the closer, because the closer is the only place the two
- * differ. The sparse pass honours it; the dense pass frames everything anyway.
+ * MESSAGE_SPEC §2/§5.1: a wrapper array carries no length, so the decoded length
+ * is *highest present id + 1*. Nothing that carries it may be elided: the element
+ * at the last index is ALWAYS written -- a `string`/`blob` leaf as its (possibly
+ * default) value, a sequence element as an empty frame -- while every INTERIOR
+ * element equal to its default is omitted, leaf and sequence element alike.
+ *
+ * The op list has no schema, so the position cannot be inferred; it is recorded
+ * here, on the last element's op (a leaf, or the closer of a sequence element).
+ * The sparse pass honours it -- it neither drops a marked leaf nor lets a marked
+ * frame collapse -- and the dense pass writes everything anyway.
  */
-static void op_seqe_elem (oplist_t *l)         { push(l, (op_t){.kind = K_SEQ_END, .u = 1}); }
+static void op_last (oplist_t *l)              { l->ops[l->n - 1].last = 1; }
+/*! @brief Close a sequence element that sits at the array's last index. */
+static void op_seqe_last (oplist_t *l)         { push(l, (op_t){.kind = K_SEQ_END, .last = 1}); }
 
 /* replay through the real encoder *******************************************/
 
@@ -125,7 +133,7 @@ static sofab_ret_t replay(sofab_ostream_t *os, const op_t *op, int lazy_seq)
         case K_ARR_FP64:  return sofab_ostream_write_array_of_fp64(os, op->id, op->arr, op->count);
         case K_SEQ_BEGIN: return lazy_seq ? sofab_ostream_write_sequence_begin_lazy(os, op->id)
                                           : sofab_ostream_write_sequence_begin(os, op->id);
-        case K_SEQ_END:   return (lazy_seq && op->u)
+        case K_SEQ_END:   return (lazy_seq && op->last)
                                  ? sofab_ostream_write_sequence_end_keep(os)
                                  : sofab_ostream_write_sequence_end(os);
     }
@@ -231,7 +239,6 @@ static void json_field(FILE *o, const char *indent, const op_t *op)
         case K_BLOB:      fprintf(o, "\"op\": \"blob\", \"id\": %" PRIu32 ", \"value_hex\": ", op->id); json_hex(o, op->arr, (size_t)op->count); break;
         case K_SEQ_BEGIN: fprintf(o, "\"op\": \"sequence_begin\", \"id\": %" PRIu32, op->id); break;
         case K_SEQ_END:   fprintf(o, "\"op\": \"sequence_end\"");
-                          if (op->u) fprintf(o, ", \"element\": true");
                           break;
         default:
             fprintf(o, "\"op\": \"array\", \"id\": %" PRIu32 ", \"element_type\": \"%s\", \"values\": ",
@@ -239,6 +246,10 @@ static void json_field(FILE *o, const char *indent, const op_t *op)
             json_array_values(o, op);
             break;
     }
+    /* MESSAGE_SPEC §2/§5.1: this op is a wrapper array's LAST element, the one a
+     * sparse encoder must write whatever its value (see op_last). On a
+     * sequence_end it means the element's frame survives even when empty. */
+    if (op->last) fprintf(o, ", \"element\": true");
     fputs(" }", o);
 }
 
@@ -365,9 +376,16 @@ static void emit_requires(FILE *o, uint32_t req)
  * pass therefore replays every seq_begin/seq_end and lets the encoder decide --
  * it opens them LAZILY, so a sequence left without content drops itself, header
  * and end marker both (S2), while one with a surviving child stays framed.
+ *
+ * One position is exempt in both directions: an op marked as a wrapper array's
+ * LAST element (op_last) is always written, because its presence is what carries
+ * the array's length (S2/S5.1) -- a default leaf there stays, and a marked closer
+ * keeps its frame.
  */
 static int is_default_leaf(const op_t *op)
 {
+    if (op->last) return 0;
+
     switch (op->kind)
     {
         case K_UNSIGNED:
@@ -663,6 +681,16 @@ static void emit_all(FILE *o)
         EMIT(o, "array_i64", "array/integer", "Array of i64.", op_arr(&l, K_ARR_I64, 0, a, 5));
     }
     {
+        /* MESSAGE_SPEC S3: `count` is a capacity and the wire count M IS the
+         * length, so a compact array carries its trailing default elements --
+         * [1,2,0,0] is four elements and must not encode like [1,2]. */
+        static const uint32_t a[] = {1, 2, 0, 0};
+        EMIT(o, "array_unsigned_trailing_defaults", "array/integer",
+             "Unsigned array ending in default (zero) elements: M is the array's "
+             "length, so all four elements stay on the wire.",
+             op_arr(&l, K_ARR_U32, 0, a, 4));
+    }
+    {
         /* 200 elements: the element-count varint crosses into two bytes (>127). */
         static uint8_t a[200];
         for (int i = 0; i < 200; ++i) a[i] = (uint8_t)(i * 7 + 1);
@@ -828,27 +856,26 @@ static void emit_all(FILE *o)
                     sizeof(skip) / sizeof(skip[0]));
     }
 
-    /* --- wrapper-array string elements: per-element sparse omission ---------
-     * A wrapper-sequence array (array of string) is itself a sequence, so its
-     * elements (id = index) follow the per-field rule (MESSAGE_SPEC S2): a
-     * string element equal to its element default (empty) is omitted, leaving an
-     * id gap the decoder restores; trailing default elements collapse. The
-     * `serialized_sparse` here is auto-derived (is_default_leaf drops the empty
-     * string ops), so these pin the element-level sparse wire the non-C backends
-     * must produce.
-     *
-     * The wrapper itself is a FIELD, so S2 applies to it too: array_string_
-     * all_default below (every element empty) leaves the lazily opened wrapper
-     * without content, and the vector's serialized_sparse is the empty byte
-     * string. A wrapper-array ELEMENT that is itself a sequence would keep its
-     * frame (S5.1 -- element presence carries the length), but this primitive
-     * vector file has no struct/union arrays, so no vector exercises that. */
+    /* --- wrapper-array elements: the positional sparse rule ------------------
+     * A wrapper-sequence array (array of string / struct / array) is itself a
+     * sequence, so its elements (id = index) follow the per-field rule
+     * (MESSAGE_SPEC S2). Because a wrapper carries no length, the decoded length
+     * is *highest present id + 1*, and one rule covers both element kinds:
+     *   - an INTERIOR element equal to its element default is omitted, leaving an
+     *     id gap -- a string/blob is not written and a struct/array element is not
+     *     framed either;
+     *   - the LAST element (op_last) is always written -- a leaf as its (default)
+     *     value, a sequence element as an empty frame -- because that is what
+     *     carries the length.
+     * `serialized_sparse` is derived from exactly that: is_default_leaf drops the
+     * unmarked default leaves, the lazy opener drops the unmarked empty frames,
+     * and the marked last element survives either way. */
     {
         oplist_t l = {0};
         op_seqb(&l, 0);
             op_str(&l, 0, "a");
-            op_str(&l, 1, "");   /* default -> dropped, leaves an id gap  */
-            op_str(&l, 2, "c");
+            op_str(&l, 1, "");   /* interior default -> dropped, leaves an id gap */
+            op_str(&l, 2, "c"); op_last(&l);
         op_seqe(&l);
         emit_vector(o, "array_string_gap", "array/string",
                     "Array of string with a default (empty) element in the middle: "
@@ -858,76 +885,79 @@ static void emit_all(FILE *o)
         oplist_t l = {0};
         op_seqb(&l, 0);
             op_str(&l, 0, "a");
-            op_str(&l, 1, "");   /* trailing default -> collapses  */
+            op_str(&l, 1, ""); op_last(&l);   /* last element -> always written */
         op_seqe(&l);
         emit_vector(o, "array_string_trailing_default", "array/string",
-                    "Array of string with a trailing default element: sparse drops "
-                    "it, so [\"a\",\"\"] encodes exactly like [\"a\"].", &l);
+                    "Array of string whose LAST element is the default (empty): it "
+                    "is written anyway, so [\"a\",\"\"] stays distinct from "
+                    "[\"a\"] -- the sparse form equals the dense one.", &l);
     }
     {
         oplist_t l = {0};
         op_seqb(&l, 0);
             op_str(&l, 0, "");
-            op_str(&l, 1, "");
+            op_str(&l, 1, ""); op_last(&l);
         op_seqe(&l);
         emit_vector(o, "array_string_all_default", "array/string",
-                    "Array of only default (empty) string elements: every element "
-                    "drops, so it encodes as the empty wrapper sequence.", &l);
+                    "Array of only default (empty) string elements: the interior one "
+                    "drops, so it encodes as its final element alone, at id 1 -- not "
+                    "as the empty array.", &l);
     }
     {
-        /* MESSAGE_SPEC §5.1: a wrapper array whose ELEMENTS are sequences. The
-         * middle element carries only a default-valued leaf, so the sparse form
-         * drops its content -- and must still keep its FRAME, because element
-         * presence is what carries the array's length. This is the one case in
-         * the §2 change that corrupts a value rather than costing bytes, and it
-         * is the reason op_seqe_elem exists: replay the closer as `end` here and
-         * the element vanishes, shortening the decoded array from 3 to 2. */
+        /* MESSAGE_SPEC S2/S5.1: a wrapper array whose ELEMENTS are sequences. The
+         * middle element carries only a default-valued leaf, so it is all-default
+         * and -- being INTERIOR -- is not framed at all: it leaves an id gap, like
+         * a default leaf element. The array still decodes at length 3 because the
+         * element at id 2 is present. */
         oplist_t l = {0};
         op_seqb(&l, 0);
-            op_seqb(&l, 0); op_u(&l, 0, 1); op_seqe_elem(&l);
-            op_seqb(&l, 1); op_u(&l, 0, 0); op_seqe_elem(&l);
-            op_seqb(&l, 2); op_u(&l, 0, 3); op_seqe_elem(&l);
+            op_seqb(&l, 0); op_u(&l, 0, 1); op_seqe(&l);
+            op_seqb(&l, 1); op_u(&l, 0, 0); op_seqe(&l);
+            op_seqb(&l, 2); op_u(&l, 0, 3); op_seqe_last(&l);
         op_seqe(&l);
         emit_vector(o, "array_struct_interior_default_element", "array/struct",
                     "Array of struct where the middle element holds only a "
-                    "default-valued leaf: sparse drops the leaf but KEEPS the "
-                    "element frame, so the array still decodes at length 3.", &l);
+                    "default-valued leaf: sparse drops the element entirely (id "
+                    "gap), and the array still decodes at length 3 from id 2.", &l);
     }
     {
-        /* Every element all-default. The elements keep their frames, so the
-         * array is NOT empty -- [{},{}] and [] are different values, and the
-         * enclosing FIELD is therefore emitted rather than omitted (§2). */
+        /* Every element all-default. The interior one drops; the LAST keeps its
+         * (empty) frame, so the array is [{},{}] at length 2 -- not the empty
+         * array -- and the enclosing FIELD is emitted rather than omitted (S2). */
         oplist_t l = {0};
         op_seqb(&l, 0);
-            op_seqb(&l, 0); op_seqe_elem(&l);
-            op_seqb(&l, 1); op_seqe_elem(&l);
+            op_seqb(&l, 0); op_seqe(&l);
+            op_seqb(&l, 1); op_seqe_last(&l);
         op_seqe(&l);
         emit_vector(o, "array_struct_all_default_elements", "array/struct",
-                    "Array of two all-default structs: both element frames "
-                    "survive, so [{},{}] stays distinguishable from [].", &l);
+                    "Array of two all-default structs: the interior element drops "
+                    "and the last one keeps its empty frame, so [{},{}] stays "
+                    "distinguishable from [] at length 2.", &l);
     }
     {
-        /* An array whose elements are themselves wrapper arrays (§5.3). No
+        /* An array whose elements are themselves wrapper arrays (S5.3). No
          * vector or corpus definition covered this shape before. */
         oplist_t l = {0};
         op_seqb(&l, 0);
-            op_seqb(&l, 0); op_str(&l, 0, "a"); op_seqe_elem(&l);
-            op_seqb(&l, 1); op_seqe_elem(&l);
+            op_seqb(&l, 0); op_str(&l, 0, "a"); op_last(&l); op_seqe(&l);
+            op_seqb(&l, 1); op_seqe_last(&l);
         op_seqe(&l);
         emit_vector(o, "array_of_string_arrays", "array/nested",
-                    "Array of string arrays: the second row is empty and keeps "
-                    "its frame, so the outer array decodes at length 2.", &l);
+                    "Array of string arrays: the second row is empty and, being the "
+                    "last element, keeps its frame, so the outer array decodes at "
+                    "length 2.", &l);
     }
     {
         oplist_t l = {0};
         op_seqb(&l, 0);
             op_str(&l, 0, "");   /* leading default -> gap at id 0  */
             op_str(&l, 1, "x");
-            op_str(&l, 2, "");   /* trailing default -> collapses    */
+            op_str(&l, 2, ""); op_last(&l);   /* last element -> written */
         op_seqe(&l);
         emit_vector(o, "array_string_leading_default", "array/string",
                     "Array of string with leading and trailing default elements: "
-                    "the leading one leaves an id gap, the trailing one collapses.", &l);
+                    "the leading one leaves an id gap, the trailing one is the last "
+                    "element and is written.", &l);
     }
 
     /* --- full scale composite message (test_write_full_scale_example) --- */
@@ -983,6 +1013,7 @@ static void emit_all(FILE *o)
             op_str(&l, 2, "1234567890");
             op_str(&l, 3, "\xC3\xA4\xC3\xB6\xC3\xBC\xC3\x84\xC3\x96\xC3\x9C\xC3\x9F"); /* äöüÄÖÜß */
             op_str(&l, 4, "This_is_a_very_long_test_string_with_!@#$%^&*()_+-=[]{}");
+            op_last(&l);   /* id 200 is a string array: id 4 is its last element */
         op_seqe(&l);
 
         /* Skip a top-level scalar (id 1) and a whole top-level sub-sequence
@@ -1088,6 +1119,7 @@ int main(void)
     fprintf(o, "    \"byte_order\": \"little-endian\",\n");
     fprintf(o, "    \"serialized.hex\": \"lowercase hex of the full (dense) message; primitive-layer ground truth and the decoder's skip input\",\n");
     fprintf(o, "    \"serialized_sparse.hex\": \"lowercase hex of the sparse-canonical message (MESSAGE_SPEC S2): every leaf field equal to its type default is omitted, and a sequence left without content is omitted too (not framed empty); byte-exact target for a sparse encoder\",\n");
+    fprintf(o, "    \"field.element\": \"true marks the op at a wrapper array's LAST element index (MESSAGE_SPEC S2/S5.1). A wrapper carries no length, so the length is highest present id + 1: that element is ALWAYS written -- a leaf as its (default) value, a sequence element as an empty frame -- while every INTERIOR element equal to its default is omitted, leaf and sequence element alike. It is the only op the sparse column never drops\",\n");
     fprintf(o, "    \"integers\": \"decimal JSON number literals (full u64/i64 range)\",\n");
     fprintf(o, "    \"floats\": \"finite values as JSON numbers; +/-infinity as the strings 'inf'/'-inf'\",\n");
     fprintf(o, "    \"blob.value_hex\": \"lowercase hex of the blob payload\",\n");

@@ -416,11 +416,13 @@ static bool _at_message_boundary (const sofab_istream_t *ctx)
  * @c target_count drives the read, so nothing changes.
  *
  * The trailing @c [wire_count, N) slots are the @b element default (zero), not
- * the schema default: MESSAGE_SPEC §3 requires a decoder to materialize exactly
- * N elements whose last @c N - wire_count equal the element default. A @c default:
- * image describes the field only while it is @e absent from the wire; once the
- * field is @e present with count M, the tail is zero. So this clears the tail
- * before the read rather than leaving whatever the @c _init image seeded there.
+ * the schema default: MESSAGE_SPEC §3 makes @c count a @b capacity, so a target
+ * pre-sized to N holds an array of @c wire_count elements and leaves the slots
+ * past it at the element default (there is no fill-to-N -- the length is what the
+ * wire carried). A @c default: image describes the field only while it is @e
+ * absent from the wire; once the field is @e present with count M, the tail is
+ * zero. So this clears the tail before the read rather than leaving whatever the
+ * @c _init image seeded there.
  * (The C++ wrappers are unaffected: a @c std::vector is resized to the wire count
  * first, making this a no-op, and a @c std::array<T,N> wants the clear.)
  *

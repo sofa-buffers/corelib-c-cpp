@@ -1036,10 +1036,14 @@ namespace sofab
             }
             else if constexpr (std::is_base_of_v<OStreamMessage, T>)
             {
-                /* The ELEMENT form: the frame is kept even when the nested message
-                 * writes nothing, because element presence carries a wrapper
-                 * array's length (MESSAGE_SPEC §5.1). A nested message FIELD, which
-                 * may vanish when all-default, is @ref writeLazy.
+                /* The frame-KEEPING form: it survives even when the nested
+                 * message writes nothing. That is what a wrapper array's LAST
+                 * element needs -- the array carries no length, so *highest present
+                 * id + 1* is what recovers it and the final element may never be
+                 * elided (MESSAGE_SPEC §2/§5.1). A nested message that MAY vanish
+                 * when all-default -- a struct/union FIELD, and equally an INTERIOR
+                 * array element, which since §3 made `count` a capacity is omitted
+                 * exactly like a default leaf element -- is @ref writeLazy.
                  *
                  * The closer runs even when the nested serialize() fails, so the
                  * sequence this call opened is always the sequence this call
@@ -1221,9 +1225,10 @@ namespace sofab
          * cannot influence it.
          *
          * Where an empty frame carries meaning, close with @ref sequenceEndKeep
-         * instead: an array **element** (§5.1), the §4.9 empty-sequence primitive
-         * itself, and the explicitly empty array of a field that declares a
-         * non-empty default (§2, §3). The wrapper deliberately exposes no eager
+         * instead: the **last element** of a wrapper array (§5.1 — the interior is
+         * sparse and drops like any default field), the §4.9 empty-sequence
+         * primitive itself, and the explicitly empty array of a field that declares
+         * a non-empty default (§2, §3). The wrapper deliberately exposes no eager
          * opener — the frame-or-not decision belongs to the closer, which is the
          * one call site that knows the position in the schema. (The C core keeps
          * @c sofab_ostream_write_sequence_begin() for @c sofab_object_encode().)
@@ -2608,11 +2613,18 @@ namespace sofab
     /**
      * @brief Narrow a fixed-count array to its non-default prefix, for encode.
      *
-     * MESSAGE_SPEC §3: a `count: N` array's canonical encoding carries `M` = one
-     * past the last element that differs from the element default, and the decoder
-     * refills `[M, N)` from the schema count. The stream emits whatever container
-     * it is handed, so the value is narrowed first. A dynamic array has no N to
-     * refill from, so its trailing defaults are significant and it is not trimmed.
+     * @deprecated **Superseded and non-conformant.** MESSAGE_SPEC §3 now defines
+     * `count: N` as a **capacity** and the wire count `M` as the array's
+     * **length**, so nothing may be elided: `[1,2,3,0,0]` and `[1,2,3]` are
+     * different values, and trimming the tail silently shortens the array. There
+     * is no fill-back on decode either. This helper is retained only so generated
+     * code emitted before the change still compiles; new code must not call it,
+     * and it goes away with the generator that emits it. (Its C counterpart,
+     * `_array_trim_count` in object.c, is already gone.)
+     *
+     * The superseded contract it implements: a `count: N` array's canonical
+     * encoding carries `M` = one past the last element that differs from the
+     * element default, and the decoder refills `[M, N)`.
      *
      * Elements compare by **byte image**, never `operator==`: `-0.0 == 0.0` holds
      * in C++, but `-0.0` is a distinct value that must survive the round-trip, and
