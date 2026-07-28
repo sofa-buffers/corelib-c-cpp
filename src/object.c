@@ -44,13 +44,15 @@ static int _iszero (const void *ptr, size_t len)
     return 1;
 }
 
-#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT) \
+    || !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 /*!
  * @brief Load a host-endian unsigned integer of @p width (1/2/4/8) bytes.
  *
- * Reads the companion used-length member of a sized blob or a sized array, whose
- * C type (and thus width) the caller chooses; @p width comes from the
- * descriptor's @c nested_idx. An unsupported width yields 0 (treated as empty).
+ * Reads the companion used-length member of a sized blob, a sized array or a
+ * sized wrapper-array holder, whose C type (and thus width) the caller chooses;
+ * @p width comes from the descriptor's @c nested_idx (field) or @c fixed_seq
+ * (holder). An unsupported width yields 0 (treated as empty).
  */
 static uint64_t _load_uint (const void *p, uint8_t width)
 {
@@ -80,7 +82,9 @@ static void _store_uint (void *p, uint8_t width, uint64_t val)
         default: break;
     }
 }
+#endif /* fixlen or array or sequence support */
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /*!
  * @brief Byte width of a field's companion length member, or 0 when it has none.
  *
@@ -106,6 +110,95 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
     }
 }
 #endif /* fixlen or array support */
+
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+/*!
+ * @brief Byte width of a wrapper-array holder's element-count member (0 = none).
+ *
+ * The holder counterpart of @ref _sized_width: a holder descriptor packs the
+ * "is a holder" flag in bit 0 of @c fixed_seq and the width of its companion
+ * element-count member above @ref SOFAB_OBJECT_SEQ_LEN_SHIFT
+ * (@ref SOFAB_OBJECT_DESCR_SEQ_SIZED). A plain object (@c fixed_seq @c == @c 0)
+ * and an un-sized holder (@ref SOFAB_OBJECT_DESCR_SEQ, @c fixed_seq @c == @c 1)
+ * both yield 0, which is what every "does it carry a length?" test below asks.
+ * A slot-less descriptor yields 0 too: the member is located relative to the
+ * first slot, so without one there is nothing to address.
+ */
+static uint8_t _seq_len_width (const sofab_object_descr_t *info)
+{
+    return (uint8_t)(info->field_count != 0
+        ? (info->fixed_seq >> SOFAB_OBJECT_SEQ_LEN_SHIFT) : 0);
+}
+
+/*!
+ * @brief Offset of that element-count member inside the holder object.
+ *
+ * Same convention as a sized blob / sized array, one level up: the length sits
+ * immediately before the buffer it describes, and the descriptor stores only its
+ * width. Here the "buffer" is the run of element slots, so the length is at
+ * <em>first slot offset − width</em>. @ref SOFAB_OBJECT_DESCR_SEQ_SIZED asserts
+ * that adjacency at compile time, because unlike a byte blob an element slot may
+ * be aligned strictly enough to pad a narrower length away from it.
+ */
+static size_t _seq_len_offset (const sofab_object_descr_t *info, uint8_t width)
+{
+    return (size_t)info->field_list[0].offset - width;
+}
+
+/*!
+ * @brief Number of element slots a holder's value actually occupies.
+ *
+ * MESSAGE_SPEC §5.1: a wrapper array's length is *highest present id + 1*, and
+ * @c count is only its capacity — so a sized holder reads the length from its
+ * companion member (clamped to the capacity, mirroring @ref _array_count), while
+ * an un-sized one has no length to read and its value occupies every slot.
+ * The result drives both encode bounds: the slots @c [0, len) are walked and the
+ * slot at @c len @c - @c 1 is the one that is always written.
+ */
+static size_t _seq_len (const sofab_object_descr_t *info, const void *obj)
+{
+    uint8_t width = _seq_len_width(info);
+    size_t n = info->field_count;
+
+    if (width != 0)
+    {
+        uint64_t used = _load_uint(
+            CAST_TO(const void *, obj, _seq_len_offset(info, width)), width);
+        if (used < (uint64_t)n) n = (size_t)used;
+    }
+
+    return n;
+}
+
+/*!
+ * @brief Decode: raise a sized holder's length to cover element id @p id.
+ *
+ * The mirror of @ref _store_array_len one level up. A wrapper carries no length
+ * field, so the decoder derives it from what arrived — *highest present id + 1*
+ * (MESSAGE_SPEC §5.1) — and stores it back into the companion member, exactly as a
+ * sized blob stores its received byte length. The maximum (rather than a plain
+ * assignment) keeps the result independent of element order; an over-index id
+ * never reaches here (it is rejected, §7/§7.1) and the clamp is belt and braces.
+ * An un-sized holder has nowhere to put it and this is a no-op.
+ */
+static void _seq_len_observe (const sofab_object_descr_t *info,
+                              uint8_t *dst, sofab_id_t id)
+{
+    uint8_t width = _seq_len_width(info);
+    size_t off, len;
+
+    if (width == 0) return;
+
+    off = _seq_len_offset(info, width);
+    len = (size_t)id + 1u;
+    if (len > (size_t)info->field_count) len = (size_t)info->field_count;
+
+    if ((uint64_t)len > _load_uint(dst + off, width))
+    {
+        _store_uint(dst + off, width, (uint64_t)len);
+    }
+}
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /*!
@@ -225,6 +318,20 @@ static int _field_is_default (
     {
         const sofab_object_descr_t *ninfo = info->nested_list[field->nested_idx];
         const void *nsrc = CAST_TO(const void *, src, field->offset);
+
+        if (_seq_len_width(ninfo) != 0)
+        {
+            /* Sized wrapper holder: the length IS the value (§5.1), so the test is
+             * "is the array empty?" and nothing else -- exactly like a sized blob
+             * or a sized array. Scanning the slots would be wrong twice over: their
+             * content past the used length is indeterminate, and a non-empty
+             * all-default array such as ["", ""] is NOT the empty array and must
+             * keep its final element. The holder carries no default image
+             * (SOFAB_OBJECT_DESCR_SEQ_SIZED passes NULL), so its declared default
+             * is the empty array. */
+            return _seq_len(ninfo, nsrc) == 0;
+        }
+
         for (size_t i = 0; i < ninfo->field_count; i++)
         {
             if (!_field_is_default(ninfo, &ninfo->field_list[i], nsrc))
@@ -300,6 +407,23 @@ extern sofab_ret_t sofab_object_init (
     assert(info != NULL);
     assert(obj != NULL);
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    /* A sized wrapper holder's element-count member sits before the first slot and
+     * no field descriptor covers it (offset, size), so the loop below never reaches
+     * it -- the same blind spot the sized blob had in issue #106. Clear it first:
+     * the holder carries no default image, so its declared default is the empty
+     * array, i.e. length 0. This is also the §7.4 reset a re-opened wrapper runs,
+     * which is what keeps a replaced array from reporting the previous length. */
+    {
+        uint8_t seq_width = _seq_len_width(info);
+        if (seq_width != 0)
+        {
+            _store_uint(CAST_TO(void *, obj, _seq_len_offset(info, seq_width)),
+                        seq_width, 0);
+        }
+    }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
     for (size_t i = 0; i < info->field_count; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
@@ -356,6 +480,10 @@ extern sofab_ret_t sofab_object_encode (
     const void *src)
 {
     sofab_ret_t ret = SOFAB_RET_OK;
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    size_t count;
+    size_t last;
+#endif
     assert(ctx != NULL);
     assert(info != NULL);
     assert(src != NULL);
@@ -368,28 +496,40 @@ extern sofab_ret_t sofab_object_encode (
      * written (a leaf as its value, a sequence element as an empty frame), while
      * an interior element equal to its default is omitted whatever its kind.
      *
-     * "Last index" for a C holder: its field_count slots are ALL materialized and
-     * it carries no length member, so the value it holds occupies every slot and
-     * the last index is field_count - 1, unconditionally. The single exception is
-     * a holder whose every slot is default -- indistinguishable here from the
-     * empty array -- which the FIELD-level ≠-default test in the enclosing object
-     * omits whole (the canonical encoding of the empty array, §2), and which a
+     * "Last index" is length - 1, and _seq_len says where the length comes from:
+     * a SIZED holder (SOFAB_OBJECT_DESCR_SEQ_SIZED) reads its companion element-
+     * count member, so slots at or past the length are not walked at all and all
+     * of 0..N are expressible; an un-sized holder has no length member, so its
+     * value occupies every slot and the last index is field_count - 1. Length 0
+     * writes nothing: it is the empty array, which the FIELD-level ≠-default test
+     * in the enclosing object omits whole (the canonical encoding, §2) and which a
      * re-decode reconstructs exactly.
+     *
+     * `last` stays SIZE_MAX for a plain object, where no field is at an element
+     * position and the per-field skip applies unconditionally. Without sequence
+     * support no holder can be reached at all, so the minimal profile compiles the
+     * plain field walk it always had, byte for byte.
      *
      * (Until 0.8.x this spot elided the trailing run of all-default elements,
      * refilled to N by the decoder. §3 made `count` a capacity, so that trim
      * shortens the value instead of compacting it, and it is gone.)
      */
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-#  define _SOFAB_LAST_ELEMENT(i) (info->fixed_seq && (i) + 1 == info->field_count)
+    count = info->field_count;
+    last  = (size_t)-1;
+    if (info->fixed_seq)
+    {
+        count = _seq_len(info, src);
+        last  = count - 1u;   /* count == 0 -> SIZE_MAX, and the loop never runs */
+    }
+#  define _SOFAB_FIELD_COUNT count
+#  define _SOFAB_ELEMENT_HELD(i) ((i) == last)
 #else
-    /* Without sequence support no wrapper holder can be reached, so no field is
-     * ever at an element position: the minimal profile keeps the plain per-field
-     * skip, byte for byte. */
-#  define _SOFAB_LAST_ELEMENT(i) 0
+#  define _SOFAB_FIELD_COUNT (info->field_count)
+#  define _SOFAB_ELEMENT_HELD(i) 0
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
-    for (size_t i = 0; i < info->field_count && ret == SOFAB_RET_OK; i++)
+    for (size_t i = 0; i < _SOFAB_FIELD_COUNT && ret == SOFAB_RET_OK; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
@@ -406,18 +546,16 @@ extern sofab_ret_t sofab_object_encode (
          * is value-preserving by construction.
          *
          * Inside a wrapper holder the same test decides an ELEMENT, with one
-         * positional exception: the last slot is written whatever it holds (the
-         * rule above). Everything before it is sparse -- a default leaf element is
-         * skipped and a default sequence-form element is not framed either, both
-         * leaving an id gap the decoder refills from the element default.
+         * positional exception: the slot at `last` is written whatever it holds
+         * (the rule above). Everything before it is sparse -- a default leaf
+         * element is skipped and a default sequence-form element is not framed
+         * either, both leaving an id gap the decoder refills from the element
+         * default.
          */
-        if (!_SOFAB_LAST_ELEMENT(i))
+        if (!_SOFAB_ELEMENT_HELD(i) && _field_is_default(info, field, src))
         {
-            if (_field_is_default(info, field, src))
-            {
-                // Field value matches its default, skip serialization
-                continue;
-            }
+            // Field value matches its default, skip serialization
+            continue;
         }
 
         switch (field->type)
@@ -553,7 +691,8 @@ extern sofab_ret_t sofab_object_encode (
                 return SOFAB_RET_E_ARGUMENT;
         }
     }
-#undef _SOFAB_LAST_ELEMENT
+#undef _SOFAB_FIELD_COUNT
+#undef _SOFAB_ELEMENT_HELD
 
     return ret;
 }
@@ -757,6 +896,18 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 // Unsupported field type in descriptor
                 break;
         }
+
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+        /* MESSAGE_SPEC §5.1: inside a SIZED wrapper holder the array's length is
+         * *highest present id + 1*, so record it -- the mirror of the sized blob's
+         * stored byte length, and what lets a received [{k:1}] re-encode as one
+         * element instead of growing back to the capacity. It is the element's
+         * PRESENCE that carries the length, so an id whose wire type contradicts
+         * the declared one (§7.3, skipped as a value above) still counts toward it.
+         * A §7.4 re-open resets the member first (sofab_object_init), so each
+         * occurrence reports its own length. */
+        _seq_len_observe(info, decoder->dst, id);
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
         // field handled — done (return, so the over-index reject below only
         // runs when no descriptor field matched this id)

@@ -240,7 +240,23 @@ extern "C" {
     { (field_list), (nested_list), (default_struct), (field_count), (nested_count), 0 }
 
 /*!
- * @brief Build a fixed-count sequence-holder object descriptor.
+ * @name Wrapper-array holder marker (@ref sofab_object_descr_t::fixed_seq)
+ *
+ * The @c fixed_seq slot packs two things: bit 0 flags the descriptor as a
+ * wrapper-array holder, and the remaining bits carry the byte width of the
+ * holder's companion element-count member (0 when it has none). It is the
+ * holder-level counterpart of the way @c nested_idx doubles as the "is sized"
+ * flag and the length width for @ref SOFAB_OBJECT_FIELD_BLOB_SIZED /
+ * @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED — with the flag kept in bit 0 so that every
+ * plain "is this a holder?" test stays a truth test.
+ * @{
+ */
+#define SOFAB_OBJECT_SEQ_HOLDER    0x01u /*!< Bit 0: this descriptor is a wrapper-array holder. */
+#define SOFAB_OBJECT_SEQ_LEN_SHIFT 1     /*!< Shift of the length member's byte width (0 = unsized). */
+/*! @} */
+
+/*!
+ * @brief Build a fixed-capacity sequence-holder object descriptor.
  *
  * Like @ref SOFAB_OBJECT_DESCR, but marks the descriptor as a wrapper-array
  * holder: one whose fields are exactly the element slots
@@ -254,9 +270,14 @@ extern "C" {
  * on encode: inside a holder an element at an @e interior index equal to its
  * default is omitted (leaving an id gap) whatever its kind, and the element at
  * the @e last index is always written, because a wrapper carries no length and
- * *highest present id + 1* is what recovers it. See @ref sofab_object_encode for
- * what "last index" means for a C holder, whose @p field_count slots are all
- * materialized.
+ * *highest present id + 1* is what recovers it.
+ *
+ * This macro builds the **un-sized** holder: it has no length member, so its
+ * @p field_count slots are all materialized, the last index is
+ * @c field_count @c - @c 1 unconditionally, and the only two lengths it can
+ * express are @c 0 (every slot default — the enclosing object omits the whole
+ * field) and @c field_count. Use @ref SOFAB_OBJECT_DESCR_SEQ_SIZED to express
+ * @c 0 … @c N like every other target.
  *
  * @param field_list    Array of @ref sofab_object_descr_field_t (the element slots).
  * @param field_count   Number of element slots (the array capacity N).
@@ -264,7 +285,70 @@ extern "C" {
  * @param nested_count  Number of entries in @p nested_list.
  */
 #define SOFAB_OBJECT_DESCR_SEQ(field_list, field_count, nested_list, nested_count) \
-    { (field_list), (nested_list), NULL, (field_count), (nested_count), 1 }
+    { (field_list), (nested_list), NULL, (field_count), (nested_count), \
+      SOFAB_OBJECT_SEQ_HOLDER }
+
+/*!
+ * @brief Build a length-carrying (sized) sequence-holder object descriptor.
+ *
+ * The wrapper-array counterpart of @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED, and it
+ * closes the same gap one level up. An un-sized holder
+ * (@ref SOFAB_OBJECT_DESCR_SEQ) materializes all @p field_count element slots and
+ * carries no length, so it can express only two lengths — @c 0 and @c N — while
+ * MESSAGE_SPEC §5.1 gives a wrapper array the length *highest present id + 1*,
+ * i.e. any of @c 0 … @c N. A sized holder adds the missing member: @p lfield holds
+ * how many elements are actually used, exactly as a sized blob's companion holds
+ * how many bytes are.
+ *
+ * What it buys, per MESSAGE_SPEC §2/§5.1:
+ * - **encode** walks the slots @c [0, @p lfield) only — the last index is
+ *   @c lfield @c - @c 1, not @c field_count @c - @c 1. An interior slot equal to
+ *   its element default is omitted (id gap) whatever its kind; the slot at
+ *   @c lfield @c - @c 1 is always written (a leaf as its value, a sequence element
+ *   as an empty frame), because that is what carries the length. @c lfield @c ==
+ *   @c 0 is the empty array and the enclosing object omits the field entirely.
+ * - **decode** stores the received length — *highest present element id + 1* —
+ *   back into @p lfield, so a received @c [{k:1}] re-encodes as one element
+ *   instead of silently growing back to @c N.
+ *
+ * @warning @p lfield @b must immediately precede the @b first element slot
+ * @p efield (the member @c field_list[0] describes) and the two must be
+ * @b adjacent — @c offsetof(obj,efield) @c == @c
+ * offsetof(obj,lfield)+sizeof(lfield). The descriptor stores only the length's
+ * @e width and reads it at <em>first slot offset − width</em>, so a padding gap
+ * would address the padding instead. The "a length placed immediately before the
+ * buffer is never padded" argument holds only for a @b byte-aligned buffer (a
+ * sized blob): an element slot is generally wider and more strictly aligned, so a
+ * narrower length in front of it is padded away. This macro therefore does not
+ * assume the invariant, it @b asserts it at compile time
+ * (@ref SOFAB_OBJECT_ASSERT_LEN_ADJACENT) — a padded pair is a build error rather
+ * than a silent misread. Declare the length at least as wide as the slot's
+ * alignment, e.g. @c { @c uint32_t @c len; @c struct @c kv @c e[5]; @c }.
+ *
+ * The width @c sizeof(lfield) (one of 1/2/4/8) is stored in the descriptor's
+ * @c fixed_seq slot above the holder flag (@ref SOFAB_OBJECT_SEQ_LEN_SHIFT); a
+ * plain @ref SOFAB_OBJECT_DESCR_SEQ keeps that width @c 0 and its original
+ * full-capacity behaviour. Like @ref SOFAB_OBJECT_DESCR_SEQ this descriptor
+ * carries no default image, so the holder's declared default is the @b empty
+ * array: @ref sofab_object_init clears @p lfield to 0, and the enclosing
+ * ≠-default test reads "is default" as @c lfield @c == @c 0 (never a scan of the
+ * slots, whose content past the used length is indeterminate — the same rule a
+ * sized blob and a sized array follow).
+ *
+ * @param field_list    Array of @ref sofab_object_descr_field_t (the element slots).
+ * @param field_count   Number of element slots (the array capacity N).
+ * @param nested_list   Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
+ * @param nested_count  Number of entries in @p nested_list.
+ * @param obj           The holder struct type.
+ * @param efield        First element-slot member (the one @c field_list[0] describes).
+ * @param lfield        Used-length member (in elements), declared immediately
+ *                      before @p efield.
+ */
+#define SOFAB_OBJECT_DESCR_SEQ_SIZED(field_list, field_count, nested_list, nested_count, obj, efield, lfield) \
+    { (field_list), (nested_list), NULL, (field_count), (nested_count), \
+      (uint8_t)(SOFAB_OBJECT_SEQ_HOLDER \
+                | (sizeof(((obj *)0)->lfield) << SOFAB_OBJECT_SEQ_LEN_SHIFT) \
+                | SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, efield, lfield)) }
 
 /* types **********************************************************************/
 /*!
@@ -290,7 +374,7 @@ typedef struct sofab_object_descr
     const void *const default_values;                       /*!< Pointer to default values for fields (optional, may be NULL) */
     const uint16_t field_count;                             /*!< Number of fields in the object */
     const uint8_t nested_count;                             /*!< Number of nested objects */
-    const uint8_t fixed_seq;                                /*!< Non-zero: fixed-count sequence holder — reject an unmatched (over-index) element id instead of skipping it */
+    const uint8_t fixed_seq;                                /*!< Wrapper-array holder marker: bit 0 (@ref SOFAB_OBJECT_SEQ_HOLDER) flags the holder — reject an unmatched (over-index) element id instead of skipping it; the bits above @ref SOFAB_OBJECT_SEQ_LEN_SHIFT carry the byte width of the companion element-count member (0 = un-sized, see @ref SOFAB_OBJECT_DESCR_SEQ_SIZED) */
 } sofab_object_descr_t;
 
 /*!
@@ -348,15 +432,20 @@ extern sofab_ret_t sofab_object_init (
  * - The element at the **last** index is **always written**: a leaf as its
  *   (default) value, a sequence element as an empty frame.
  *
- * **What "last index" means here.** A C holder materializes all @c field_count
- * slots and carries no length member, so the value it holds always occupies every
- * slot: the last index is @c field_count - 1, unconditionally. A holder whose
- * every slot is default is the one exception — it is indistinguishable from the
- * empty array, and the field-level ≠-default test above omits the whole wrapper
- * (the canonical encoding of the empty array, §2), which is also what a re-decode
- * reconstructs. Representing an array *shorter* than the capacity but not empty
- * needs a length member the wrapper holder does not have yet — the wrapper-array
- * counterpart of @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED.
+ * **What "last index" means here.** It is the array's `length - 1`, and where the
+ * length comes from is the holder descriptor's business:
+ * - @ref SOFAB_OBJECT_DESCR_SEQ_SIZED carries an element-count member, so the
+ *   length is that member (clamped to the capacity). Slots at or past it are not
+ *   walked at all; the slot at `length - 1` is the one that is always written; a
+ *   length of 0 writes nothing, and the field-level ≠-default test above omits the
+ *   whole wrapper (the canonical encoding of the empty array, §2). All of
+ *   @c 0 … @c N are expressible, as on every other target.
+ * - a plain @ref SOFAB_OBJECT_DESCR_SEQ has no length member, so the value it
+ *   holds occupies every slot and the length is @c field_count: the last index is
+ *   @c field_count @c - @c 1 unconditionally. An all-default holder is the one
+ *   exception — indistinguishable from the empty array there — and is omitted
+ *   whole by the same field-level test. Lengths @c 1 … @c N-1 are not
+ *   representable in that form.
  *
  * A compact scalar array encodes **every** element it holds (§3): its element
  * count is the length member of @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED, or the full
@@ -391,9 +480,19 @@ extern sofab_ret_t sofab_object_encode (
  * object; for nested objects the decoder must be the first element of an array
  * with one slot per supported nesting level (see @c depth). The callback binds
  * the appropriate read for each known field ID. An unknown field ID is ignored
- * (skipped) for a normal message descriptor, but for a fixed-count
+ * (skipped) for a normal message descriptor, but for a fixed-capacity
  * sequence-holder descriptor (see @ref SOFAB_OBJECT_DESCR_SEQ) it is an
  * over-index element and rejects the message via @ref sofab_istream_invalidate.
+ *
+ * Inside a **sized** holder (@ref SOFAB_OBJECT_DESCR_SEQ_SIZED) a matched element
+ * id also raises the companion element-count member to @c id @c + @c 1, so that
+ * when the wrapper closes it holds *highest present id + 1* — the array's length
+ * per MESSAGE_SPEC §5.1, stored back exactly as a sized blob stores its received
+ * byte length. The count is raised by the element's **presence**, which is what the
+ * length is defined from: an element whose header wire type contradicts the
+ * declared one is skipped as a value (§7.3) but still occupies its id. The §7.4
+ * reset below re-zeroes the member whenever the wrapper re-opens, so a replaced
+ * array reports its own length and not the previous one's.
  *
  * @warning **Initialize @c dst with @ref sofab_object_init before every message.**
  * Decoding writes only the fields the wire actually carries; a field the sender
