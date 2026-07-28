@@ -2527,6 +2527,114 @@ static void test_object_sized_wrapper_struct_overindex_still_rejected (void)
         _szk_decode(&_szk_msg, &m, over, sizeof(over)));
 }
 
+/* --- §7.3 at an ELEMENT position: skipped means NOT PRESENT ------------- */
+//
+// MESSAGE_SPEC §7.3: a field whose header wire type contradicts the declared type
+// "MUST be skipped, exactly as a field with an unknown id is skipped" -- and an
+// unknown id leaves nothing behind. At an element position that settles the §5.1
+// count: the length is *highest present id + 1*, and the ids it counts are the ones
+// actually consumed as elements, not the ones that merely appeared on the wire. A
+// mistyped child mutates the container in no way at all -- the array is byte for
+// byte what it would have been had the child never arrived.
+//
+// The control is the other half and must NOT be swallowed by the same test: a
+// well-typed but EMPTY element (an empty frame, an empty string) IS present and
+// does count. Each test below pins both rows, plus the mixed case where a mistyped
+// child sits at a HIGHER id than a well-typed one and must not raise the length to
+// its own id + 1 ("does not occupy its id").
+//
+
+static void test_object_sized_wrapper_leaf_mistyped_element_absent (void)
+{
+    _szs_msg_t m;
+    uint8_t out[64];
+
+    /* element 0 declared STRING, arrives as an unsigned varint (value 7): skipped
+     * like an unknown id -> length 0, i.e. the EMPTY array, which re-encodes to
+     * nothing at all (§2). */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mistyped[] = { 0xC6, 0x0C, 0x00, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, mistyped, sizeof(mistyped)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, m.arr.len,
+        "a wire-type-mismatched element must not count toward the length");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", m.arr.s[0],
+        "a skipped element must leave the slot at its element default");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szs_msg, &m, out, sizeof(out)),
+        "a mistyped element must leave the container as if it never arrived");
+
+    /* CONTROL: the same id, now a well-typed but EMPTY string. That element IS
+     * present -- length 1, and the frame survives a round trip. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t empty_elem[] = { 0xC6, 0x0C, 0x02, 0x02, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, empty_elem, sizeof(empty_elem)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len,
+        "an empty (but well-typed) element is present and must count");
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(empty_elem), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(empty_elem, out, used);
+
+    /* MIXED: a present element at id 0 and a mistyped one at id 3. The mistyped id
+     * is not occupied, so the length stays 1 and the re-encode drops back to the
+     * control's bytes. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mixed[] = { 0xC6, 0x0C, 0x02, 0x02, 0x18, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, mixed, sizeof(mixed)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len,
+        "a mistyped element must not occupy its id");
+    TEST_ASSERT_EQUAL_STRING("", m.arr.s[3]);
+    used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(empty_elem), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(empty_elem, out, used);
+}
+
+static void test_object_sized_wrapper_struct_mistyped_element_absent (void)
+{
+    _szk_msg_t m;
+    uint8_t out[64];
+
+    /* element 0 declared a SEQUENCE (a struct element), arrives as an unsigned
+     * varint: skipped like an unknown id -> the empty array. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mistyped[] = { 0xC6, 0x0C, 0x00, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _szk_decode(&_szk_msg, &m, mistyped, sizeof(mistyped)));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, m.arr.len,
+        "a wire-type-mismatched element must not count toward the length");
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[0].k);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szk_msg, &m, out, sizeof(out)),
+        "a mistyped element must leave the container as if it never arrived");
+
+    /* CONTROL: the same id as a well-typed EMPTY FRAME -- [{}], length 1. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t empty_frame[] = { 0xC6, 0x0C, 0x06, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _szk_decode(&_szk_msg, &m, empty_frame, sizeof(empty_frame)));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, m.arr.len,
+        "an empty element FRAME is a present element and must count");
+    size_t used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(empty_frame), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(empty_frame, out, used);
+
+    /* MIXED: {k:1,v:2} at id 0 and a mistyped scalar at id 3 -- length 1, and the
+     * re-encode is exactly the one-element form. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mixed[] = {
+        0xC6, 0x0C, 0x06, 0x00, 0x01, 0x08, 0x02, 0x07, 0x18, 0x07, 0x07,
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _szk_decode(&_szk_msg, &m, mixed, sizeof(mixed)));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, m.arr.len,
+        "a mistyped element must not occupy its id");
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.e[0].k);
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[3].k);
+    const uint8_t one[] = { 0xC6, 0x0C, 0x06, 0x00, 0x01, 0x08, 0x02, 0x07, 0x07 };
+    used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(one), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+}
+
 static void test_object_sized_wrapper_init_clears_length (void)
 {
     /* sofab_object_init must reach the length member, which no field descriptor
@@ -2617,6 +2725,8 @@ int test_object_main (void)
     RUN_TEST(test_object_sized_wrapper_struct_len_n);
     RUN_TEST(test_object_sized_wrapper_struct_decode_stores_length);
     RUN_TEST(test_object_sized_wrapper_struct_overindex_still_rejected);
+    RUN_TEST(test_object_sized_wrapper_leaf_mistyped_element_absent);
+    RUN_TEST(test_object_sized_wrapper_struct_mistyped_element_absent);
     RUN_TEST(test_object_sized_wrapper_init_clears_length);
 
     return UNITY_END();

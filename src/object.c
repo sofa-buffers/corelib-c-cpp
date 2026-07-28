@@ -180,6 +180,9 @@ static size_t _seq_len (const sofab_object_descr_t *info, const void *obj)
  * assignment) keeps the result independent of element order; an over-index id
  * never reaches here (it is rejected, §7/§7.1) and the clamp is belt and braces.
  * An un-sized holder has nowhere to put it and this is a no-op.
+ *
+ * "Present" is an element that was actually **bound** as an element — the call
+ * site decides that, and an element skipped under §7.3 never gets here.
  */
 static void _seq_len_observe (const sofab_object_descr_t *info,
                               uint8_t *dst, sofab_id_t id)
@@ -709,6 +712,17 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
     (void)count;  /* consumed only by the sized-array branches (array) below */
 #endif
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    /* The wire field type as the callback finds it: sofab_istream_* set
+     * ctx->target_opt to the type read from the header (plus the fixlen subtype
+     * once it is known) and reset target_ptr, both immediately before calling
+     * here. Every read below overwrites target_opt with the type it EXPECTS, so
+     * the pair (wire type, expected type) is only available if the incoming one
+     * is captured first. It is needed to tell a bound element from a skipped one
+     * -- see the element-count update after the switch. */
+    const uint8_t wire_opt = ctx->target_opt;
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
     for (size_t i = 0; i < info->field_count; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
@@ -901,12 +915,39 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
         /* MESSAGE_SPEC §5.1: inside a SIZED wrapper holder the array's length is
          * *highest present id + 1*, so record it -- the mirror of the sized blob's
          * stored byte length, and what lets a received [{k:1}] re-encode as one
-         * element instead of growing back to the capacity. It is the element's
-         * PRESENCE that carries the length, so an id whose wire type contradicts
-         * the declared one (§7.3, skipped as a value above) still counts toward it.
-         * A §7.4 re-open resets the member first (sofab_object_init), so each
-         * occurrence reports its own length. */
-        _seq_len_observe(info, decoder->dst, id);
+         * element instead of growing back to the capacity. A §7.4 re-open resets
+         * the member first (sofab_object_init), so each occurrence reports its own
+         * length.
+         *
+         * Only an element that was actually BOUND counts. §7.3 says a field whose
+         * header wire type contradicts the declared one "MUST be skipped, exactly
+         * as a field with an unknown id is skipped" -- and an unknown id leaves
+         * nothing behind: no value, no id occupied, no container mutation. So the
+         * ids §5.1 counts are the ids that were consumed as elements, not the ids
+         * that merely appeared on the wire. A mistyped child is reconstructed from
+         * the element default like any absent one, and the array is byte-for-byte
+         * what it would have been had the child never arrived.
+         *
+         * Two conditions say "bound": the branch above bound a destination at all
+         * (a branch that declined -- a settled §7.3 pre-check, an unsupported
+         * descriptor type, an exhausted sequence depth -- leaves target_ptr NULL),
+         * and the type it bound agrees with the wire. The second test is the same
+         * one the istream applies after this callback returns to unbind a
+         * contradicting read (_call_field_callback_masked); running it here too is
+         * what lets the decision be made before the count is touched. Mask 0x3F =
+         * field type + fixlen subtype, so a blob-for-string is a mismatch; the
+         * string reader's STRINGTERM bit (0x40) sits outside it, as does the
+         * subtype-less form the istream matches with 0x07 (an empty varint array
+         * carries no subtype on either side, so 0x3F agrees with it).
+         *
+         * A well-typed but EMPTY element -- an empty frame, an empty string -- is
+         * bound and therefore present: it counts, and must. That is the control
+         * this test must not swallow. */
+        if (ctx->target_ptr != NULL
+            && ((unsigned)(ctx->target_opt ^ wire_opt) & 0x3Fu) == 0u)
+        {
+            _seq_len_observe(info, decoder->dst, id);
+        }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
         // field handled — done (return, so the over-index reject below only

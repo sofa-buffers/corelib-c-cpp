@@ -309,7 +309,10 @@ extern "C" {
  *   @c 0 is the empty array and the enclosing object omits the field entirely.
  * - **decode** stores the received length — *highest present element id + 1* —
  *   back into @p lfield, so a received @c [{k:1}] re-encodes as one element
- *   instead of silently growing back to @c N.
+ *   instead of silently growing back to @c N. "Present" is an element that was
+ *   actually bound: one skipped because its wire type contradicts the declared
+ *   element type is skipped like an unknown id (§7.3) and counts for nothing, an
+ *   empty one (empty frame, empty string) is present and counts.
  *
  * @warning @p lfield @b must immediately precede the @b first element slot
  * @p efield (the member @c field_list[0] describes) and the two must be
@@ -488,11 +491,18 @@ extern sofab_ret_t sofab_object_encode (
  * id also raises the companion element-count member to @c id @c + @c 1, so that
  * when the wrapper closes it holds *highest present id + 1* — the array's length
  * per MESSAGE_SPEC §5.1, stored back exactly as a sized blob stores its received
- * byte length. The count is raised by the element's **presence**, which is what the
- * length is defined from: an element whose header wire type contradicts the
- * declared one is skipped as a value (§7.3) but still occupies its id. The §7.4
- * reset below re-zeroes the member whenever the wrapper re-opens, so a replaced
- * array reports its own length and not the previous one's.
+ * byte length. The §7.4 reset below re-zeroes the member whenever the wrapper
+ * re-opens, so a replaced array reports its own length and not the previous one's.
+ *
+ * **Only a bound element counts.** An element whose header wire type contradicts
+ * the declared one is skipped "exactly as a field with an unknown id is skipped"
+ * (§7.3) — and an unknown id leaves nothing behind, so it does **not** occupy its
+ * id and does **not** count toward the length: the slot is reconstructed from the
+ * element default and the array is byte-for-byte what it would have been had the
+ * element never arrived. The ids §5.1 counts are the ones consumed as elements,
+ * not the ones that merely appeared on the wire. A well-typed but **empty**
+ * element — an empty frame, an empty string — is bound and does count; that is a
+ * present element and not the same thing at all.
  *
  * @warning **Initialize @c dst with @ref sofab_object_init before every message.**
  * Decoding writes only the fields the wire actually carries; a field the sender
