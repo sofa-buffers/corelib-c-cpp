@@ -121,29 +121,37 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
  * (@ref SOFAB_OBJECT_DESCR_SEQ_SIZED). A plain object (@c fixed_seq @c == @c 0)
  * and an un-sized holder (@ref SOFAB_OBJECT_DESCR_SEQ, @c fixed_seq @c == @c 1)
  * both yield 0, which is what every "does it carry a length?" test below asks.
- * A slot-less descriptor yields 0 too: the member is located relative to the
- * first slot, so without one there is nothing to address.
  */
 static uint8_t _seq_len_width (const sofab_object_descr_t *info)
 {
-    return (uint8_t)(info->field_count != 0
-        ? (info->fixed_seq >> SOFAB_OBJECT_SEQ_LEN_SHIFT) : 0);
+    return (uint8_t)(info->fixed_seq >> SOFAB_OBJECT_SEQ_LEN_SHIFT);
 }
 
 /*!
- * @brief Offset of that element-count member inside the holder object.
+ * @def _SEQ_LEN_OFFSET
+ * @brief Offset of that element-count member inside the holder object: zero.
  *
- * Same convention as a sized blob / sized array, one level up: the length sits
- * immediately before the buffer it describes, and the descriptor stores only its
- * width. Here the "buffer" is the run of element slots, so the length is at
- * <em>first slot offset − width</em>. @ref SOFAB_OBJECT_DESCR_SEQ_SIZED asserts
- * that adjacency at compile time, because unlike a byte blob an element slot may
- * be aligned strictly enough to pad a narrower length away from it.
+ * A holder's count sits at the START of the holder — @ref
+ * SOFAB_OBJECT_DESCR_SEQ_SIZED asserts @c offsetof(obj,lfield) @c == @c 0 at
+ * compile time — and NOT one width before the first element slot, the way a sized
+ * blob's / sized array's length sits before its buffer.
+ *
+ * An object descriptor can afford that anchor, because it describes the whole
+ * object; and it has to use it, because the byte before slot 0 is not free in
+ * every holder. A blob element and a native inner-array row are themselves SIZED:
+ * each slot BEGINS with its own used-length, so "one width before the slots"
+ * addressed element 0's length instead of the holder's count, and the sized
+ * holder worked for three of the five element kinds only. Offset 0 has no such
+ * competition, and it needs no adjacency argument either — padding between a
+ * narrow count and strictly-aligned slots is harmless, because nothing is
+ * measured from the slots.
+ *
+ * The FIELD-level SIZED forms keep the old convention: a field descriptor knows
+ * only the field's own offset inside its object, so "immediately before the
+ * storage" is the only anchor available to it (@ref
+ * SOFAB_OBJECT_ASSERT_LEN_ADJACENT).
  */
-static size_t _seq_len_offset (const sofab_object_descr_t *info, uint8_t width)
-{
-    return (size_t)info->field_list[0].offset - width;
-}
+#define _SEQ_LEN_OFFSET ((size_t)0)
 
 /*!
  * @brief Number of element slots a holder's value actually occupies.
@@ -163,7 +171,7 @@ static size_t _seq_len (const sofab_object_descr_t *info, const void *obj)
     if (width != 0)
     {
         uint64_t used = _load_uint(
-            CAST_TO(const void *, obj, _seq_len_offset(info, width)), width);
+            CAST_TO(const void *, obj, _SEQ_LEN_OFFSET), width);
         if (used < (uint64_t)n) n = (size_t)used;
     }
 
@@ -192,7 +200,7 @@ static void _seq_len_observe (const sofab_object_descr_t *info,
 
     if (width == 0) return;
 
-    off = _seq_len_offset(info, width);
+    off = _SEQ_LEN_OFFSET;
     len = (size_t)id + 1u;
     if (len > (size_t)info->field_count) len = (size_t)info->field_count;
 
@@ -411,9 +419,9 @@ extern sofab_ret_t sofab_object_init (
     assert(obj != NULL);
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-    /* A sized wrapper holder's element-count member sits before the first slot and
-     * no field descriptor covers it (offset, size), so the loop below never reaches
-     * it -- the same blind spot the sized blob had in issue #106. Clear it first:
+    /* A sized wrapper holder's element-count member sits at offset 0 of the holder
+     * and no field descriptor covers it (offset, size), so the loop below never
+     * reaches it -- the same blind spot the sized blob had in issue #106. Clear it:
      * the holder carries no default image, so its declared default is the empty
      * array, i.e. length 0. This is also the §7.4 reset a re-opened wrapper runs,
      * which is what keeps a replaced array from reporting the previous length. */
@@ -421,8 +429,7 @@ extern sofab_ret_t sofab_object_init (
         uint8_t seq_width = _seq_len_width(info);
         if (seq_width != 0)
         {
-            _store_uint(CAST_TO(void *, obj, _seq_len_offset(info, seq_width)),
-                        seq_width, 0);
+            _store_uint(CAST_TO(void *, obj, _SEQ_LEN_OFFSET), seq_width, 0);
         }
     }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */

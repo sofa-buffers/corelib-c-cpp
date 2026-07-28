@@ -121,12 +121,31 @@ extern "C" {
  *
  * Evaluates to 0, or fails to compile (negative array bound) when the two
  * members are not adjacent — i.e. when the compiler inserted padding between
- * them. Used by the @c *_SIZED field macros, whose descriptor records only the
- * length's @e width and locates it at @c offset @c - @c width.
+ * them.
+ *
+ * Used by the @b field-level @c *_SIZED macros (@ref SOFAB_OBJECT_FIELD_BLOB_SIZED,
+ * @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED), and only by them. A field descriptor
+ * knows one address — the field's own @c offset inside the enclosing object — so
+ * "immediately before the storage" is the only anchor available to it, and the
+ * adjacency has to hold. An @b object descriptor is not in that position: it
+ * describes the whole object, so it can anchor at the object's start instead, and
+ * @ref SOFAB_OBJECT_DESCR_SEQ_SIZED does exactly that
+ * (@ref SOFAB_OBJECT_ASSERT_LEN_FIRST).
  */
 #define SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, dfield, lfield) \
     (0 * sizeof(char[(offsetof(obj, dfield) \
                       == offsetof(obj, lfield) + sizeof(((obj *)0)->lfield)) ? 1 : -1]))
+
+/*!
+ * @brief Compile-time check that @p lfield is the @b first member of @p obj.
+ *
+ * Evaluates to 0, or fails to compile (negative array bound) when @p lfield does
+ * not sit at offset 0. Used by @ref SOFAB_OBJECT_DESCR_SEQ_SIZED, whose
+ * descriptor records only the count's @e width and locates it at offset 0 of the
+ * holder.
+ */
+#define SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, lfield) \
+    (0 * sizeof(char[(offsetof(obj, lfield) == 0) ? 1 : -1]))
 
 /*!
  * @brief Build a nested-object (sequence) field descriptor.
@@ -314,19 +333,23 @@ extern "C" {
  *   element type is skipped like an unknown id (§7.3) and counts for nothing, an
  *   empty one (empty frame, empty string) is present and counts.
  *
- * @warning @p lfield @b must immediately precede the @b first element slot
- * @p efield (the member @c field_list[0] describes) and the two must be
- * @b adjacent — @c offsetof(obj,efield) @c == @c
- * offsetof(obj,lfield)+sizeof(lfield). The descriptor stores only the length's
- * @e width and reads it at <em>first slot offset − width</em>, so a padding gap
- * would address the padding instead. The "a length placed immediately before the
- * buffer is never padded" argument holds only for a @b byte-aligned buffer (a
- * sized blob): an element slot is generally wider and more strictly aligned, so a
- * narrower length in front of it is padded away. This macro therefore does not
- * assume the invariant, it @b asserts it at compile time
- * (@ref SOFAB_OBJECT_ASSERT_LEN_ADJACENT) — a padded pair is a build error rather
- * than a silent misread. Declare the length at least as wide as the slot's
- * alignment, e.g. @c { @c uint32_t @c len; @c struct @c kv @c e[5]; @c }.
+ * @warning @p lfield @b must be the @b first member of @p obj — @c
+ * offsetof(obj,lfield) @c == @c 0. The descriptor stores only the count's
+ * @e width and reads it at <b>offset 0 of the holder</b>, which is where this
+ * macro requires it to be; the check is made at compile time
+ * (@ref SOFAB_OBJECT_ASSERT_LEN_FIRST) rather than assumed.
+ *
+ * Anchoring at the holder's start — instead of at <em>first slot offset −
+ * width</em>, the convention the @b field-level
+ * @ref SOFAB_OBJECT_FIELD_BLOB_SIZED / @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED must
+ * keep — is what makes the count work for @b every element kind. The byte before
+ * slot 0 is not always free: a blob element and a native inner-array row are
+ * themselves SIZED, so each slot @e starts with its own used-length, and a count
+ * placed in front of the slots is read as that element's length instead. Offset 0
+ * of the holder has no such competition and needs no padding argument either: the
+ * count may be narrower than the slots' alignment, the padding simply sits between
+ * them. That also drops the old "declare the count at least as wide as the slot's
+ * alignment" requirement.
  *
  * The width @c sizeof(lfield) (one of 1/2/4/8) is stored in the descriptor's
  * @c fixed_seq slot above the holder flag (@ref SOFAB_OBJECT_SEQ_LEN_SHIFT); a
@@ -343,15 +366,14 @@ extern "C" {
  * @param nested_list   Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
  * @param nested_count  Number of entries in @p nested_list.
  * @param obj           The holder struct type.
- * @param efield        First element-slot member (the one @c field_list[0] describes).
- * @param lfield        Used-length member (in elements), declared immediately
- *                      before @p efield.
+ * @param lfield        Used-length member (in elements), declared @b first in
+ *                      @p obj (at offset 0), ahead of the element slots.
  */
-#define SOFAB_OBJECT_DESCR_SEQ_SIZED(field_list, field_count, nested_list, nested_count, obj, efield, lfield) \
+#define SOFAB_OBJECT_DESCR_SEQ_SIZED(field_list, field_count, nested_list, nested_count, obj, lfield) \
     { (field_list), (nested_list), NULL, (field_count), (nested_count), \
       (uint8_t)(SOFAB_OBJECT_SEQ_HOLDER \
                 | (sizeof(((obj *)0)->lfield) << SOFAB_OBJECT_SEQ_LEN_SHIFT) \
-                | SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, efield, lfield)) }
+                | SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, lfield)) }
 
 /* types **********************************************************************/
 /*!

@@ -2144,12 +2144,24 @@ static void test_object_struct_wrapper_roundtrip (void)
 // `field_count - 1`: slots at or past the length are not written at all, the
 // interior stays sparse, and the slot at `length - 1` is always written.
 //
-// The tests below pin lengths 0, 1, N-1 and N for a LEAF holder (string[5]) and for
-// a STRUCT holder (kv[5]) -- the 1..N-1 rows are the ones that were impossible.
+// The count sits at OFFSET 0 of the holder, not one width before the first slot.
+// A holder descriptor describes the whole object, so it can anchor at the object's
+// start -- and it has to, because the byte before slot 0 is not free in every
+// holder: a BLOB element and a NATIVE INNER-ARRAY row are themselves SIZED and
+// begin with their own used-length, so the old "one width before the slots" anchor
+// read element 0's length instead and those two kinds had to stay un-sized. Offset
+// 0 works for all five element kinds and needs no adjacency argument (padding
+// between a narrow count and strictly-aligned slots is harmless).
+//
+// The tests below pin lengths 0, 1, N-1 and N for a LEAF holder (string[5]), a
+// STRUCT holder (kv[5]), a BLOB holder and a NATIVE-ROW holder -- the 1..N-1 rows
+// are the ones that were impossible, and the last two kinds could express no
+// length at all before.
 //
 
-/* leaf holder: uint8 count + string[5]; char[][8] has alignment 1, so a 1-byte
- * count abuts the first slot (SOFAB_OBJECT_ASSERT_LEN_ADJACENT checks it). */
+/* leaf holder: uint8 count + string[5]. The count is the holder's FIRST member;
+ * offset 0 is where the descriptor reads it, whatever the slots' alignment
+ * (SOFAB_OBJECT_ASSERT_LEN_FIRST checks it). */
 #define _SZS_CAP 5
 typedef struct {
     uint8_t len;
@@ -2164,7 +2176,7 @@ static const sofab_object_descr_field_t _szs_fields[] = {
 };
 static const sofab_object_descr_t _szs_holder =
     SOFAB_OBJECT_DESCR_SEQ_SIZED(_szs_fields, _SZS_CAP, NULL, 0,
-                                 _szs_holder_t, s[0], len);
+                                 _szs_holder_t, len);
 
 typedef struct { _szs_holder_t arr; } _szs_msg_t;
 static const sofab_object_descr_field_t _szs_msg_fields[] = {
@@ -2174,8 +2186,9 @@ static const sofab_object_descr_t *const _szs_nested[] = { &_szs_holder };
 static const sofab_object_descr_t _szs_msg =
     SOFAB_OBJECT_DESCR(_szs_msg_fields, 1, _szs_nested, 1);
 
-/* struct holder: uint32 count + kv[5] (the _se_kv element descriptor above);
- * kv has alignment 1, so the 4-byte count abuts the first slot. */
+/* struct holder: uint32 count + kv[5] (the _se_kv element descriptor above). A
+ * 4-byte count in front of 1-byte-aligned slots is fine now -- nothing is measured
+ * from the slots, so the count's width is free. */
 #define _SZK_CAP 5
 typedef struct {
     uint32_t len;
@@ -2191,7 +2204,64 @@ static const sofab_object_descr_field_t _szk_fields[] = {
 static const sofab_object_descr_t *const _szk_holder_nested[] = { &_se_kv };
 static const sofab_object_descr_t _szk_holder =
     SOFAB_OBJECT_DESCR_SEQ_SIZED(_szk_fields, _SZK_CAP, _szk_holder_nested, 1,
-                                 _szk_holder_t, e[0], len);
+                                 _szk_holder_t, len);
+
+/* blob holder: uint8 count + { uint8 l; uint8 b[4]; }[5]. THE POINT: every slot
+ * already begins with its own used-length (SOFAB_OBJECT_FIELD_BLOB_SIZED), so the
+ * byte before slot 0 is element 0's length -- the old anchor read that and this
+ * holder could carry no count at all. Offset 0 is free and unambiguous. */
+#define _SZB_CAP 5
+typedef struct {
+    uint8_t len;
+    struct { uint8_t l; uint8_t b[4]; } e[_SZB_CAP];
+} _szb_holder_t;
+static const sofab_object_descr_field_t _szb_fields[] = {
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(0, _szb_holder_t, e[0].b, e[0].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(1, _szb_holder_t, e[1].b, e[1].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(2, _szb_holder_t, e[2].b, e[2].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(3, _szb_holder_t, e[3].b, e[3].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(4, _szb_holder_t, e[4].b, e[4].l),
+};
+static const sofab_object_descr_t _szb_holder =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_szb_fields, _SZB_CAP, NULL, 0,
+                                 _szb_holder_t, len);
+
+typedef struct { _szb_holder_t arr; } _szb_msg_t;
+static const sofab_object_descr_field_t _szb_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _szb_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _szb_nested[] = { &_szb_holder };
+static const sofab_object_descr_t _szb_msg =
+    SOFAB_OBJECT_DESCR(_szb_msg_fields, 1, _szb_nested, 1);
+
+/* native-row holder (array<array<u8>>): uint8 count + { uint8 l; uint8 v[3]; }[5].
+ * The other kind the old anchor could not serve: each row is a SIZED array
+ * (MESSAGE_SPEC §3 makes the wire count the row's length), so the row's own count
+ * occupies the byte before slot 0. */
+#define _SZR_CAP 5
+#define _SZR_ICAP 3
+typedef struct {
+    uint8_t len;
+    struct { uint8_t l; uint8_t v[_SZR_ICAP]; } r[_SZR_CAP];
+} _szr_holder_t;
+static const sofab_object_descr_field_t _szr_fields[] = {
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(0, _szr_holder_t, r[0].v, r[0].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(1, _szr_holder_t, r[1].v, r[1].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(2, _szr_holder_t, r[2].v, r[2].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(3, _szr_holder_t, r[3].v, r[3].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(4, _szr_holder_t, r[4].v, r[4].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+static const sofab_object_descr_t _szr_holder =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_szr_fields, _SZR_CAP, NULL, 0,
+                                 _szr_holder_t, len);
+
+typedef struct { _szr_holder_t arr; } _szr_msg_t;
+static const sofab_object_descr_field_t _szr_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _szr_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _szr_nested[] = { &_szr_holder };
+static const sofab_object_descr_t _szr_msg =
+    SOFAB_OBJECT_DESCR(_szr_msg_fields, 1, _szr_nested, 1);
 
 typedef struct { _szk_holder_t arr; } _szk_msg_t;
 static const sofab_object_descr_field_t _szk_msg_fields[] = {
@@ -2249,7 +2319,7 @@ static void test_object_sized_wrapper_leaf_len1 (void)
     _szs_msg_t m;
     memset(&m, 0, sizeof(m));
     strcpy(m.arr.s[0], "a");
-    strcpy(m.arr.s[3], "past-the-length");   /* truncated; must never be written */
+    strcpy(m.arr.s[3], "past");   /* past the length -- must never be written */
     m.arr.len = 1;
 
     uint8_t out[64];
@@ -2635,12 +2705,209 @@ static void test_object_sized_wrapper_struct_mistyped_element_absent (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
 }
 
+/* --- blob holder: lengths 0, 1, N-1, N ---------------------------------- */
+//
+// A blob element is a SIZED slot -- { l; b[]; } -- so before the count moved to
+// offset 0 this holder could carry none: "one width before slot 0" is element 0's
+// own used-length. It expressed exactly two lengths, 0 and N. Every row here is
+// new capability. Grouped into one test per holder: on an 8 KB ATmega8 the
+// sofabtest image is flash-bound, and Unity charges a name string per RUN_TEST.
+//
+
+static void test_object_sized_wrapper_blob_lengths (void)
+{
+    _szb_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    /* length 0 is the empty array; the slots deliberately hold junk (including a
+     * non-zero used-length) to prove the holder count alone decides. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szb_msg, &m, out, sizeof(out)),
+        "length 0 must omit the wrapper");
+
+    /* length 1: [de ad]. An un-sized blob holder wrote this with an empty blob at
+     * slot 4 and read it back as length 5. Slots past the length never written. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    m.arr.e[3].l = 1; m.arr.e[3].b[0] = 0x99;
+    m.arr.len = 1;
+    const uint8_t one[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x07 };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one), used, "length 1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+
+    /* length 1 whose single element IS the element default: at the last index it
+     * is written as its (empty) value, which is what tells it from length 0. */
+    memset(&m, 0, sizeof(m));
+    m.arr.len = 1;
+    const uint8_t one_empty[] = { 0xC6, 0x0C, 0x02, 0x03, 0x07 };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one_empty), used, "[<empty blob>]");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one_empty, out, used);
+
+    /* length N-1: slot 3 is the last index and is written even though it is the
+     * element default; slots 1..2 are interior gaps, slot 4 is past the length. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    m.arr.e[4].l = 1; m.arr.e[4].b[0] = 0x99;
+    m.arr.len = _SZB_CAP - 1;
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x1A, 0x03, 0x07 };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "length N-1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* length N == capacity: byte-for-byte what the un-sized holder produced, so
+     * the sized descriptor is a superset and not a different encoder. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    m.arr.e[2].l = 1; m.arr.e[2].b[0] = 0x01;
+    m.arr.len = _SZB_CAP;
+    const uint8_t full[] = {
+        0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x12, 0x0B, 0x01, 0x22, 0x03, 0x07,
+    };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(full), used, "length N");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(full, out, used);
+}
+
+static void test_object_sized_wrapper_blob_decode_stores_length (void)
+{
+    /* decode records *highest present id + 1* in the holder count, which is a
+     * DIFFERENT member from every element's own used-length: reading the two apart
+     * is exactly what the offset-0 anchor buys. */
+    _szb_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    memset(&m, 0, sizeof(m));
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x1A, 0x03, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szb_msg, &m, nm1, sizeof(nm1)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, m.arr.len, "holder count not stored");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, m.arr.e[0].l, "element length clobbered");
+    TEST_ASSERT_EQUAL_UINT8(0xDE, m.arr.e[0].b[0]);
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[3].l);
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "re-encode changed the length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* length 1 arrives and stays 1 -- an un-sized holder grew it back to N here */
+    memset(&m, 0, sizeof(m));
+    const uint8_t one[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szb_msg, &m, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.len);
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(one), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+
+    /* §7.4: a re-open replaces the array whole, holder count included */
+    memset(&m, 0, sizeof(m));
+    const uint8_t reopen[] = {
+        0xC6, 0x0C, 0x1A, 0x0B, 0x64, 0x07,
+        0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x07,
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szb_msg, &m, reopen, sizeof(reopen)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len, "re-open must reset the count");
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[3].l);
+}
+
+/* --- native-row holder: lengths 0, 1, N-1, N ---------------------------- */
+//
+// array<array<u8>>: each row is a compact (native) array whose own element count
+// sits immediately before its values, so this holder had the same blocked anchor
+// as the blob one and the same two expressible lengths, 0 and N.
+//
+
+static void test_object_sized_wrapper_row_lengths (void)
+{
+    _szr_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    /* length 0 is the empty array of rows; the slots hold junk */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szr_msg, &m, out, sizeof(out)),
+        "length 0 must omit the wrapper");
+
+    /* length 1: [[1,2]] of a possible five rows */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    m.arr.r[3].l = 1; m.arr.r[3].v[0] = 9;
+    m.arr.len = 1;
+    const uint8_t one[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x07 };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one), used, "length 1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+
+    /* [[]] -- one EMPTY row. At the last index it is written as an empty array;
+     * the empty array OF ROWS above writes nothing at all. */
+    memset(&m, 0, sizeof(m));
+    m.arr.len = 1;
+    const uint8_t one_empty[] = { 0xC6, 0x0C, 0x03, 0x00, 0x07 };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one_empty), used, "[[]]");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one_empty, out, used);
+
+    /* length N-1 */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    m.arr.r[4].l = 1; m.arr.r[4].v[0] = 9;
+    m.arr.len = _SZR_CAP - 1;
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x1B, 0x00, 0x07 };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "length N-1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* length N == capacity */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    m.arr.r[2].l = 1; m.arr.r[2].v[0] = 9;
+    m.arr.len = _SZR_CAP;
+    const uint8_t full[] = {
+        0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x13, 0x01, 0x09, 0x23, 0x00, 0x07,
+    };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(full), used, "length N");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(full, out, used);
+}
+
+static void test_object_sized_wrapper_row_decode_stores_length (void)
+{
+    /* the outer row count and each row's own length are separate members and both
+     * round-trip: [[1,2],[],[],[]] is four rows, not five, and row 0 keeps 2. */
+    _szr_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    memset(&m, 0, sizeof(m));
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x1B, 0x00, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szr_msg, &m, nm1, sizeof(nm1)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, m.arr.len, "holder count not stored");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, m.arr.r[0].l, "row length clobbered");
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.r[0].v[0]);
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.r[3].l);
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "re-encode changed the length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* one row arrives and stays one row (an un-sized holder re-encoded five) */
+    memset(&m, 0, sizeof(m));
+    const uint8_t one[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szr_msg, &m, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.len);
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(one), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+}
+
 static void test_object_sized_wrapper_init_clears_length (void)
 {
-    /* sofab_object_init must reach the length member, which no field descriptor
-     * covers (it sits BEFORE the first slot) -- the same blind spot the sized blob
-     * had in issue #106. Without it a re-used destination re-encodes a stale
-     * length's worth of elements. */
+    /* sofab_object_init must reach the holder count, which no field descriptor
+     * covers (it sits at offset 0, ahead of every slot) -- the same blind spot the
+     * sized blob had in issue #106. Without it a re-used destination re-encodes a
+     * stale length's worth of elements. */
     _szs_msg_t m;
     memset(&m, 0xFF, sizeof(m));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szs_msg, &m));
@@ -2655,6 +2922,22 @@ static void test_object_sized_wrapper_init_clears_length (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szk_msg, &k));
     TEST_ASSERT_EQUAL_UINT32(0, k.arr.len);
     TEST_ASSERT_EQUAL_size_t(0, _sz_encode(&_szk_msg, &k, out, sizeof(out)));
+
+    /* the two kinds that could not carry a count before: init must clear the holder
+     * count AND each slot's own used-length, which live at different addresses. */
+    _szb_msg_t b;
+    memset(&b, 0xFF, sizeof(b));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szb_msg, &b));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, b.arr.len, "init must clear the blob holder count");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, b.arr.e[0].l, "init must clear each blob slot's length");
+    TEST_ASSERT_EQUAL_size_t(0, _sz_encode(&_szb_msg, &b, out, sizeof(out)));
+
+    _szr_msg_t r;
+    memset(&r, 0xFF, sizeof(r));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szr_msg, &r));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, r.arr.len, "init must clear the row holder count");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, r.arr.r[0].l, "init must clear each row's own length");
+    TEST_ASSERT_EQUAL_size_t(0, _sz_encode(&_szr_msg, &r, out, sizeof(out)));
 }
 
 //
@@ -2727,6 +3010,12 @@ int test_object_main (void)
     RUN_TEST(test_object_sized_wrapper_struct_overindex_still_rejected);
     RUN_TEST(test_object_sized_wrapper_leaf_mistyped_element_absent);
     RUN_TEST(test_object_sized_wrapper_struct_mistyped_element_absent);
+
+    RUN_TEST(test_object_sized_wrapper_blob_lengths);
+    RUN_TEST(test_object_sized_wrapper_blob_decode_stores_length);
+    RUN_TEST(test_object_sized_wrapper_row_lengths);
+    RUN_TEST(test_object_sized_wrapper_row_decode_stores_length);
+
     RUN_TEST(test_object_sized_wrapper_init_clears_length);
 
     return UNITY_END();
