@@ -1245,6 +1245,62 @@ TEST_CASE("InlineVector: push_back, emplace_back, iteration and capacity")
     REQUIRE(v.back() == 40);
 }
 
+TEST_CASE("InlineVector: resize is the length, and readArray finds it")
+{
+    sofab::InlineVector<int, 4> v = {1, 2, 3, 4};
+
+    // Shrinking is a LENGTH change; the slots that leave the range are cleared,
+    // so growing back cannot resurrect them.
+    v.resize(2);
+    REQUIRE(v.size() == 2);
+    REQUIRE(v[0] == 1);
+    REQUIRE(v[1] == 2);
+    v.resize(4);
+    REQUIRE(v.size() == 4);
+    REQUIRE(v[2] == 0);
+    REQUIRE(v[3] == 0);
+
+    v.resize(0);
+    REQUIRE(v.empty());
+
+    // A heap-free container has nowhere to put an excess, so the capacity clamps.
+    // The callers that can reject an over-capacity count (IStreamImpl::readArray
+    // against the schema `count`) do so before they get here.
+    v.resize(9);
+    REQUIRE(v.size() == 4);
+
+    // The property IStreamImpl::readArray depends on: an InlineVector is a
+    // RESIZABLE destination, so readArray sizes it to the wire count instead of
+    // taking the fixed-extent branch (which assigned a default-constructed
+    // container, set the length to 0 and dropped the array silently).
+    static_assert(requires(sofab::InlineVector<int, 4> &c, size_t n) { c.resize(n); },
+                  "InlineVector must satisfy readArray's resizable-destination probe");
+}
+
+// IStreamImpl::readArray must size an InlineVector destination to the WIRE
+// count, exactly as it does a std::vector: `count: N` is a capacity and the wire
+// count is the array's length (MESSAGE_SPEC §3), so a 2-element wire on a
+// count: 4 field decodes to 2 elements, not 4.
+TEST_CASE("readArray: an InlineVector destination is sized to the wire count")
+{
+    struct M : sofab::IStreamMessage
+    {
+        sofab::InlineVector<uint32_t, 4> a{9, 9, 9, 9};
+        void deserialize(sofab::IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
+        {
+            if (id == 0) is.readArray(a, count, 4);
+        }
+    };
+
+    // 0x03 = id 0, unsigned array; count 2; elements 1, 2.
+    const uint8_t wire[] = {0x03, 0x02, 0x01, 0x02};
+    sofab::IStreamObject<M> in;
+    REQUIRE(in.feed(wire, sizeof(wire)).ok());
+    REQUIRE((*in).a.size() == 2);
+    REQUIRE((*in).a[0] == 1);
+    REQUIRE((*in).a[1] == 2);
+}
+
 // A message that decodes a scalar blob into a FixedBytes and a string sequence
 // into an InlineVector<FixedString>, mirroring exactly what the generator emits
 // for the corelib: c-cpp (fixed-capacity) profile: a per-element visitor that

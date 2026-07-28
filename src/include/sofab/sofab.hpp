@@ -623,6 +623,45 @@ namespace sofab
         void clear() noexcept { len_ = 0; }
 
         /*!
+         * @brief Set the logical length to @p n, value-initializing what changes.
+         *
+         * The @c std::vector member of the container API this type mirrors, and the
+         * one @ref IStreamImpl::readArray and the wrapper-array collectors probe
+         * for: readArray *resizes* a resizable destination and *value-initializes*
+         * a fixed-extent one, and without this method an @c InlineVector matched
+         * neither — it fell to the fixed-extent branch, which assigned a
+         * default-constructed container and so set the logical length to 0. The
+         * decode then bound an empty span and dropped the array silently. With
+         * @ref resize present, readArray keeps ownership of the tag / bound /
+         * reset / bind order it documents, for inline storage too.
+         *
+         * Slots that enter or leave the logical range are set to @c T{}, so the
+         * elements a shorter value no longer covers cannot be observed through a
+         * later grow. @p n above the capacity @p N is clamped to @p N — the callers
+         * that can reject an over-capacity count do so before resizing (readArray
+         * checks the schema `count` first), and a heap-free container has nowhere
+         * to put the excess.
+         *
+         * @param n  New logical length.
+         */
+        void resize(std::size_t n) noexcept
+        {
+            if (n > N)
+            {
+                n = N;
+            }
+            for (std::size_t i = n; i < len_; ++i)
+            {
+                buf_[i] = T{};
+            }
+            for (std::size_t i = len_; i < n; ++i)
+            {
+                buf_[i] = T{};
+            }
+            len_ = n;
+        }
+
+        /*!
          * @brief Append a default-constructed element and return a reference to it.
          *
          * The next inline slot is (re)set to @c T{} and bound; once at capacity
