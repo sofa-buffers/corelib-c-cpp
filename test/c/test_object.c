@@ -660,15 +660,16 @@ static void test_object_deserialize_invalid_field_type (void)
 /*
  * Regression test: consecutive SEQUENCE fields must each select their own nested
  * descriptor (keyed off the static field->nested_idx), even when a preceding
- * sequence is empty.
+ * sequence contributes nothing to the wire.
  *
- * A SEQUENCE is always framed and recursed into -- only its leaf fields are
- * skipped when default, the wrapper itself is not -- so seq_a below is emitted as
- * an EMPTY wrapper. For each SEQUENCE, encoder and decoder must use that field's
- * own nested_idx; a naive running counter over emitted sequences would pick the
- * wrong nested_list entry and corrupt the stream.
+ * MESSAGE_SPEC §2 omits an all-default sequence FIELD outright instead of framing
+ * it empty, which makes this case sharper than it was before the rule: seq_a
+ * produces no bytes at all, so the only sequence on the wire is seq_b, at
+ * nested_idx 1. Encoder and decoder must still key off that field's own
+ * nested_idx; a naive running counter over *emitted* sequences would now hand
+ * seq_b the nested_list[0] descriptor and corrupt the stream.
  *
- * Layout: seq_a (nested_idx 0) is all-default -> emitted empty; seq_b
+ * Layout: seq_a (nested_idx 0) is all-default -> omitted entirely; seq_b
  * (nested_idx 1) carries data. seq_a and seq_b have deliberately different field
  * layouts so a wrong-descriptor encode is detectable. The round-trip must
  * preserve seq_b.
@@ -703,7 +704,7 @@ static const sofab_object_descr_t _info_regr_seq_b =
 
 typedef struct
 {
-    regr_seq_a_t a; /* sequence, all-default -> emitted as an empty wrapper */
+    regr_seq_a_t a; /* sequence, all-default -> omitted entirely (§2) */
     regr_seq_b_t b; /* sequence, carries data */
 } regr_msg_t;
 
@@ -732,7 +733,7 @@ static void test_object_roundtrip_empty_sequence_before_sequence (void)
 {
     regr_msg_t in;
     memset(&in, 0, sizeof(in));
-    /* leave `a` all-default -> emitted as an empty wrapper; only `b` carries data */
+    /* leave `a` all-default -> omitted entirely (§2); only `b` carries data */
     strncpy(in.b.s, "hello", sizeof(in.b.s));
     in.b.y = 0xABCD;
 
@@ -742,6 +743,11 @@ static void test_object_roundtrip_empty_sequence_before_sequence (void)
     sofab_ret_t enc = sofab_object_encode(&octx, &_info_regr_msg, &in);
     size_t used = sofab_ostream_flush(&octx);
     TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, enc, "encode failed");
+    /* seq_a left no trace: the stream opens directly with seq_b's header,
+     * (1 << 3) | SEQUENCE_START = 0x0E. That is what makes the nested_idx of the
+     * *following* sequence differ from its position among the emitted ones. */
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x0E, buffer[0],
+        "an all-default sequence field must be omitted, not framed empty");
 
     regr_msg_t out;
     memset(&out, 0x55, sizeof(out));
@@ -763,11 +769,13 @@ static void test_object_roundtrip_empty_sequence_before_sequence (void)
 //
 
 /*
- * A nested object (SEQUENCE) whose fields are all at their default is emitted as
- * an EMPTY wrapper sequence, never dropped: presence is decided per inner field,
- * so the framing is always written and the wrapper is simply empty. Previously a
- * whole-object memcmp/_iszero could drop the sequence entirely, which diverges
- * from the per-field model and is sensitive to struct padding.
+ * MESSAGE_SPEC §2: a nested object (SEQUENCE) whose fields are all at their
+ * default is OMITTED, not framed empty -- the ≠-default test is per field and a
+ * sequence is no exception. The predicate is the recursive per-child comparison
+ * of _field_is_default, never a whole-object memcmp/_iszero over raw storage
+ * (which would compare struct padding and mishandle a non-zero nested default).
+ * Absence reconstructs the same value via sofab_object_init, so dropping the two
+ * framing bytes is value-preserving.
  */
 typedef struct
 {
@@ -802,27 +810,88 @@ static const sofab_object_descr_t *const _info_nested_defseq_msg[] =
 static const sofab_object_descr_t _info_defseq_msg =
     SOFAB_OBJECT_DESCR(_info_fields_defseq_msg, 1, _info_nested_defseq_msg, 1);
 
-static void test_object_default_sequence_emitted_empty (void)
+static size_t _defseq_encode (const defseq_msg_t *in, uint8_t *out, size_t outlen)
+{
+    sofab_ostream_t octx;
+    sofab_ostream_init(&octx, out, outlen, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, &_info_defseq_msg, in), "encode failed");
+    return sofab_ostream_flush(&octx);
+}
+
+static void test_object_default_sequence_omitted (void)
 {
     defseq_msg_t in;
     memset(&in, 0, sizeof(in)); /* inner all-default */
 
-    sofab_ostream_t octx;
     uint8_t buffer[32];
-    sofab_ostream_init(&octx, buffer, sizeof(buffer), 0, NULL, NULL);
-    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
-        sofab_object_encode(&octx, &_info_defseq_msg, &in), "encode failed");
-    size_t used = sofab_ostream_flush(&octx);
+    size_t used = _defseq_encode(&in, buffer, sizeof(buffer));
 
     /*
-     * Emitted as an empty wrapper sequence for field id 7 -- NOT dropped:
-     * sequence_begin(7) = (7<<3)|0b110 = 0x3e, sequence_end = 0b111 = 0x07.
+     * Omitted entirely: the pre-§2-uniform encoder wrote the empty wrapper
+     * sequence_begin(7) = (7<<3)|0b110 = 0x3e plus sequence_end 0x07. The whole
+     * message is all-default, so the canonical encoding is the empty byte string.
      */
-    static const uint8_t expected[] = { 0x3e, 0x07 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used,
+        "an all-default nested sequence must be omitted, not framed empty");
+}
+
+/* A single non-default child is enough to bring the frame back. */
+static void test_object_nondefault_sequence_framed (void)
+{
+    defseq_msg_t in;
+    memset(&in, 0, sizeof(in));
+    in.inner.y = 3;
+
+    uint8_t buffer[32];
+    size_t used = _defseq_encode(&in, buffer, sizeof(buffer));
+
+    /* 3e = seq_begin(7); 08 03 = id 1 unsigned 3; 07 = seq_end. */
+    static const uint8_t expected[] = { 0x3e, 0x08, 0x03, 0x07 };
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-        "default nested sequence must be emitted as an empty wrapper, not dropped");
+        "a sequence with a non-default child must still be framed");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, buffer, used,
-        "default nested sequence bytes mismatch");
+        "framed nested sequence bytes mismatch");
+}
+
+/*
+ * The omission is value-preserving: the zero-byte message and the empty frame
+ * both decode to the all-default value, so the empty frame stays acceptable as a
+ * non-canonical encoding of it (§2 accept-and-normalize).
+ */
+static void test_object_default_sequence_roundtrips_both_forms (void)
+{
+    static const uint8_t empty_frame[] = { 0x3e, 0x07 };
+    const uint8_t *forms[] = { NULL, empty_frame };
+    const size_t lens[] = { 0, sizeof(empty_frame) };
+
+    for (size_t f = 0; f < 2; f++)
+    {
+        defseq_msg_t out;
+        memset(&out, 0x55, sizeof(out));
+        sofab_object_init(&_info_defseq_msg, &out);
+
+        struct
+        {
+            sofab_istream_t ctx;
+            sofab_object_decoder_t decoder[4];
+        } dec;
+        memset(&dec, 0, sizeof(dec));
+        dec.decoder[0].info = &_info_defseq_msg;
+        dec.decoder[0].dst = (uint8_t *)&out;
+        dec.decoder[0].depth = sizeof(dec.decoder) / sizeof(dec.decoder[0]) - 1;
+        sofab_istream_init(&dec.ctx, sofab_object_field_cb, (void *)&dec.decoder[0]);
+
+        /* A zero-length feed is legal and returns the outcome so far -- and the
+         * canonical all-default message is fed the natural way, as (NULL, 0):
+         * forms[0] IS NULL, no dummy pointer. This call therefore also pins that
+         * sofab_istream_feed() does not assert on a null zero-length feed. */
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+            sofab_istream_feed(&dec.ctx, forms[f], lens[f]),
+            "decode failed");
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, out.inner.x, "inner.x must be the default");
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, out.inner.y, "inner.y must be the default");
+    }
 }
 
 //
@@ -990,14 +1059,20 @@ static void test_object_array_count_full_partial_empty (void)
 //
 
 /*
- * MESSAGE_SPEC §3 trailing-default-run rule (issue #86, Crucible F-0010), both
- * directions, on the C object-descriptor path.
+ * MESSAGE_SPEC §3 count-is-a-capacity rule, both directions, on the C
+ * object-descriptor path.
  *
- * A count:N array is always exactly N logical elements, but the encoder MUST
- * write M = one past the last element that differs from the element default and
- * MUST NOT emit the trailing default (zero) run; a decoder MUST refill [M, N)
- * from the element default and MUST NOT let a schema default: image survive into
- * that tail once the field is present on the wire.
+ * `count: N` bounds the array; the wire count M IS its length. A plain
+ * (capacity-only) descriptor has nowhere to keep a length, so its value occupies
+ * all N slots and the encoder writes every one of them -- a trailing element
+ * equal to the element default INCLUDED, because dropping it would shorten the
+ * array ([1,2,3,0,0] and [1,2,3] are different values). A decoder still accepts a
+ * shorter wire (M < N) and leaves [M, N) at the element default, never letting a
+ * schema `default:` image survive into that tail once the field is present.
+ *
+ * (This supersedes the trim-on-encode / fill-on-decode pair of issue #86 /
+ * Crucible F-0010, which was correct only while `count` meant a fixed length.
+ * Carrying a real length needs SOFAB_OBJECT_FIELD_ARRAY_SIZED -- tested below.)
  */
 typedef struct
 {
@@ -1056,69 +1131,60 @@ static sofab_ret_t trailrun_u32_decode (const sofab_object_descr_t *info,
     return sofab_istream_feed(&ctx, buf, len);
 }
 
-static void test_object_array_trailing_default_run (void)
+static void test_object_array_full_length_no_trim (void)
 {
-    uint8_t buffer[32];
+    uint8_t buffer[64];
 
-    /* gap 1 (varint): value [7,8,9,0,0] encodes to the canonical count 3 with no
-     * trailing default run -- the issue's reproducer (id 0 -> tag 0x03). */
+    /* varint: value [7,8,9,0,0] is five elements and encodes as five -- the two
+     * trailing defaults are part of the value, not padding (id 0 -> tag 0x03). */
     {
         trailrun_u32_t in;
         sofab_object_init(&_info_trailrun_u32, &in);
         in.u32s[0] = 7; in.u32s[1] = 8; in.u32s[2] = 9; /* [7,8,9,0,0] */
         size_t used = trailrun_encode(&_info_trailrun_u32, &in, buffer, sizeof(buffer));
-        const uint8_t expected[] = {0x03, 0x03, 0x07, 0x08, 0x09};
+        const uint8_t expected[] = {0x03, 0x05, 0x07, 0x08, 0x09, 0x00, 0x00};
         TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-            "encode must trim the trailing default run (count 3, not 5)");
+            "a capacity-only array encodes every element it holds (count 5)");
         TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
     }
 
-    /* gap 1 (varint): an all-default value that still differs from a non-zero
-     * default image is present with count 0 -- distinct from being omitted. */
+    /* varint: an all-default value that still differs from a non-zero default
+     * image is present -- as five zero elements, not as the empty array, which is
+     * a different value (M = 0) since `count` stopped being a length. */
     {
         trailrun_u32_t in;
         sofab_object_init(&_info_trailrun_u32_def, &in); /* {1,2,3,0,0} */
         in.u32s[0] = 0; in.u32s[1] = 0; in.u32s[2] = 0;  /* [0,0,0,0,0] != default */
         size_t used = trailrun_encode(&_info_trailrun_u32_def, &in, buffer, sizeof(buffer));
-        const uint8_t expected[] = {0x03, 0x00};
+        const uint8_t expected[] = {0x03, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00};
         TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-            "all-default array differing from its default image emits count 0");
+            "an all-default array differing from its default image keeps its length");
         TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
     }
 
-    /* gap 1 (fixlen): fp32 [1.5, 2.5, 0, 0] encodes to the canonical count 2. */
+    /* fixlen: fp32 [1.5, 2.5, 0, 0] likewise keeps its four elements. */
     {
         trailrun_fp32_t in;
         sofab_object_init(&_info_trailrun_fp32, &in);
         in.fp32s[0] = 1.5f; in.fp32s[1] = 2.5f; /* [1.5, 2.5, 0, 0] */
         size_t used = trailrun_encode(&_info_trailrun_fp32, &in, buffer, sizeof(buffer));
-        /* [tag 0x05][count 2][fixlen_word 0x20][1.5f LE][2.5f LE] */
+        /* [tag 0x05][count 4][fixlen_word 0x20][1.5f][2.5f][0f][0f] */
         const uint8_t expected[] = {
-            0x05, 0x02, 0x20,
-            0x00, 0x00, 0xC0, 0x3F,  /* 1.5f */
-            0x00, 0x00, 0x20, 0x40}; /* 2.5f */
+            0x05, 0x04, 0x20,
+            0x00, 0x00, 0xC0, 0x3F,   /* 1.5f */
+            0x00, 0x00, 0x20, 0x40,   /* 2.5f */
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00};
         TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-            "fixlen encode must trim the trailing default run (count 2, not 4)");
+            "a fixlen array keeps its trailing defaults too (count 4)");
         TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
     }
 
-    /* gap 1 (fixlen): a trailing -0.0 has its sign bit set, so its byte image is
-     * NOT the default -- it (and every element before it) stays on the wire. */
-    {
-        trailrun_fp32_t in;
-        sofab_object_init(&_info_trailrun_fp32, &in);
-        in.fp32s[0] = 1.5f; in.fp32s[3] = -0.0f; /* [1.5, +0.0, +0.0, -0.0] */
-        size_t used = trailrun_encode(&_info_trailrun_fp32, &in, buffer, sizeof(buffer));
-        TEST_ASSERT_EQUAL_UINT8_MESSAGE(0x04, buffer[1],
-            "a trailing -0.0 must not be trimmed as a default (count stays 4)");
-        TEST_ASSERT_EQUAL_size_t(3 + 4 * sizeof(float), used);
-    }
-
-    /* gap 2: decoding the canonical short wire must clear [M, N) to the element
-     * default, not leave the schema default's u32s[2]==3 behind. */
+    /* decoding a SHORT wire (a peer that holds fewer elements) must still clear
+     * [M, N) to the element default, not leave the schema default's u32s[2]==3. */
     {
         trailrun_u32_t msg;
-        /* value [1,2,0,0,0] trimmed to count 2: [tag 0x03][count 2][1][2] */
+        /* a two-element array from a length-carrying peer: [tag][count 2][1][2] */
         const uint8_t wire[] = {0x03, 0x02, 0x01, 0x02};
         TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
             trailrun_u32_decode(&_info_trailrun_u32_def, &msg, wire, sizeof(wire)),
@@ -1142,6 +1208,163 @@ static void test_object_array_trailing_default_run (void)
             trailrun_u32_decode(&_info_trailrun_u32_def, &out, buffer, used));
         const uint32_t expected[] = {1, 2, 0, 0, 0};
         TEST_ASSERT_EQUAL_UINT32_ARRAY(expected, out.u32s, 5);
+    }
+}
+
+//
+
+/*
+ * SOFAB_OBJECT_FIELD_ARRAY_SIZED: a fixed-capacity array paired with an adjacent
+ * element-count member, the array counterpart of SOFAB_OBJECT_FIELD_BLOB_SIZED.
+ * It is what lets a C object hold an array SHORTER than its capacity, which
+ * MESSAGE_SPEC §3 requires now that the wire count M is the length: encode writes
+ * exactly `len` elements (trailing defaults included), decode stores the received
+ * M back into `len`, and the capacity never reaches the wire.
+ *
+ * The length is declared immediately BEFORE the buffer and at least as wide as one
+ * element, so no padding can creep between them -- an invariant the macro asserts
+ * at compile time (a byte buffer gets it for free, a uint32_t[] does not).
+ */
+typedef struct
+{
+    uint32_t len;        /* elements in use, immediately before the buffer */
+    uint32_t vals[5];
+} arrsized_t;
+
+static const sofab_object_descr_field_t _info_fields_arrsized[] =
+{
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(0, arrsized_t, vals, len,
+        SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+
+static const sofab_object_descr_t _info_arrsized =
+    SOFAB_OBJECT_DESCR(_info_fields_arrsized, 1, NULL, 0);
+
+/* A byte array takes a byte length with no padding either (alignment 1). */
+typedef struct
+{
+    uint8_t len;
+    uint8_t vals[4];
+} arrsized_u8_t;
+
+static const sofab_object_descr_field_t _info_fields_arrsized_u8[] =
+{
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(0, arrsized_u8_t, vals, len,
+        SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+
+static const sofab_object_descr_t _info_arrsized_u8 =
+    SOFAB_OBJECT_DESCR(_info_fields_arrsized_u8, 1, NULL, 0);
+
+static sofab_ret_t arrsized_decode (const sofab_object_descr_t *info, void *msg,
+                                    const uint8_t *buf, size_t len)
+{
+    sofab_istream_t ctx;
+    sofab_object_decoder_t dec[2];
+    memset(dec, 0, sizeof(dec));
+    dec[0].info = info;
+    dec[0].dst = (uint8_t *)msg;
+    dec[0].depth = (uint8_t)(sizeof(dec) / sizeof(dec[0]) - 1);
+    sofab_istream_init(&ctx, sofab_object_field_cb, (void *)&dec[0]);
+    return sofab_istream_feed(&ctx, buf, len);
+}
+
+static void test_object_array_sized (void)
+{
+    uint8_t buffer[64];
+
+    /* encode: len 3 of capacity 5, with a trailing DEFAULT element -- the whole
+     * point of the length member: [1,2,0] stays three elements. */
+    {
+        arrsized_t in;
+        sofab_object_init(&_info_arrsized, &in);
+        in.len = 3; in.vals[0] = 1; in.vals[1] = 2; /* [1,2,0] */
+        size_t used = trailrun_encode(&_info_arrsized, &in, buffer, sizeof(buffer));
+        const uint8_t expected[] = {0x03, 0x03, 0x01, 0x02, 0x00};
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+            "a sized array encodes exactly len elements, trailing default included");
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
+    }
+
+    /* encode: len 0 is the empty array, which equals the (undeclared) default and
+     * is therefore omitted -- the storage image is irrelevant. */
+    {
+        arrsized_t in;
+        sofab_object_init(&_info_arrsized, &in);
+        in.vals[0] = 0xDEAD; in.vals[4] = 0xBEEF;   /* stale, len == 0 */
+        size_t used = trailrun_encode(&_info_arrsized, &in, buffer, sizeof(buffer));
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used,
+            "a zero-length sized array is the default and must be omitted");
+    }
+
+    /* decode: the received count lands in len, and [M, N) is the element default */
+    {
+        arrsized_t msg;
+        memset(&msg, 0xAA, sizeof(msg));
+        const uint8_t wire[] = {0x03, 0x02, 0x07, 0x08};
+        TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+            arrsized_decode(&_info_arrsized, &msg, wire, sizeof(wire)));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(2, msg.len, "decode must record the wire count");
+        const uint32_t expected[] = {7, 8, 0, 0, 0};
+        TEST_ASSERT_EQUAL_UINT32_ARRAY(expected, msg.vals, 5);
+    }
+
+    /* round-trip: a length shorter than the capacity survives, which a plain
+     * SOFAB_OBJECT_FIELD_ARRAY cannot do (it would re-encode all five). */
+    {
+        arrsized_t in;
+        sofab_object_init(&_info_arrsized, &in);
+        in.len = 3; in.vals[0] = 1; in.vals[1] = 2; /* [1,2,0] */
+        size_t used = trailrun_encode(&_info_arrsized, &in, buffer, sizeof(buffer));
+
+        arrsized_t back;
+        memset(&back, 0xAA, sizeof(back));
+        TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+            arrsized_decode(&_info_arrsized, &back, buffer, used));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, back.len, "length must round-trip");
+        TEST_ASSERT_EQUAL_MEMORY(&in, &back, sizeof(arrsized_t));
+    }
+
+    /* §7.3: a field whose wire type contradicts the descriptor is skipped, and
+     * must NOT reset the length of the value already in the destination. */
+    {
+        arrsized_t msg;
+        sofab_object_init(&_info_arrsized, &msg);
+        msg.len = 3; msg.vals[0] = 1; msg.vals[1] = 2;
+        const uint8_t wire[] = {0x00, 0x2A};   /* id 0 as an unsigned varint */
+        TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+            arrsized_decode(&_info_arrsized, &msg, wire, sizeof(wire)));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, msg.len,
+            "a skipped (wire-type mismatch) field must not clear the length");
+        TEST_ASSERT_EQUAL_UINT32(1, msg.vals[0]);
+    }
+
+    /* over-count against the capacity is still INVALID (§7.1) */
+    {
+        arrsized_t msg;
+        sofab_object_init(&_info_arrsized, &msg);
+        const uint8_t wire[] = {0x03, 0x06, 1, 2, 3, 4, 5, 6};
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG,
+            arrsized_decode(&_info_arrsized, &msg, wire, sizeof(wire)),
+            "over-capacity array must be rejected");
+    }
+
+    /* a byte-wide length in front of a byte array behaves identically */
+    {
+        arrsized_u8_t in;
+        sofab_object_init(&_info_arrsized_u8, &in);
+        in.len = 2; in.vals[0] = 9;  /* [9,0] */
+        size_t used = trailrun_encode(&_info_arrsized_u8, &in, buffer, sizeof(buffer));
+        const uint8_t expected[] = {0x03, 0x02, 0x09, 0x00};
+        TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
+
+        arrsized_u8_t back;
+        memset(&back, 0xAA, sizeof(back));
+        TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+            arrsized_decode(&_info_arrsized_u8, &back, buffer, used));
+        TEST_ASSERT_EQUAL_UINT8(2, back.len);
+        TEST_ASSERT_EQUAL_MEMORY(&in, &back, sizeof(arrsized_u8_t));
     }
 }
 
@@ -1563,6 +1786,47 @@ static void test_object_wrapper_reopen_replaces (void)
     TEST_ASSERT_EQUAL_STRING("",  msg.arr.strings[2]);
 }
 
+/*
+ * Reusing one destination for several messages: the decoder writes only what the
+ * wire carries, so the caller re-initialises between decodes. That has always
+ * been true for a leaf field; MESSAGE_SPEC §2 makes it visible for a whole
+ * sequence field, because an all-default one is now OMITTED rather than framed
+ * empty -- and the §7.4 wrapper-replace reset in object.c fires when a wrapper is
+ * OPENED, which an omitted field never does. sofab_object_init() is the reset,
+ * and it must reach into the nested holder, not just the top-level fields.
+ */
+static void test_object_reuse_needs_init_between_decodes (void)
+{
+    _wrap_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+
+    const uint8_t first[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x07 };  /* ["A","",""] */
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, first, sizeof(first)));
+    TEST_ASSERT_EQUAL_STRING("A", msg.arr.strings[0]);
+
+    /* The next message is all-default, i.e. the empty byte string (§2). Fed into
+     * the re-initialised destination it must yield the declared defaults -- the
+     * "A" of the previous message must not survive. */
+    sofab_object_init(&_wrap_msg, &msg);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, NULL, 0));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", msg.arr.strings[0],
+        "sofab_object_init must reset the nested wrapper before a re-used decode");
+    TEST_ASSERT_EQUAL_STRING("", msg.arr.strings[1]);
+    TEST_ASSERT_EQUAL_STRING("", msg.arr.strings[2]);
+
+    /* And the non-canonical form of that same message -- the empty wrapper frame
+     * -- still resets the array by itself, without any help from the caller:
+     * opening the wrapper is what triggers the §7.4 replace. */
+    const uint8_t reopen[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, reopen, sizeof(reopen)));
+    TEST_ASSERT_EQUAL_STRING("A", msg.arr.strings[0]);
+
+    const uint8_t empty_frame[] = { 0xC6, 0x0C, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_wrap_msg, &msg, empty_frame, sizeof(empty_frame)));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", msg.arr.strings[0],
+        "an empty wrapper frame replaces the array whole (§7.4)");
+}
+
 static void test_object_wrapper_single_open_unchanged (void)
 {
     /* Control: both elements in ONE opening must still yield ["A", "B", ""]. */
@@ -1659,28 +1923,36 @@ static void test_object_wrapper_reopen_replaces_blob (void)
     TEST_ASSERT_EQUAL_UINT8(0, msg.arr.l1);
     TEST_ASSERT_EQUAL_UINT8(0, msg.arr.l2);
 
-    /* and it re-encodes as an empty wrapper (begin C6 0C, end 07) — never as a
-     * stale "00 00" blob for element 0. */
+    /* and it re-encodes as *nothing* — never as a stale "00 00" blob for element 0.
+     * The empty array equals the field's declared default (no default declared →
+     * the empty collection), so §2 omits the field; the empty wrapper C6 0C 07 the
+     * input carried is a non-canonical encoding of the same value and normalizes
+     * away here. */
     uint8_t out[32];
     sofab_ostream_t octx;
     sofab_ostream_init(&octx, out, sizeof(out), 0, NULL, NULL);
     TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
         sofab_object_encode(&octx, &_bwrap_msg, &msg), "re-encode failed");
     size_t used = sofab_ostream_flush(&octx);
-    const uint8_t expected_empty[] = { 0xC6, 0x0C, 0x07 };
-    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected_empty), used, "re-encoded wrapper not empty");
-    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected_empty, out, used, "re-encoded wrapper bytes");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used, "re-encoded empty wrapper must be omitted");
 }
 
 //
 
-// issue #109 (Crucible F-0030): MESSAGE_SPEC §5.1 — a fixed-count wrapper holder
-// elides its trailing run of all-default elements, SEQUENCE-form (struct/union/
-// nested-array) elements INCLUDED. Pre-fix the `field->type != SEQUENCE` guard in
-// sofab_object_encode skipped the per-element default check for every struct
-// element, so an all-default array-of-struct re-encoded as N explicit empty
-// frames instead of the canonical empty wrapper. This is the encode-side
-// analogue of the §3 scalar-array trim (_array_trim_count).
+// MESSAGE_SPEC §2/§5.1, positional element rule: a wrapper array carries no
+// length, so the decoded length is *highest present id + 1*. Nothing that carries
+// it may be elided and everything else may be — an INTERIOR element equal to its
+// default is omitted whatever its kind (leaf or sequence-form, leaving an id gap),
+// and the element at the LAST index is always written (a leaf as its value, a
+// sequence element as an empty frame).
+//
+// For a C holder every slot is materialized and there is no length member, so the
+// last index is field_count - 1 unconditionally; an all-default holder is the one
+// case that cannot be told from the empty array, and the FIELD-level ≠-default
+// test omits it whole (§2).
+//
+// (This replaces the trailing-run elision of issue #109 / Crucible F-0030, which
+// was the fixed-length reading of `count`.)
 //
 // holder: se_kv e[5] whose element slots are themselves SEQUENCE fields.
 typedef struct { uint8_t k; uint8_t v; } _se_kv_t;
@@ -1723,21 +1995,22 @@ static size_t _se_encode (const _se_msg_t *m, uint8_t *out, size_t cap)
 
 static void test_object_struct_wrapper_all_default_empty (void)
 {
-    /* every element all-default -> M = 0 -> the whole [0,N) run elides -> the
-     * canonical empty wrapper C6 0C 07 (pre-fix: five empty seq frames). */
+    /* every element all-default: a C holder cannot distinguish that from the empty
+     * array, so it IS the empty array here -- the wrapper equals the holder's
+     * declared default and the FIELD-level test omits it whole (§2). */
     _se_msg_t m;
     memset(&m, 0, sizeof(m));
     uint8_t out[64];
     size_t used = _se_encode(&m, out, sizeof(out));
-    const uint8_t expected[] = { 0xC6, 0x0C, 0x07 };
-    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-        "all-default array-of-struct must re-encode as an empty wrapper");
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used,
+        "all-default array-of-struct must be omitted, not framed empty");
 }
 
-static void test_object_struct_wrapper_trailing_run_trimmed (void)
+static void test_object_struct_wrapper_last_element_framed (void)
 {
-    /* only element 0 carries data -> M = 1 -> elements [1,5) elide. */
+    /* only element 0 carries data -> elements 1..3 are interior defaults and are
+     * omitted (id gaps), while element 4 sits at the LAST index and is written as
+     * an empty frame: that frame is what recovers the length. */
     _se_msg_t m;
     memset(&m, 0, sizeof(m));
     m.arr.e[0].k = 1; m.arr.e[0].v = 2;
@@ -1746,18 +2019,19 @@ static void test_object_struct_wrapper_trailing_run_trimmed (void)
     const uint8_t expected[] = {
         0xC6, 0x0C,                   /* wrapper open (id 200) */
         0x06, 0x00, 0x01, 0x08, 0x02, 0x07, /* e0: {k=1, v=2} */
+        0x26, 0x07,                   /* e4: empty frame (last index) */
         0x07,                         /* wrapper close */
     };
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-        "trailing all-default struct elements must be trimmed (M=1)");
+        "the last element must be framed even when all-default");
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
 }
 
-static void test_object_struct_wrapper_interior_default_kept (void)
+static void test_object_struct_wrapper_interior_default_omitted (void)
 {
-    /* elements 0 and 2 set, element 1 all-default -> M = 3: only the trailing
-     * run elides; the INTERIOR default element 1 stays on the wire as an empty
-     * frame (0x0E 0x07), per §5.1 (M = one past the last non-default element). */
+    /* elements 0 and 2 set: the all-default interior elements 1 and 3 leave id
+     * gaps -- a sequence-form element is no longer framed there -- and element 4
+     * closes the array as an empty frame. */
     _se_msg_t m;
     memset(&m, 0, sizeof(m));
     m.arr.e[0].k = 1; m.arr.e[0].v = 2;
@@ -1767,20 +2041,21 @@ static void test_object_struct_wrapper_interior_default_kept (void)
     const uint8_t expected[] = {
         0xC6, 0x0C,
         0x06, 0x00, 0x01, 0x08, 0x02, 0x07, /* e0 = {1,2} */
-        0x0E, 0x07,                         /* e1 = empty frame (interior default) */
+        /* e1: gap */
         0x16, 0x00, 0x03, 0x08, 0x04, 0x07, /* e2 = {3,4} */
+        /* e3: gap */
+        0x26, 0x07,                         /* e4 = empty frame (last index) */
         0x07,
     };
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-        "interior default element must be framed, only trailing run trims");
+        "an interior all-default element must not be framed");
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
 }
 
-static void test_object_struct_wrapper_last_set_no_trim (void)
+static void test_object_struct_wrapper_leading_defaults_omitted (void)
 {
-    /* only the LAST element carries data -> M = N -> nothing trims; the leading
-     * default elements 0..3 are framed as empty frames (they are not a trailing
-     * run). Guards against over-trimming from either end. */
+    /* only the LAST element carries data -> the leading defaults 0..3 are all
+     * interior and vanish; one element remains, at id 4. */
     _se_msg_t m;
     memset(&m, 0, sizeof(m));
     m.arr.e[4].k = 9;
@@ -1788,15 +2063,45 @@ static void test_object_struct_wrapper_last_set_no_trim (void)
     size_t used = _se_encode(&m, out, sizeof(out));
     const uint8_t expected[] = {
         0xC6, 0x0C,
-        0x06, 0x07,                   /* e0 empty */
-        0x0E, 0x07,                   /* e1 empty */
-        0x16, 0x07,                   /* e2 empty */
-        0x1E, 0x07,                   /* e3 empty */
         0x26, 0x00, 0x09, 0x07,       /* e4 = {9,0} */
         0x07,
     };
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
-        "a non-default last element must suppress all trimming (M=N)");
+        "leading all-default elements must leave id gaps");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+/*
+ * The same positional rule on a LEAF-element holder (string[5]): the interior
+ * default elements leave gaps, and the last one is written as its (empty) value
+ * rather than dropped -- previously the per-field skip dropped every default leaf,
+ * so ["a","","","",""] and ["a"] encoded alike.
+ */
+static void test_object_string_wrapper_last_element_written (void)
+{
+    _overidx_str_msg_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.arr.strings[0], "a");
+    strcpy(m.arr.strings[2], "c");
+
+    sofab_ostream_t o;
+    uint8_t out[64];
+    sofab_ostream_init(&o, out, sizeof(out), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&o, &_overidx_str_msg, &m), "string-element encode failed");
+    size_t used = sofab_ostream_flush(&o);
+
+    const uint8_t expected[] = {
+        0xC6, 0x0C,                   /* wrapper open (id 200) */
+        0x02, 0x0A, 0x61,             /* e0 = "a"  (string, len 1) */
+        /* e1: gap */
+        0x12, 0x0A, 0x63,             /* e2 = "c" */
+        /* e3: gap */
+        0x22, 0x02,                   /* e4 = ""   (string, len 0) */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "the last leaf element must be written even when it is the default");
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
 }
 
@@ -1828,6 +2133,814 @@ static void test_object_struct_wrapper_roundtrip (void)
 }
 
 //
+// A SIZED wrapper holder (SOFAB_OBJECT_DESCR_SEQ_SIZED) gives the holder the
+// length an un-sized one lacks. MESSAGE_SPEC §5.1 gives a wrapper array the length
+// *highest present id + 1*, i.e. any of 0..N, but a C holder that materializes all
+// N slots and carries no length can express only 0 (every slot default -> the
+// enclosing object omits the field) and N. The lengths 1..N-1 were therefore
+// unrepresentable: [{k:1}] encoded with an empty frame at the LAST slot and decoded
+// back as length N, and a holder that RECEIVED a shorter array lost that length on
+// re-encode. With the length member the last index becomes `length - 1` instead of
+// `field_count - 1`: slots at or past the length are not written at all, the
+// interior stays sparse, and the slot at `length - 1` is always written.
+//
+// The count sits at OFFSET 0 of the holder, not one width before the first slot.
+// A holder descriptor describes the whole object, so it can anchor at the object's
+// start -- and it has to, because the byte before slot 0 is not free in every
+// holder: a BLOB element and a NATIVE INNER-ARRAY row are themselves SIZED and
+// begin with their own used-length, so the old "one width before the slots" anchor
+// read element 0's length instead and those two kinds had to stay un-sized. Offset
+// 0 works for all five element kinds and needs no adjacency argument (padding
+// between a narrow count and strictly-aligned slots is harmless).
+//
+// The tests below pin lengths 0, 1, N-1 and N for a LEAF holder (string[5]), a
+// STRUCT holder (kv[5]), a BLOB holder and a NATIVE-ROW holder -- the 1..N-1 rows
+// are the ones that were impossible, and the last two kinds could express no
+// length at all before.
+//
+
+/* leaf holder: uint8 count + string[5]. The count is the holder's FIRST member;
+ * offset 0 is where the descriptor reads it, whatever the slots' alignment
+ * (SOFAB_OBJECT_ASSERT_LEN_FIRST checks it). */
+#define _SZS_CAP 5
+typedef struct {
+    uint8_t len;
+    char    s[_SZS_CAP][8];
+} _szs_holder_t;
+static const sofab_object_descr_field_t _szs_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _szs_holder_t, s[0], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(1, _szs_holder_t, s[1], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(2, _szs_holder_t, s[2], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(3, _szs_holder_t, s[3], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(4, _szs_holder_t, s[4], SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+static const sofab_object_descr_t _szs_holder =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_szs_fields, _SZS_CAP, NULL, 0,
+                                 _szs_holder_t, len);
+
+typedef struct { _szs_holder_t arr; } _szs_msg_t;
+static const sofab_object_descr_field_t _szs_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _szs_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _szs_nested[] = { &_szs_holder };
+static const sofab_object_descr_t _szs_msg =
+    SOFAB_OBJECT_DESCR(_szs_msg_fields, 1, _szs_nested, 1);
+
+/* struct holder: uint32 count + kv[5] (the _se_kv element descriptor above). A
+ * 4-byte count in front of 1-byte-aligned slots is fine now -- nothing is measured
+ * from the slots, so the count's width is free. */
+#define _SZK_CAP 5
+typedef struct {
+    uint32_t len;
+    _se_kv_t e[_SZK_CAP];
+} _szk_holder_t;
+static const sofab_object_descr_field_t _szk_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(0, _szk_holder_t, e[0], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(1, _szk_holder_t, e[1], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(2, _szk_holder_t, e[2], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(3, _szk_holder_t, e[3], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(4, _szk_holder_t, e[4], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _szk_holder_nested[] = { &_se_kv };
+static const sofab_object_descr_t _szk_holder =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_szk_fields, _SZK_CAP, _szk_holder_nested, 1,
+                                 _szk_holder_t, len);
+
+/* blob holder: uint8 count + { uint8 l; uint8 b[4]; }[5]. THE POINT: every slot
+ * already begins with its own used-length (SOFAB_OBJECT_FIELD_BLOB_SIZED), so the
+ * byte before slot 0 is element 0's length -- the old anchor read that and this
+ * holder could carry no count at all. Offset 0 is free and unambiguous. */
+#define _SZB_CAP 5
+typedef struct {
+    uint8_t len;
+    struct { uint8_t l; uint8_t b[4]; } e[_SZB_CAP];
+} _szb_holder_t;
+static const sofab_object_descr_field_t _szb_fields[] = {
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(0, _szb_holder_t, e[0].b, e[0].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(1, _szb_holder_t, e[1].b, e[1].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(2, _szb_holder_t, e[2].b, e[2].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(3, _szb_holder_t, e[3].b, e[3].l),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(4, _szb_holder_t, e[4].b, e[4].l),
+};
+static const sofab_object_descr_t _szb_holder =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_szb_fields, _SZB_CAP, NULL, 0,
+                                 _szb_holder_t, len);
+
+typedef struct { _szb_holder_t arr; } _szb_msg_t;
+static const sofab_object_descr_field_t _szb_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _szb_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _szb_nested[] = { &_szb_holder };
+static const sofab_object_descr_t _szb_msg =
+    SOFAB_OBJECT_DESCR(_szb_msg_fields, 1, _szb_nested, 1);
+
+/* native-row holder (array<array<u8>>): uint8 count + { uint8 l; uint8 v[3]; }[5].
+ * The other kind the old anchor could not serve: each row is a SIZED array
+ * (MESSAGE_SPEC §3 makes the wire count the row's length), so the row's own count
+ * occupies the byte before slot 0. */
+#define _SZR_CAP 5
+#define _SZR_ICAP 3
+typedef struct {
+    uint8_t len;
+    struct { uint8_t l; uint8_t v[_SZR_ICAP]; } r[_SZR_CAP];
+} _szr_holder_t;
+static const sofab_object_descr_field_t _szr_fields[] = {
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(0, _szr_holder_t, r[0].v, r[0].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(1, _szr_holder_t, r[1].v, r[1].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(2, _szr_holder_t, r[2].v, r[2].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(3, _szr_holder_t, r[3].v, r[3].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(4, _szr_holder_t, r[4].v, r[4].l, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+static const sofab_object_descr_t _szr_holder =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_szr_fields, _SZR_CAP, NULL, 0,
+                                 _szr_holder_t, len);
+
+typedef struct { _szr_holder_t arr; } _szr_msg_t;
+static const sofab_object_descr_field_t _szr_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _szr_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _szr_nested[] = { &_szr_holder };
+static const sofab_object_descr_t _szr_msg =
+    SOFAB_OBJECT_DESCR(_szr_msg_fields, 1, _szr_nested, 1);
+
+typedef struct { _szk_holder_t arr; } _szk_msg_t;
+static const sofab_object_descr_field_t _szk_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(200, _szk_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _szk_msg_nested[] = { &_szk_holder };
+static const sofab_object_descr_t _szk_msg =
+    SOFAB_OBJECT_DESCR(_szk_msg_fields, 1, _szk_msg_nested, 1);
+
+static size_t _sz_encode (const sofab_object_descr_t *info, const void *m,
+                          uint8_t *out, size_t cap)
+{
+    sofab_ostream_t o;
+    sofab_ostream_init(&o, out, cap, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&o, info, m), "sized-holder encode failed");
+    return sofab_ostream_flush(&o);
+}
+
+/* two nesting levels (holder sequence -> element struct), so three handles */
+static sofab_ret_t _szk_decode (const sofab_object_descr_t *info, void *dst,
+                                const uint8_t *buf, size_t len)
+{
+    struct { sofab_istream_t ctx; sofab_object_decoder_t decoder[3]; } d;
+    memset(&d, 0, sizeof(d));
+    d.decoder[0].info  = info;
+    d.decoder[0].dst   = (uint8_t *)dst;
+    d.decoder[0].depth = 2;
+    sofab_istream_init(&d.ctx, sofab_object_field_cb, &d.decoder[0]);
+    return sofab_istream_feed(&d.ctx, buf, len);
+}
+
+/* --- leaf holder: lengths 0, 1, N-1, N ---------------------------------- */
+
+static void test_object_sized_wrapper_leaf_len0_omitted (void)
+{
+    /* length 0 is the empty array: the FIELD-level ≠-default test reads the
+     * holder's length (never its slots) and omits the whole wrapper (§2). The
+     * slots deliberately hold junk to prove the length alone decides. */
+    _szs_msg_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.arr.s[0], "junk");
+    m.arr.len = 0;
+
+    uint8_t out[64];
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szs_msg, &m, out, sizeof(out)),
+        "length 0 must omit the wrapper entirely");
+}
+
+static void test_object_sized_wrapper_leaf_len1 (void)
+{
+    /* length 1 -- previously unrepresentable: an un-sized holder always wrote up
+     * to slot 4. Slot 0 is the LAST index now, so it is written; slots 1..4 are
+     * past the length and are not walked at all. */
+    _szs_msg_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.arr.s[0], "a");
+    strcpy(m.arr.s[3], "past");   /* past the length -- must never be written */
+    m.arr.len = 1;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,          /* wrapper open (id 200) */
+        0x02, 0x0A, 0x61,    /* e0 = "a" (last index) */
+        0x07,                /* wrapper close */
+    };
+    TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_leaf_len1_default_element (void)
+{
+    /* [""] -- length 1 whose single element IS the element default. It sits at the
+     * last index, so it is written as its (empty) value: that is what tells [""]
+     * from the empty array, which the previous test's length-0 case encodes as
+     * nothing at all. */
+    _szs_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.len = 1;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = { 0xC6, 0x0C, 0x02, 0x02, 0x07 };  /* e0 = "" */
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "[\"\"] must be an empty element at id 0, not the empty array");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_leaf_len_n_minus_1 (void)
+{
+    /* length 4 of capacity 5: slot 3 is the last index and is written even though
+     * it is default; slots 1..2 are interior defaults (id gaps) and slot 4 is past
+     * the length. */
+    _szs_msg_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.arr.s[0], "a");
+    strcpy(m.arr.s[4], "past");   /* past the length -- must not be written */
+    m.arr.len = 4;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x02, 0x0A, 0x61,    /* e0 = "a" */
+        /* e1, e2: gaps */
+        0x1A, 0x02,          /* e3 = ""  (last index) */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "length N-1 must end at id N-2 and never reach the capacity slot");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_leaf_len_n (void)
+{
+    /* length 5 == capacity: byte-for-byte what the un-sized holder produces, so
+     * the sized descriptor is a superset and not a different encoder. */
+    _szs_msg_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.arr.s[0], "a");
+    strcpy(m.arr.s[2], "c");
+    m.arr.len = _SZS_CAP;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x02, 0x0A, 0x61,    /* e0 = "a" */
+        0x12, 0x0A, 0x63,    /* e2 = "c" */
+        0x22, 0x02,          /* e4 = ""  (last index) */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_leaf_decode_stores_length (void)
+{
+    /* decode records *highest present id + 1* in the length member, exactly as a
+     * sized blob records its received byte length -- so the value re-encodes as the
+     * length it arrived with instead of growing back to the capacity. */
+    _szs_msg_t m;
+    memset(&m, 0, sizeof(m));
+    const uint8_t wire[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x61, 0x1A, 0x02, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, wire, sizeof(wire)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, m.arr.len, "received length not stored");
+    TEST_ASSERT_EQUAL_STRING("a", m.arr.s[0]);
+    TEST_ASSERT_EQUAL_STRING("",  m.arr.s[3]);
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(wire), used, "re-encode changed the length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(wire, out, used);
+
+    /* length 1 arrives (highest id 0) and survives a round trip too */
+    memset(&m, 0, sizeof(m));
+    const uint8_t one[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x61, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.len);
+    used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(one), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+}
+
+static void test_object_sized_wrapper_leaf_decode_empty_and_reopen (void)
+{
+    _szs_msg_t m;
+    memset(&m, 0, sizeof(m));
+
+    /* an empty wrapper frame is the explicit empty array: length 0, and the
+     * re-encode normalizes it to the omitted (canonical) form */
+    const uint8_t empty_frame[] = { 0xC6, 0x0C, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, empty_frame, sizeof(empty_frame)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, m.arr.len, "empty frame must decode as length 0");
+    uint8_t out[64];
+    TEST_ASSERT_EQUAL_size_t(0, _sz_encode(&_szs_msg, &m, out, sizeof(out)));
+
+    /* §7.4: a re-opened wrapper replaces the array whole, length included -- a
+     * length-4 occurrence followed by a length-1 one must report 1, not 4. */
+    const uint8_t reopen[] = {
+        0xC6, 0x0C, 0x1A, 0x0A, 0x64, 0x07,   /* open, e3 = "d" (length 4), close */
+        0xC6, 0x0C, 0x02, 0x0A, 0x61, 0x07,   /* re-open, e0 = "a" (length 1), close */
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, reopen, sizeof(reopen)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len,
+        "a §7.4 re-open must reset the holder length, not merge it");
+    TEST_ASSERT_EQUAL_STRING("a", m.arr.s[0]);
+    TEST_ASSERT_EQUAL_STRING("",  m.arr.s[3]);
+}
+
+/* --- struct holder: lengths 0, 1, N-1, N -------------------------------- */
+
+static void test_object_sized_wrapper_struct_len0_omitted (void)
+{
+    _szk_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].k = 7;      /* junk past the length */
+    m.arr.len = 0;
+
+    uint8_t out[64];
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szk_msg, &m, out, sizeof(out)),
+        "length 0 must omit the wrapper entirely");
+}
+
+static void test_object_sized_wrapper_struct_len1 (void)
+{
+    /* [{k:1,v:2}] -- the case the gap named: an un-sized holder wrote this value
+     * with an empty frame at slot 4 and decoded it back as length 5. */
+    _szk_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].k = 1; m.arr.e[0].v = 2;
+    m.arr.e[2].k = 9;                    /* past the length -- never written */
+    m.arr.len = 1;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07,   /* e0 = {k=1, v=2} (last index) */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "[{k:1,v:2}] must be one element, with no frame at the capacity slot");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_struct_len1_default_element (void)
+{
+    /* [{}] -- one all-default sequence element. At the last index it keeps its
+     * empty frame (that frame is the length); length 0 above writes nothing. */
+    _szk_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.len = 1;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = { 0xC6, 0x0C, 0x06, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "an all-default last element keeps its empty frame");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_struct_len_n_minus_1 (void)
+{
+    _szk_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].k = 1; m.arr.e[0].v = 2;
+    m.arr.e[4].k = 9;                    /* past the length -- never written */
+    m.arr.len = _SZK_CAP - 1;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07,   /* e0 = {1,2} */
+        /* e1, e2: gaps */
+        0x1E, 0x07,                           /* e3 = empty frame (last index) */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "length N-1 must frame id N-2 and never reach the capacity slot");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_struct_len_n (void)
+{
+    /* length == capacity reproduces the un-sized holder's bytes exactly
+     * (cf. test_object_struct_wrapper_interior_default_omitted) */
+    _szk_msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].k = 1; m.arr.e[0].v = 2;
+    m.arr.e[2].k = 3; m.arr.e[2].v = 4;
+    m.arr.len = _SZK_CAP;
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07,   /* e0 = {1,2} */
+        0x16, 0x00, 0x03, 0x08, 0x04, 0x07,   /* e2 = {3,4} */
+        0x26, 0x07,                           /* e4 = empty frame (last index) */
+        0x07,
+    };
+    TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
+static void test_object_sized_wrapper_struct_decode_stores_length (void)
+{
+    /* the received length round-trips: [{k:1,v:2}] decodes as length 1 and
+     * re-encodes as one element (an un-sized holder re-encoded it as five) */
+    _szk_msg_t m;
+    memset(&m, 0, sizeof(m));
+    const uint8_t one[] = {
+        0xC6, 0x0C, 0x06, 0x00, 0x01, 0x08, 0x02, 0x07, 0x07,
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _szk_decode(&_szk_msg, &m, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, m.arr.len, "received length not stored");
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.e[0].k);
+    TEST_ASSERT_EQUAL_UINT8(2, m.arr.e[0].v);
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[4].k);
+
+    uint8_t out[64];
+    size_t used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one), used, "re-encode changed the length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+
+    /* length N-1, gaps included: highest present id is 3 -> length 4 */
+    memset(&m, 0, sizeof(m));
+    const uint8_t four[] = {
+        0xC6, 0x0C, 0x06, 0x00, 0x01, 0x08, 0x02, 0x07, 0x1E, 0x07, 0x07,
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _szk_decode(&_szk_msg, &m, four, sizeof(four)));
+    TEST_ASSERT_EQUAL_UINT32(4, m.arr.len);
+    used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(four), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(four, out, used);
+}
+
+static void test_object_sized_wrapper_struct_overindex_still_rejected (void)
+{
+    /* the capacity still bounds the array: element id 5 >= N is INVALID (§7/§7.1),
+     * unchanged by the length member (which the reject never even reads) */
+    _szk_msg_t m;
+    memset(&m, 0, sizeof(m));
+    const uint8_t over[] = { 0xC6, 0x0C, 0x2E, 0x00, 0x01, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        _szk_decode(&_szk_msg, &m, over, sizeof(over)));
+}
+
+/* --- §7.3 at an ELEMENT position: skipped means NOT PRESENT ------------- */
+//
+// MESSAGE_SPEC §7.3: a field whose header wire type contradicts the declared type
+// "MUST be skipped, exactly as a field with an unknown id is skipped" -- and an
+// unknown id leaves nothing behind. At an element position that settles the §5.1
+// count: the length is *highest present id + 1*, and the ids it counts are the ones
+// actually consumed as elements, not the ones that merely appeared on the wire. A
+// mistyped child mutates the container in no way at all -- the array is byte for
+// byte what it would have been had the child never arrived.
+//
+// The control is the other half and must NOT be swallowed by the same test: a
+// well-typed but EMPTY element (an empty frame, an empty string) IS present and
+// does count. Each test below pins both rows, plus the mixed case where a mistyped
+// child sits at a HIGHER id than a well-typed one and must not raise the length to
+// its own id + 1 ("does not occupy its id").
+//
+
+static void test_object_sized_wrapper_leaf_mistyped_element_absent (void)
+{
+    _szs_msg_t m;
+    uint8_t out[64];
+
+    /* element 0 declared STRING, arrives as an unsigned varint (value 7): skipped
+     * like an unknown id -> length 0, i.e. the EMPTY array, which re-encodes to
+     * nothing at all (§2). */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mistyped[] = { 0xC6, 0x0C, 0x00, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, mistyped, sizeof(mistyped)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, m.arr.len,
+        "a wire-type-mismatched element must not count toward the length");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", m.arr.s[0],
+        "a skipped element must leave the slot at its element default");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szs_msg, &m, out, sizeof(out)),
+        "a mistyped element must leave the container as if it never arrived");
+
+    /* CONTROL: the same id, now a well-typed but EMPTY string. That element IS
+     * present -- length 1, and the frame survives a round trip. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t empty_elem[] = { 0xC6, 0x0C, 0x02, 0x02, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, empty_elem, sizeof(empty_elem)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len,
+        "an empty (but well-typed) element is present and must count");
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(empty_elem), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(empty_elem, out, used);
+
+    /* MIXED: a present element at id 0 and a mistyped one at id 3. The mistyped id
+     * is not occupied, so the length stays 1 and the re-encode drops back to the
+     * control's bytes. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mixed[] = { 0xC6, 0x0C, 0x02, 0x02, 0x18, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_szs_msg, &m, mixed, sizeof(mixed)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len,
+        "a mistyped element must not occupy its id");
+    TEST_ASSERT_EQUAL_STRING("", m.arr.s[3]);
+    used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(empty_elem), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(empty_elem, out, used);
+}
+
+static void test_object_sized_wrapper_struct_mistyped_element_absent (void)
+{
+    _szk_msg_t m;
+    uint8_t out[64];
+
+    /* element 0 declared a SEQUENCE (a struct element), arrives as an unsigned
+     * varint: skipped like an unknown id -> the empty array. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mistyped[] = { 0xC6, 0x0C, 0x00, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _szk_decode(&_szk_msg, &m, mistyped, sizeof(mistyped)));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, m.arr.len,
+        "a wire-type-mismatched element must not count toward the length");
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[0].k);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szk_msg, &m, out, sizeof(out)),
+        "a mistyped element must leave the container as if it never arrived");
+
+    /* CONTROL: the same id as a well-typed EMPTY FRAME -- [{}], length 1. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t empty_frame[] = { 0xC6, 0x0C, 0x06, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _szk_decode(&_szk_msg, &m, empty_frame, sizeof(empty_frame)));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, m.arr.len,
+        "an empty element FRAME is a present element and must count");
+    size_t used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(empty_frame), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(empty_frame, out, used);
+
+    /* MIXED: {k:1,v:2} at id 0 and a mistyped scalar at id 3 -- length 1, and the
+     * re-encode is exactly the one-element form. */
+    memset(&m, 0, sizeof(m));
+    const uint8_t mixed[] = {
+        0xC6, 0x0C, 0x06, 0x00, 0x01, 0x08, 0x02, 0x07, 0x18, 0x07, 0x07,
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _szk_decode(&_szk_msg, &m, mixed, sizeof(mixed)));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, m.arr.len,
+        "a mistyped element must not occupy its id");
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.e[0].k);
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[3].k);
+    const uint8_t one[] = { 0xC6, 0x0C, 0x06, 0x00, 0x01, 0x08, 0x02, 0x07, 0x07 };
+    used = _sz_encode(&_szk_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(one), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+}
+
+/* --- blob holder: lengths 0, 1, N-1, N ---------------------------------- */
+//
+// A blob element is a SIZED slot -- { l; b[]; } -- so before the count moved to
+// offset 0 this holder could carry none: "one width before slot 0" is element 0's
+// own used-length. It expressed exactly two lengths, 0 and N. Every row here is
+// new capability. Grouped into one test per holder: on an 8 KB ATmega8 the
+// sofabtest image is flash-bound, and Unity charges a name string per RUN_TEST.
+//
+
+static void test_object_sized_wrapper_blob_lengths (void)
+{
+    _szb_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    /* length 0 is the empty array; the slots deliberately hold junk (including a
+     * non-zero used-length) to prove the holder count alone decides. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szb_msg, &m, out, sizeof(out)),
+        "length 0 must omit the wrapper");
+
+    /* length 1: [de ad]. An un-sized blob holder wrote this with an empty blob at
+     * slot 4 and read it back as length 5. Slots past the length never written. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    m.arr.e[3].l = 1; m.arr.e[3].b[0] = 0x99;
+    m.arr.len = 1;
+    const uint8_t one[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x07 };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one), used, "length 1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+
+    /* length 1 whose single element IS the element default: at the last index it
+     * is written as its (empty) value, which is what tells it from length 0. */
+    memset(&m, 0, sizeof(m));
+    m.arr.len = 1;
+    const uint8_t one_empty[] = { 0xC6, 0x0C, 0x02, 0x03, 0x07 };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one_empty), used, "[<empty blob>]");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one_empty, out, used);
+
+    /* length N-1: slot 3 is the last index and is written even though it is the
+     * element default; slots 1..2 are interior gaps, slot 4 is past the length. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    m.arr.e[4].l = 1; m.arr.e[4].b[0] = 0x99;
+    m.arr.len = _SZB_CAP - 1;
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x1A, 0x03, 0x07 };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "length N-1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* length N == capacity: byte-for-byte what the un-sized holder produced, so
+     * the sized descriptor is a superset and not a different encoder. */
+    memset(&m, 0, sizeof(m));
+    m.arr.e[0].l = 2; m.arr.e[0].b[0] = 0xDE; m.arr.e[0].b[1] = 0xAD;
+    m.arr.e[2].l = 1; m.arr.e[2].b[0] = 0x01;
+    m.arr.len = _SZB_CAP;
+    const uint8_t full[] = {
+        0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x12, 0x0B, 0x01, 0x22, 0x03, 0x07,
+    };
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(full), used, "length N");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(full, out, used);
+}
+
+static void test_object_sized_wrapper_blob_decode_stores_length (void)
+{
+    /* decode records *highest present id + 1* in the holder count, which is a
+     * DIFFERENT member from every element's own used-length: reading the two apart
+     * is exactly what the offset-0 anchor buys. */
+    _szb_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    memset(&m, 0, sizeof(m));
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x1A, 0x03, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szb_msg, &m, nm1, sizeof(nm1)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, m.arr.len, "holder count not stored");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, m.arr.e[0].l, "element length clobbered");
+    TEST_ASSERT_EQUAL_UINT8(0xDE, m.arr.e[0].b[0]);
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[3].l);
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "re-encode changed the length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* length 1 arrives and stays 1 -- an un-sized holder grew it back to N here */
+    memset(&m, 0, sizeof(m));
+    const uint8_t one[] = { 0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szb_msg, &m, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.len);
+    used = _sz_encode(&_szb_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(one), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+
+    /* §7.4: a re-open replaces the array whole, holder count included */
+    memset(&m, 0, sizeof(m));
+    const uint8_t reopen[] = {
+        0xC6, 0x0C, 0x1A, 0x0B, 0x64, 0x07,
+        0xC6, 0x0C, 0x02, 0x13, 0xDE, 0xAD, 0x07,
+    };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szb_msg, &m, reopen, sizeof(reopen)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len, "re-open must reset the count");
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.e[3].l);
+}
+
+/* --- native-row holder: lengths 0, 1, N-1, N ---------------------------- */
+//
+// array<array<u8>>: each row is a compact (native) array whose own element count
+// sits immediately before its values, so this holder had the same blocked anchor
+// as the blob one and the same two expressible lengths, 0 and N.
+//
+
+static void test_object_sized_wrapper_row_lengths (void)
+{
+    _szr_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    /* length 0 is the empty array of rows; the slots hold junk */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szr_msg, &m, out, sizeof(out)),
+        "length 0 must omit the wrapper");
+
+    /* length 1: [[1,2]] of a possible five rows */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    m.arr.r[3].l = 1; m.arr.r[3].v[0] = 9;
+    m.arr.len = 1;
+    const uint8_t one[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x07 };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one), used, "length 1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+
+    /* [[]] -- one EMPTY row. At the last index it is written as an empty array;
+     * the empty array OF ROWS above writes nothing at all. */
+    memset(&m, 0, sizeof(m));
+    m.arr.len = 1;
+    const uint8_t one_empty[] = { 0xC6, 0x0C, 0x03, 0x00, 0x07 };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(one_empty), used, "[[]]");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one_empty, out, used);
+
+    /* length N-1 */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    m.arr.r[4].l = 1; m.arr.r[4].v[0] = 9;
+    m.arr.len = _SZR_CAP - 1;
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x1B, 0x00, 0x07 };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "length N-1");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* length N == capacity */
+    memset(&m, 0, sizeof(m));
+    m.arr.r[0].l = 2; m.arr.r[0].v[0] = 1; m.arr.r[0].v[1] = 2;
+    m.arr.r[2].l = 1; m.arr.r[2].v[0] = 9;
+    m.arr.len = _SZR_CAP;
+    const uint8_t full[] = {
+        0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x13, 0x01, 0x09, 0x23, 0x00, 0x07,
+    };
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(full), used, "length N");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(full, out, used);
+}
+
+static void test_object_sized_wrapper_row_decode_stores_length (void)
+{
+    /* the outer row count and each row's own length are separate members and both
+     * round-trip: [[1,2],[],[],[]] is four rows, not five, and row 0 keeps 2. */
+    _szr_msg_t m;
+    uint8_t out[64];
+    size_t used;
+
+    memset(&m, 0, sizeof(m));
+    const uint8_t nm1[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x1B, 0x00, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szr_msg, &m, nm1, sizeof(nm1)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(4, m.arr.len, "holder count not stored");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, m.arr.r[0].l, "row length clobbered");
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.r[0].v[0]);
+    TEST_ASSERT_EQUAL_UINT8(0, m.arr.r[3].l);
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(nm1), used, "re-encode changed the length");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(nm1, out, used);
+
+    /* one row arrives and stays one row (an un-sized holder re-encoded five) */
+    memset(&m, 0, sizeof(m));
+    const uint8_t one[] = { 0xC6, 0x0C, 0x03, 0x02, 0x01, 0x02, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szr_msg, &m, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT8(1, m.arr.len);
+    used = _sz_encode(&_szr_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(one), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
+}
+
+static void test_object_sized_wrapper_init_clears_length (void)
+{
+    /* sofab_object_init must reach the holder count, which no field descriptor
+     * covers (it sits at offset 0, ahead of every slot) -- the same blind spot the
+     * sized blob had in issue #106. Without it a re-used destination re-encodes a
+     * stale length's worth of elements. */
+    _szs_msg_t m;
+    memset(&m, 0xFF, sizeof(m));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szs_msg, &m));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, m.arr.len, "init must clear the holder length");
+
+    uint8_t out[64];
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szs_msg, &m, out, sizeof(out)),
+        "an initialized sized holder is the empty array");
+
+    _szk_msg_t k;
+    memset(&k, 0xFF, sizeof(k));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szk_msg, &k));
+    TEST_ASSERT_EQUAL_UINT32(0, k.arr.len);
+    TEST_ASSERT_EQUAL_size_t(0, _sz_encode(&_szk_msg, &k, out, sizeof(out)));
+
+    /* the two kinds that could not carry a count before: init must clear the holder
+     * count AND each slot's own used-length, which live at different addresses. */
+    _szb_msg_t b;
+    memset(&b, 0xFF, sizeof(b));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szb_msg, &b));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, b.arr.len, "init must clear the blob holder count");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, b.arr.e[0].l, "init must clear each blob slot's length");
+    TEST_ASSERT_EQUAL_size_t(0, _sz_encode(&_szb_msg, &b, out, sizeof(out)));
+
+    _szr_msg_t r;
+    memset(&r, 0xFF, sizeof(r));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_szr_msg, &r));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, r.arr.len, "init must clear the row holder count");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, r.arr.r[0].l, "init must clear each row's own length");
+    TEST_ASSERT_EQUAL_size_t(0, _sz_encode(&_szr_msg, &r, out, sizeof(out)));
+}
+
+//
 
 int test_object_main (void)
 {
@@ -1836,7 +2949,8 @@ int test_object_main (void)
     RUN_TEST(test_object_serialize);
     RUN_TEST(test_object_deserialize);
     RUN_TEST(test_object_array_count_full_partial_empty);
-    RUN_TEST(test_object_array_trailing_default_run);
+    RUN_TEST(test_object_array_full_length_no_trim);
+    RUN_TEST(test_object_array_sized);
 
     RUN_TEST(test_object_serialize_invalid_unsigned_size);
     RUN_TEST(test_object_serialize_invalid_signed_size);
@@ -1845,7 +2959,9 @@ int test_object_main (void)
     RUN_TEST(test_object_deserialize_invalid_nested_depth);
     RUN_TEST(test_object_deserialize_invalid_field_type);
 
-    RUN_TEST(test_object_default_sequence_emitted_empty);
+    RUN_TEST(test_object_default_sequence_omitted);
+    RUN_TEST(test_object_nondefault_sequence_framed);
+    RUN_TEST(test_object_default_sequence_roundtrips_both_forms);
     RUN_TEST(test_object_roundtrip_empty_sequence_before_sequence);
     RUN_TEST(test_object_string_default_omission);
     RUN_TEST(test_object_blob_sized);
@@ -1867,13 +2983,40 @@ int test_object_main (void)
     RUN_TEST(test_object_wrapper_reopen_replaces);
     RUN_TEST(test_object_wrapper_reopen_replaces_blob);
     RUN_TEST(test_object_wrapper_single_open_unchanged);
+    RUN_TEST(test_object_reuse_needs_init_between_decodes);
     RUN_TEST(test_object_struct_reopen_merges);
 
     RUN_TEST(test_object_struct_wrapper_all_default_empty);
-    RUN_TEST(test_object_struct_wrapper_trailing_run_trimmed);
-    RUN_TEST(test_object_struct_wrapper_interior_default_kept);
-    RUN_TEST(test_object_struct_wrapper_last_set_no_trim);
+    RUN_TEST(test_object_struct_wrapper_last_element_framed);
+    RUN_TEST(test_object_struct_wrapper_interior_default_omitted);
+    RUN_TEST(test_object_struct_wrapper_leading_defaults_omitted);
+    RUN_TEST(test_object_string_wrapper_last_element_written);
     RUN_TEST(test_object_struct_wrapper_roundtrip);
+
+    RUN_TEST(test_object_sized_wrapper_leaf_len0_omitted);
+    RUN_TEST(test_object_sized_wrapper_leaf_len1);
+    RUN_TEST(test_object_sized_wrapper_leaf_len1_default_element);
+    RUN_TEST(test_object_sized_wrapper_leaf_len_n_minus_1);
+    RUN_TEST(test_object_sized_wrapper_leaf_len_n);
+    RUN_TEST(test_object_sized_wrapper_leaf_decode_stores_length);
+    RUN_TEST(test_object_sized_wrapper_leaf_decode_empty_and_reopen);
+
+    RUN_TEST(test_object_sized_wrapper_struct_len0_omitted);
+    RUN_TEST(test_object_sized_wrapper_struct_len1);
+    RUN_TEST(test_object_sized_wrapper_struct_len1_default_element);
+    RUN_TEST(test_object_sized_wrapper_struct_len_n_minus_1);
+    RUN_TEST(test_object_sized_wrapper_struct_len_n);
+    RUN_TEST(test_object_sized_wrapper_struct_decode_stores_length);
+    RUN_TEST(test_object_sized_wrapper_struct_overindex_still_rejected);
+    RUN_TEST(test_object_sized_wrapper_leaf_mistyped_element_absent);
+    RUN_TEST(test_object_sized_wrapper_struct_mistyped_element_absent);
+
+    RUN_TEST(test_object_sized_wrapper_blob_lengths);
+    RUN_TEST(test_object_sized_wrapper_blob_decode_stores_length);
+    RUN_TEST(test_object_sized_wrapper_row_lengths);
+    RUN_TEST(test_object_sized_wrapper_row_decode_stores_length);
+
+    RUN_TEST(test_object_sized_wrapper_init_clears_length);
 
     return UNITY_END();
 }

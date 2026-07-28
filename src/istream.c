@@ -416,11 +416,13 @@ static bool _at_message_boundary (const sofab_istream_t *ctx)
  * @c target_count drives the read, so nothing changes.
  *
  * The trailing @c [wire_count, N) slots are the @b element default (zero), not
- * the schema default: MESSAGE_SPEC §3 requires a decoder to materialize exactly
- * N elements whose last @c N - wire_count equal the element default. A @c default:
- * image describes the field only while it is @e absent from the wire; once the
- * field is @e present with count M, the tail is zero. So this clears the tail
- * before the read rather than leaving whatever the @c _init image seeded there.
+ * the schema default: MESSAGE_SPEC §3 makes @c count a @b capacity, so a target
+ * pre-sized to N holds an array of @c wire_count elements and leaves the slots
+ * past it at the element default (there is no fill-to-N -- the length is what the
+ * wire carried). A @c default: image describes the field only while it is @e
+ * absent from the wire; once the field is @e present with count M, the tail is
+ * zero. So this clears the tail before the read rather than leaving whatever the
+ * @c _init image seeded there.
  * (The C++ wrappers are unaffected: a @c std::vector is resized to the wire count
  * first, making this a no-op, and a @c std::array<T,N> wants the clear.)
  *
@@ -478,8 +480,18 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     int dec;
 
     assert(ctx != NULL);
-    assert(data != NULL);
-    assert(datalen > 0);
+    /*
+     * A zero-length feed is legal and returns the outcome so far (CORELIB_PLAN
+     * §5.2: the status is a property of the bytes consumed, computable at any
+     * byte boundary). It became reachable as a whole message once MESSAGE_SPEC §2
+     * stopped framing an all-default sequence: an all-default message *is* the
+     * empty byte string, and it denotes the all-default value.
+     *
+     * The canonical way to feed that message is feed(ctx, NULL, 0), so @p data is
+     * only required to point at something when there is something to read: no
+     * caller should have to invent a dummy pointer to say "no bytes".
+     */
+    assert(datalen == 0 || data != NULL);
 
     // A callback may have already rejected the message on an earlier feed. The
     // flag is sticky, so short-circuit rather than decode bytes that belong to a

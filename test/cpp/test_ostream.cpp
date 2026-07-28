@@ -303,16 +303,21 @@ TEST_CASE("OStream: overflow by id via sequence begin")
 {
     sofab::OStream ostream{2};
 
-    auto result = ostream.sequenceBegin(SOFAB_ID_MAX);
+    // The header is held back, so the overflow surfaces where it is emitted:
+    // sequenceEndKeep() commits the run before writing the end marker.
+    ostream.sequenceBeginLazy(SOFAB_ID_MAX);
+    auto result = ostream.sequenceEndKeep();
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
 
 TEST_CASE("OStream: overflow by id via sequence end")
 {
-    sofab::OStream ostream{1};
+    // Five bytes take the SOFAB_ID_MAX header exactly; the end marker is the byte
+    // that no longer fits.
+    sofab::OStream ostream{5};
 
-    ostream.sequenceBegin(SOFAB_ID_MAX);
-    auto result = ostream.sequenceEnd();
+    ostream.sequenceBeginLazy(SOFAB_ID_MAX);
+    auto result = ostream.sequenceEndKeep();
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
 
@@ -441,10 +446,13 @@ TEST_CASE("OStream: overflow by fluent sequence begin")
 {
     sofab::OStream ostream{3};
 
+    // write() fills the buffer; both begins are held back, so the failure lands on
+    // the call that emits them.
     auto result = ostream
         .write(0, 4711u)
-        .sequenceBegin(1)
-        .sequenceBegin(2);
+        .sequenceBeginLazy(1)
+        .sequenceBeginLazy(2)
+        .sequenceEndKeep();
 
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
@@ -453,11 +461,12 @@ TEST_CASE("OStream: overflow by fluent sequence end")
 {
     sofab::OStream ostream{4};
 
+    // Three bytes of payload leave one free: the committed header takes it, and the
+    // end marker overflows.
     auto result = ostream
         .write(0, 4711u)
-        .sequenceBegin(1)
-        .sequenceEnd()
-        .sequenceEnd();
+        .sequenceBeginLazy(1)
+        .sequenceEndKeep();
 
     REQUIRE(result.code() == sofab::Error::BufferFull);
 }
@@ -1003,7 +1012,7 @@ TEST_CASE("OStream: write nested sequence")
     sofab::OStream ostream{64};
 
     ostream.write(0, 42u);
-    ostream.sequenceBegin(1);
+    ostream.sequenceBeginLazy(1);
     {
         ostream.write(0, 42u);
         ostream.write(2, -42);
@@ -1022,7 +1031,7 @@ TEST_CASE("OStream: write nested sequence fluent")
     sofab::OStream ostream{64};
 
     ostream.write(0, 42u)
-        .sequenceBegin(1)
+        .sequenceBeginLazy(1)
             .write(0, 42u)
             .write(2, -42)
         .sequenceEnd()
@@ -1036,12 +1045,55 @@ TEST_CASE("OStream: write nested sequence fluent")
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
 }
 
+// The wrapper inherits the C core's documented hold-back bound
+// (SOFAB_LAZY_SEQ_DEPTH, CORELIB_PLAN §6): canonical up to it, eagerly framed --
+// well-formed but non-canonical -- beyond it. Pinned here too, because the C++
+// surface is where generated code meets it. See test_ostream.c for the byte-level
+// window tests and why a heap-free profile takes that allowance.
+TEST_CASE("OStream: contentless nesting up to the hold-back bound emits nothing")
+{
+    for (unsigned depth = 1; depth <= SOFAB_LAZY_SEQ_DEPTH; depth++)
+    {
+        sofab::OStream ostream{256};
+
+        for (unsigned i = 0; i < depth; i++) ostream.sequenceBeginLazy(1);
+        for (unsigned i = 0; i < depth; i++) ostream.sequenceEnd();
+
+        INFO("depth " << depth);
+        REQUIRE(ostream.bytesUsed() == 0);
+    }
+}
+
+TEST_CASE("OStream: contentless nesting past the hold-back bound frames eagerly")
+{
+    sofab::OStream ostream{256};
+    constexpr unsigned depth = 40;
+
+    for (unsigned i = 0; i < depth; i++) ostream.sequenceBeginLazy(1);
+    for (unsigned i = 0; i < depth; i++) ostream.sequenceEnd();
+
+    auto used = ostream.bytesUsed();
+    REQUIRE(used > 0);   // a bounded window cannot stay canonical at depth 40
+
+    // Only begin(1) headers and end markers, in equal numbers: the empty frames
+    // §2 would have omitted, which a decoder normalizes away.
+    const uint8_t *bytes = ostream.data();
+    size_t begins = 0, ends = 0;
+    for (size_t i = 0; i < used; i++)
+    {
+        if (bytes[i] == 0x0E) begins++;
+        else if (bytes[i] == 0x07) ends++;
+        else FAIL("unexpected byte in a contentless deep nesting");
+    }
+    REQUIRE(begins == ends);
+}
+
 TEST_CASE("OStream: write nested sequence with array fluent")
 {
     sofab::OStream ostream{64};
 
     ostream.write(0, 42u)
-        .sequenceBegin(3)
+        .sequenceBeginLazy(3)
             .write(0, 42u)
             .write(3, std::array<int32_t, 3>{-42, -43, -44})
         .sequenceEnd()
@@ -1062,7 +1114,7 @@ TEST_CASE("OStream: write nested sequence multilevel")
 
     for (int i = 0; i < 10; i++)
     {
-        ostream.sequenceBegin(1)
+        ostream.sequenceBeginLazy(1)
             .write(0, 42u)
             .write(2, -42);
     }
@@ -1083,6 +1135,304 @@ TEST_CASE("OStream: write nested sequence multilevel")
         0x53, 0x0E, 0x00, 0x2A, 0x11, 0x53, 0x0E, 0x00, 0x2A, 0x11, 0x53, 0x0E,
         0x00, 0x2A, 0x11, 0x53, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
         0x07, 0x07, 0x11, 0x53};
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+//
+// ---------------------------------------------------------------------------
+// MESSAGE_SPEC §2 vs §5.1 in the C++ wrapper: a FIELD is omitted, an ELEMENT
+// keeps its frame.
+//
+// This is the one place in the §2 port where getting it wrong corrupts a value
+// instead of costing bytes: a wrapper array's length is "highest present id + 1"
+// (§5.1), so an element that loses its frame shortens the decoded array.
+//
+// The two rules are two different calls on OStreamImpl, differing only in the
+// closer they hand to the hold-back trio in ostream.c:
+//   - writeLazy(id, msg) -> sequenceEnd()     : the nested-message FIELD form.
+//     The nested serialize() writes only children that differ from their default,
+//     so "not one child was written" is exactly "the value equals its declared
+//     default", and the held-back header is dropped (§2).
+//   - write(id, msg)     -> sequenceEndKeep() : the wrapper-array ELEMENT form.
+//     The held-back header is forced out even when the element wrote nothing,
+//     because element presence carries the array's length (§5.1).
+//
+// The pure-C path reaches the same bytes by a different mechanism and must stay
+// separate: sofab_object_encode() decides omission from the descriptor *before*
+// it opens anything (no hold-back window at all, canonical at every depth), and
+// its role check -- info->fixed_seq in object.c, not the field type -- is what
+// keeps an interior element framed. The expectations below are deliberately
+// byte-identical to their C descriptor-path counterparts in test/c/test_object.c
+// (test_object_struct_wrapper_all_default_empty / _interior_default_kept), which
+// pins that the two message layers agree on the wire while deciding it
+// independently. Do not "simplify" them into one path.
+// ---------------------------------------------------------------------------
+//
+
+// A nested message that writes exactly the children differing from their
+// declared default -- the shape generated code has.  All-default => writes
+// nothing.
+class KeyValue final : public sofab::OStreamMessage
+{
+public:
+    uint32_t k = 0;
+    uint32_t v = 0;
+
+    KeyValue() noexcept = default;
+    KeyValue(uint32_t key, uint32_t value) noexcept : k{key}, v{value} { }
+
+    sofab::OStreamImpl::Result
+    serialize(sofab::OStreamImpl &_ostream) const noexcept override
+    {
+        return _ostream
+            .writeIf(0, k, k != 0)
+            .writeIf(1, v, v != 0)
+        ;
+    }
+};
+
+// The wrapper sequence of an array of KeyValue (§5): its children are the
+// elements, id == array index. Every element goes through the ELEMENT form
+// (plain write), whatever its value.
+class KeyValueArray final : public sofab::OStreamMessage
+{
+public:
+    std::vector<KeyValue> elements;
+
+    sofab::OStreamImpl::Result
+    serialize(sofab::OStreamImpl &_ostream) const noexcept override
+    {
+        // Result is only constructible by the stream, so seed the chain with a
+        // success no-op; Result::write updates it in place and is sticky.
+        auto result = _ostream.writeIf(0, 0u, false);
+        for (size_t i = 0; i < elements.size(); i++)
+        {
+            result.write(static_cast<sofab_id_t>(i), elements[i]);
+        }
+
+        return result;
+    }
+};
+
+TEST_CASE("OStream: an all-default nested message FIELD is omitted")
+{
+    sofab::OStream ostream{64};
+    const KeyValue kv;  // every child at its declared default
+
+    ostream.write(0, 42u)
+        .writeLazy(10, kv)
+        .write(3, 7u);
+
+    auto used = ostream.bytesUsed();
+
+    // No 0x56 (sequence start, id 10) / 0x07 pair: the field is gone, and the
+    // fields around it are untouched.
+    const uint8_t expected[] = {0x00, 0x2A, 0x18, 0x07};
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: a nested message FIELD with content is framed")
+{
+    sofab::OStream ostream{64};
+    const KeyValue kv{1, 2};
+
+    ostream.write(0, 42u)
+        .writeLazy(10, kv)
+        .write(3, 7u);
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0x00, 0x2A,                         // id 0 = 42
+        0x56, 0x00, 0x01, 0x08, 0x02, 0x07, // id 10 = {k=1, v=2}
+        0x18, 0x07,                         // id 3 = 7
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: an all-default wrapper ELEMENT keeps its frame")
+{
+    sofab::OStream ostream{64};
+    KeyValueArray arr;
+    arr.elements.resize(2);  // two elements, both all-default
+
+    ostream.writeLazy(200, arr);
+
+    auto used = ostream.bytesUsed();
+
+    // Both elements are on the wire as empty frames. If the element closer
+    // dropped them the wrapper would write nothing, the field would then be
+    // omitted too, and a two-element array would decode as absent.
+    const uint8_t expected[] = {
+        0xC6, 0x0C,   // wrapper open (id 200)
+        0x06, 0x07,   // element 0: empty frame
+        0x0E, 0x07,   // element 1: empty frame
+        0x07,         // wrapper close
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: a trailing all-default ELEMENT keeps the array's length")
+{
+    sofab::OStream ostream{64};
+    KeyValueArray arr;
+    arr.elements.push_back(KeyValue{1, 2});
+    arr.elements.push_back(KeyValue{});   // all-default, and it is the last one
+
+    ostream.writeLazy(200, arr);
+
+    auto used = ostream.bytesUsed();
+
+    // Length is "highest present id + 1" (§5.1): dropping element 1 would decode
+    // as a one-element array. Only a *fixed-count* array elides its trailing
+    // default run, and that trim is the message layer's decision, not the
+    // stream's -- the ELEMENT form always frames what it is handed.
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07, // element 0 = {1, 2}
+        0x0E, 0x07,                         // element 1 = empty frame
+        0x07,
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: an interior all-default ELEMENT stays framed")
+{
+    sofab::OStream ostream{64};
+    KeyValueArray arr;
+    arr.elements.push_back(KeyValue{1, 2});
+    arr.elements.push_back(KeyValue{});
+    arr.elements.push_back(KeyValue{3, 4});
+
+    ostream.writeLazy(200, arr);
+
+    auto used = ostream.bytesUsed();
+
+    // Byte-identical to the C descriptor path's
+    // test_object_struct_wrapper_interior_default_kept (test/c/test_object.c):
+    // two message layers, two mechanisms, one wire form.
+    const uint8_t expected[] = {
+        0xC6, 0x0C,
+        0x06, 0x00, 0x01, 0x08, 0x02, 0x07, // element 0 = {1, 2}
+        0x0E, 0x07,                         // element 1 = empty frame (interior)
+        0x16, 0x00, 0x03, 0x08, 0x04, 0x07, // element 2 = {3, 4}
+        0x07,
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: an array FIELD with no element is omitted")
+{
+    sofab::OStream ostream{64};
+    const KeyValueArray arr;   // no elements at all
+
+    ostream.writeLazy(200, arr);
+
+    // The wrapper wrote nothing, so the field equals its declared (empty)
+    // default and vanishes -- not an empty wrapper (0xC6 0x0C 0x07). Same
+    // outcome as the C path's test_object_struct_wrapper_all_default_empty.
+    REQUIRE(ostream.bytesUsed() == 0);
+}
+
+TEST_CASE("OStream: an all-default nested FIELD inside a framed ELEMENT")
+{
+    sofab::OStream ostream{64};
+
+    // element 0 of a wrapper array; the element itself holds one nested message
+    // FIELD (id 4) that is all-default. The element keeps its frame (§5.1), the
+    // field inside it disappears (§2) -- both rules, one encode.
+    ostream.sequenceBeginLazy(200);
+    {
+        const KeyValue inner;
+        ostream.sequenceBeginLazy(0);
+        ostream.writeLazy(4, inner);
+        ostream.sequenceEndKeep();
+    }
+    ostream.sequenceEnd();
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0xC6, 0x0C,   // wrapper open (id 200)
+        0x06, 0x07,   // element 0: framed, and empty -- its only field went away
+        0x07,         // wrapper close
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+//
+// ---------------------------------------------------------------------------
+// A nested serialize() that fails must not leave its sequence open.
+//
+// Reachable on a perfectly healthy stream: a write can be refused before it
+// emits a single byte -- sofab_ostream_write_fixlen returns E_ARGUMENT for
+// invalid UTF-8 under SOFAB_ENABLE_STRICT_UTF8, and any writer refuses an id
+// above SOFAB_ID_MAX. If write()/writeLazy() then skipped their closer, the
+// sequence they opened would stay open: the following field would be encoded
+// *inside* it and the message would decode as INCOMPLETE, with the leaked entry
+// also occupying a slot of the bounded hold-back window for the rest of the
+// encode. The failure is still reported -- the closer never masks it.
+// ---------------------------------------------------------------------------
+//
+
+// Writes one valid child, then fails on an out-of-range id (E_ARGUMENT, emitted
+// before any byte of that field). No opt-in build flag needed.
+class FailingMessage : public sofab::OStreamMessage
+{
+public:
+    sofab::OStreamImpl::Result
+    serialize(sofab::OStreamImpl &_ostream) const noexcept override
+    {
+        return _ostream
+            .write(0, 5u)
+            .write(static_cast<sofab::id>(SOFAB_ID_MAX) + 1u, 1u)
+        ;
+    }
+};
+
+TEST_CASE("OStream: a failing nested FIELD serialize still closes its sequence")
+{
+    sofab::OStream ostream{64};
+    const FailingMessage bad;
+
+    auto res = ostream.writeLazy(10, bad);
+    REQUIRE(res == sofab::Error::InvalidArgument);   // the failure is reported
+
+    ostream.write(3, 7u);
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0x56, 0x00, 0x05, 0x07, // id 10 = { id 0 = 5 }, closed despite the failure
+        0x18, 0x07,             // id 3 = 7 -- a sibling, NOT nested in id 10
+    };
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+TEST_CASE("OStream: a failing nested ELEMENT serialize still closes its sequence")
+{
+    sofab::OStream ostream{64};
+    const FailingMessage bad;
+
+    auto res = ostream.write(1, bad);                // the ELEMENT form
+    REQUIRE(res == sofab::Error::InvalidArgument);
+
+    ostream.write(2, 9u);
+
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {
+        0x0E, 0x00, 0x05, 0x07, // element 1 = { id 0 = 5 }, frame closed
+        0x10, 0x09,             // id 2 = 9 -- a sibling
+    };
     REQUIRE(used == sizeof(expected));
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
 }

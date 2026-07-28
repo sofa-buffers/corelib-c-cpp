@@ -185,8 +185,13 @@ extern void sofab_istream_init (
  *  - @ref SOFAB_RET_E_INVALID_MSG: the bytes are malformed regardless of what
  *    follows (varint too wide, length/count/id over the limit, bad type, ...).
  *
+ * A zero-length feed is legal and reports the outcome so far; @p data may then be
+ * NULL. That is how the all-default message arrives: MESSAGE_SPEC §2 omits a
+ * sequence-typed field equal to its default, so an all-default message *is* the
+ * empty byte string and @c sofab_istream_feed(ctx, NULL, 0) is its whole input.
+ *
  * @param ctx       Pointer to the input stream context.
- * @param data      Pointer to the raw serialized data.
+ * @param data      Pointer to the raw serialized data (may be NULL when @p datalen is 0).
  * @param datalen   Length of @p data in bytes.
  *
  * @return SOFAB_RET_OK on a complete boundary, SOFAB_RET_INCOMPLETE on a partial

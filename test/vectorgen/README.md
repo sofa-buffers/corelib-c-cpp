@@ -16,6 +16,14 @@ derives each vector's `requires` capability tags from the ops/values/ids, so the
 suite can be run against reduced (`SOFAB_DISABLE_*`) builds. The vectors mirror
 the happy-path cases in [`../c/test_ostream.c`](../c/test_ostream.c).
 
+Each message is replayed **twice**, producing the file's two byte columns: the
+dense `serialized` (every op, sequences opened eagerly) and the sparse-canonical
+`serialized_sparse` (default leaves dropped and sequences opened *lazily*, so one
+left without content is omitted whole — MESSAGE_SPEC §2). Only `serialized` is
+asserted by this repo's own suite; `serialized_sparse` is for the generator's
+per-language conformance drivers, which encode generated objects. See
+[`assets/test_vectors_README.md`](../../assets/test_vectors_README.md).
+
 ## Regenerating
 
 You only need this if you change the encoder or the set of vectors.

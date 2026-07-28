@@ -40,17 +40,24 @@
  *   matching branch turns into a clear static_assert, so code that never uses
  *   that type still compiles, while code that does gets a readable diagnostic.
  *
- *   Structural capabilities (FIXLEN, SEQUENCE) underpin concrete methods and
- *   the whole nested-message API (strings, blobs, floats, sequences, message
- *   objects) — i.e. most of the C++ surface. The wrapper cannot offer a
- *   coherent object API without them, so building the C++ layer with either
- *   disabled is rejected outright; use the C API directly for such configs.
+ *   Structural capabilities (FIXLEN, SEQUENCE, LAZY_SEQ) underpin concrete
+ *   methods and the whole nested-message API (strings, blobs, floats,
+ *   sequences, message objects) — i.e. most of the C++ surface. The wrapper
+ *   cannot offer a coherent object API without them, so building the C++ layer
+ *   with any of them disabled is rejected outright; use the C API directly for
+ *   such configs. LAZY_SEQ is structural for the same reason: the wrapper's
+ *   nested-message writes are defined in terms of the hold-back framing of
+ *   MESSAGE_SPEC §2, and sequenceBeginLazy()/sequenceEndKeep() have no eager
+ *   substitute that would produce the same bytes.
  */
 #if defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 #  error "sofab C++ wrapper requires FIXLEN support (strings, blobs, floats). Do not define SOFAB_DISABLE_FIXLEN_SUPPORT when building the C++ API; use the C API directly for fixlen-less builds."
 #endif
 #if defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 #  error "sofab C++ wrapper requires SEQUENCE support (nested messages, variable-length array reads). Do not define SOFAB_DISABLE_SEQUENCE_SUPPORT when building the C++ API; use the C API directly for sequence-less builds."
+#endif
+#if defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+#  error "sofab C++ wrapper requires LAZY_SEQ support (an all-default nested message is omitted, not framed empty — MESSAGE_SPEC §2). Do not define SOFAB_DISABLE_LAZY_SEQ_SUPPORT when building the C++ API; it is a footprint switch for pure-C consumers, which encode through sofab_object_encode()."
 #endif
 
 /*! @brief 1 if the wrapper exposes 64-bit float (double) fields, else 0
@@ -616,6 +623,45 @@ namespace sofab
         void clear() noexcept { len_ = 0; }
 
         /*!
+         * @brief Set the logical length to @p n, value-initializing what changes.
+         *
+         * The @c std::vector member of the container API this type mirrors, and the
+         * one @ref IStreamImpl::readArray and the wrapper-array collectors probe
+         * for: readArray *resizes* a resizable destination and *value-initializes*
+         * a fixed-extent one, and without this method an @c InlineVector matched
+         * neither — it fell to the fixed-extent branch, which assigned a
+         * default-constructed container and so set the logical length to 0. The
+         * decode then bound an empty span and dropped the array silently. With
+         * @ref resize present, readArray keeps ownership of the tag / bound /
+         * reset / bind order it documents, for inline storage too.
+         *
+         * Slots that enter or leave the logical range are set to @c T{}, so the
+         * elements a shorter value no longer covers cannot be observed through a
+         * later grow. @p n above the capacity @p N is clamped to @p N — the callers
+         * that can reject an over-capacity count do so before resizing (readArray
+         * checks the schema `count` first), and a heap-free container has nowhere
+         * to put the excess.
+         *
+         * @param n  New logical length.
+         */
+        void resize(std::size_t n) noexcept
+        {
+            if (n > N)
+            {
+                n = N;
+            }
+            for (std::size_t i = n; i < len_; ++i)
+            {
+                buf_[i] = T{};
+            }
+            for (std::size_t i = len_; i < n; ++i)
+            {
+                buf_[i] = T{};
+            }
+            len_ = n;
+        }
+
+        /*!
          * @brief Append a default-constructed element and return a reference to it.
          *
          * The next inline slot is (re)set to @c T{} and bound; once at capacity
@@ -807,18 +853,65 @@ namespace sofab
             }
 
             /*!
-             * @brief Chained sequence-begin marker (no-op if a prior call failed).
-             * @param id  Field identifier of the nested sequence.
+             * @brief Chained nested-message field write that is omitted when the
+             *        message is all-default (no-op if a prior call failed).
+             * @param id     Field identifier.
+             * @param value  Nested message to encode.
              * @return This Result, carrying the first error encountered (if any).
+             * @see OStreamImpl::writeLazy
              */
-            Result sequenceBegin(sofab_id_t id) noexcept
+            template <typename T>
+            Result writeLazy(sofab_id_t id, const T &value) noexcept
             {
                 if (error_ != Error::None)
                 {
                     return *this;
                 }
 
-                auto res = ostream_.sequenceBegin(id);
+                auto res = ostream_.writeLazy(id, value);
+                if (!res.ok())
+                {
+                    error_ = res.code();
+                }
+
+                return *this;
+            }
+
+            /*!
+             * @brief Chained frame-keeping sequence-end (no-op if a prior call failed).
+             * @return This Result, carrying the first error encountered (if any).
+             * @see OStreamImpl::sequenceEndKeep
+             */
+            Result sequenceEndKeep() noexcept
+            {
+                if (error_ != Error::None)
+                {
+                    return *this;
+                }
+
+                auto res = ostream_.sequenceEndKeep();
+                if (!res.ok())
+                {
+                    error_ = res.code();
+                }
+
+                return *this;
+            }
+
+            /*!
+             * @brief Chained lazy sequence-begin (no-op if a prior call failed).
+             * @param id  Field identifier of the nested sequence.
+             * @return This Result, carrying the first error encountered (if any).
+             * @see OStreamImpl::sequenceBeginLazy
+             */
+            Result sequenceBeginLazy(sofab_id_t id) noexcept
+            {
+                if (error_ != Error::None)
+                {
+                    return *this;
+                }
+
+                auto res = ostream_.sequenceBeginLazy(id);
                 if (!res.ok())
                 {
                     error_ = res.code();
@@ -982,13 +1075,31 @@ namespace sofab
             }
             else if constexpr (std::is_base_of_v<OStreamMessage, T>)
             {
-                ret = sequenceBegin(id).rawCode();
+                /* The frame-KEEPING form: it survives even when the nested
+                 * message writes nothing. That is what a wrapper array's LAST
+                 * element needs -- the array carries no length, so *highest present
+                 * id + 1* is what recovers it and the final element may never be
+                 * elided (MESSAGE_SPEC §2/§5.1). A nested message that MAY vanish
+                 * when all-default -- a struct/union FIELD, and equally an INTERIOR
+                 * array element, which since §3 made `count` a capacity is omitted
+                 * exactly like a default leaf element -- is @ref writeLazy.
+                 *
+                 * The closer runs even when the nested serialize() fails, so the
+                 * sequence this call opened is always the sequence this call
+                 * closes. A failing serialize() is reachable on a perfectly
+                 * healthy stream -- write_fixlen rejects invalid UTF-8 with
+                 * E_ARGUMENT before emitting a byte under SOFAB_ENABLE_STRICT_UTF8
+                 * -- and leaving the frame open would put an unterminated sequence
+                 * on the wire and strand a slot of the bounded hold-back window.
+                 * The first failure is what the caller sees. */
+                ret = sequenceBeginLazy(id).rawCode();
                 if (ret == SOFAB_RET_OK)
                 {
                     ret = value.serialize(static_cast<OStreamImpl&>(*this)).rawCode();
+                    sofab_ret_t cret = sequenceEndKeep().rawCode();
                     if (ret == SOFAB_RET_OK)
                     {
-                        ret = sequenceEnd().rawCode();
+                        ret = cret;
                     }
                 }
             }
@@ -1067,6 +1178,49 @@ namespace sofab
         }
 
         /*!
+         * @brief Encode a nested message **field**, omitting it when all-default.
+         *
+         * Same as @ref write for an @ref OStreamMessage, except it closes with
+         * @ref sequenceEnd rather than @ref sequenceEndKeep: the nested @c serialize
+         * omits every child
+         * that equals its default, so "not one child was written" is exactly "the
+         * object equals its declared default" -- evaluated per child field,
+         * recursively -- and the field is then dropped instead of emitted as an
+         * empty frame (MESSAGE_SPEC §2).
+         *
+         * Use it for a @c struct / @c union **field**. Keep plain @ref write for an
+         * array **element**: element presence carries a dynamic array's length
+         * (§5.1), so an all-default element stays framed.
+         *
+         * As in @ref write, the closer runs even when the nested @c serialize
+         * fails (a strict-UTF-8 rejection does that on an otherwise healthy
+         * stream), so the sequence never stays open and the hold-back window never
+         * strands a slot. The first failure is the one returned.
+         *
+         * @param id     Field identifier.
+         * @param value  Nested message to encode.
+         * @return @ref Result for fluent chaining and error inspection.
+         */
+        template <typename T>
+        Result writeLazy(sofab_id_t id, const T &value) noexcept
+        {
+            static_assert(std::is_base_of_v<OStreamMessage, T>,
+                "writeLazy() takes a nested message; plain write() covers every other type");
+            sofab_ret_t ret = sequenceBeginLazy(id).rawCode();
+            if (ret == SOFAB_RET_OK)
+            {
+                ret = value.serialize(static_cast<OStreamImpl&>(*this)).rawCode();
+                sofab_ret_t cret = sequenceEnd().rawCode();
+                if (ret == SOFAB_RET_OK)
+                {
+                    ret = cret;
+                }
+            }
+
+            return result(ret);
+        }
+
+        /*!
          * @brief Encode a raw binary blob field.
          * @param id     Field identifier.
          * @param value  Pointer to the bytes to write.
@@ -1096,24 +1250,68 @@ namespace sofab
             return result(SOFAB_RET_OK);
         }
 
+
         /*!
-         * @brief Open a nested sequence; subsequent writes use a fresh id scope
-         *        until the matching @ref sequenceEnd.
+         * @brief Open a nested sequence whose header is held back until it turns
+         *        out to have content.
+         *
+         * MESSAGE_SPEC §2 omits a sequence-typed field whose value equals its
+         * declared default, and "not one child was written" is exactly that
+         * condition -- evaluated per child field, recursively, for free. Closing
+         * such a sequence with nothing in it emits **nothing** instead of a
+         * two-byte empty frame, so an all-default message becomes the empty byte
+         * string. The predicate never touches a byte image, so struct padding
+         * cannot influence it.
+         *
+         * Where an empty frame carries meaning, close with @ref sequenceEndKeep
+         * instead: the **last element** of a wrapper array (§5.1 — the interior is
+         * sparse and drops like any default field), the §4.9 empty-sequence
+         * primitive itself, and the explicitly empty array of a field that declares
+         * a non-empty default (§2, §3). The wrapper deliberately exposes no eager
+         * opener — the frame-or-not decision belongs to the closer, which is the
+         * one call site that knows the position in the schema. (The C core keeps
+         * @c sofab_ostream_write_sequence_begin() for @c sofab_object_encode().)
+         *
+         * **Bounded**: at most @c SOFAB_LAZY_SEQ_DEPTH (default 8) headers are
+         * held back at once; a sequence opened deeper than that is framed eagerly
+         * and keeps an empty frame it could have dropped — well-formed and
+         * value-identical, but not canonical. See @c SOFAB_LAZY_SEQ_DEPTH in
+         * @c sofab/ostream.h.
+         *
          * @param id  Field identifier of the sequence.
          * @return @ref Result for fluent chaining and error inspection.
          */
-        Result sequenceBegin(sofab_id_t id) noexcept
+        Result sequenceBeginLazy(sofab_id_t id) noexcept
         {
-            return result(sofab_ostream_write_sequence_begin(&ctx_, id));
+            return result(sofab_ostream_write_sequence_begin_lazy(&ctx_, id));
         }
 
         /*!
-         * @brief Close the most recently opened nested sequence.
+         * @brief Close the current nested sequence, letting it vanish if it got no
+         *        content (MESSAGE_SPEC §2).
          * @return @ref Result for fluent chaining and error inspection.
          */
         Result sequenceEnd() noexcept
         {
             return result(sofab_ostream_write_sequence_end(&ctx_));
+        }
+
+        /*!
+         * @brief Close the current nested sequence, keeping its frame even without
+         *        content.
+         *
+         * Emits the held-back headers -- this frame's and every enclosing one's --
+         * and then the end marker, so an empty sequence reaches the wire as
+         * begin + end. Required wherever the frame carries information beyond its
+         * contents: a wrapper-array ELEMENT (presence carries a dynamic array's
+         * length, MESSAGE_SPEC §5.1), and an array field already known to differ
+         * from a non-empty declared default (§2, §3).
+         *
+         * @return @ref Result for fluent chaining and error inspection.
+         */
+        Result sequenceEndKeep() noexcept
+        {
+            return result(sofab_ostream_write_sequence_end_keep(&ctx_));
         }
 
     private:
@@ -2265,9 +2463,22 @@ namespace sofab
     /* MESSAGE_SPEC §5 lowers an array of strings, blobs, structs or nested   */
     /* arrays to a sequence whose child ids are the element indices. These    */
     /* collect such a sequence into this profile's heap-free containers. They  */
-    /* mirror sofab::StringSeq / BlobSeq / MessageSeq in corelib-cpp so both  */
-    /* C++ outputs read the same; the difference is the storage they fill —   */
-    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.  */
+    /* mirror sofab::StringSeq / BlobSeq in corelib-cpp so both C++ outputs    */
+    /* read the same; the difference is the storage they fill —                */
+    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.   */
+    /*                                                                        */
+    /* There is deliberately NO MessageSeq/FixedMessageSeq counterpart here.   */
+    /* The pair that used to sit below appended elements in ARRIVAL ORDER and  */
+    /* grew the container before deciding the child's wire type, so an interior*/
+    /* id gap shifted every later element down by one (§5.1) and a §7.3        */
+    /* mismatched child left a phantom (generator#249). Their four siblings    */
+    /* above always placed at the element id. Nothing used them: generated     */
+    /* code emits its own sofabgen::WrapperSeq — a generator test asserts the  */
+    /* emitted header contains no sofab::MessageSeq — and no test here did     */
+    /* either. A parity API that silently behaves differently from the one it  */
+    /* claims to mirror is worse than none, so they were removed rather than   */
+    /* repaired. corelib-cpp's MessageSeq is unaffected: it places by id and   */
+    /* its own tests exercise it.                                             */
     /* ---------------------------------------------------------------------- */
 
     /**
@@ -2396,69 +2607,20 @@ namespace sofab
     };
 
     /**
-     * @brief Collects a struct/union or nested-array wrapper sequence into inline
-     *        storage.
-     *
-     * Elements arrive in order, so each is emplaced and read in turn:
-     * @ref IStreamImpl::read descends into a struct element's own sub-sequence, or
-     * reads a nested array row, exactly as for a scalar field.
-     *
-     * @tparam Container Inline vector of the element type.
-     */
-    template <typename Container>
-    struct FixedMessageSeq : IStreamMessage
-    {
-        Container *out = nullptr;
-
-        void deserialize(IStreamImpl &is, sofab_id_t, size_t, size_t) noexcept override
-        {
-            is.read(out->emplace_back());
-        }
-    };
-
-    /**
-     * @brief Collects a struct/union or nested-array wrapper sequence into a
-     *        `std::vector<T>` — the `allow_dynamic` storage mode.
-     *
-     * The inline-storage counterpart is @ref FixedMessageSeq, which takes its
-     * bound from the container's capacity. A `std::vector` has none, so the
-     * schema `count` rides in as @ref cap — the bound is the same either way,
-     * only where it is enforced differs. Named to match `sofab::MessageSeq` in
-     * corelib-cpp so both C++ outputs read alike.
-     *
-     * @tparam T Element type.
-     */
-    template <typename T>
-    struct MessageSeq : IStreamMessage
-    {
-        std::vector<T> *out = nullptr;
-        long cap = -1;   //!< Schema `count` N, or -1; an id at or past N is INVALID (§5.1/§7).
-
-        void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
-        {
-            if (cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
-            {
-                is.invalidate();
-                return;
-            }
-            T &row = out->emplace_back();
-            /* A count-less native-array row is a std::vector the read fills only up
-             * to its current size, so size it to the row's wire count first.
-             * Struct/union rows and fixed std::array rows have no resize(). */
-            if constexpr (requires { row.resize(count); } && !std::is_base_of_v<IStreamMessage, T>)
-                row.resize(count);
-            is.read(row);
-        }
-    };
-
-    /**
      * @brief Narrow a fixed-count array to its non-default prefix, for encode.
      *
-     * MESSAGE_SPEC §3: a `count: N` array's canonical encoding carries `M` = one
-     * past the last element that differs from the element default, and the decoder
-     * refills `[M, N)` from the schema count. The stream emits whatever container
-     * it is handed, so the value is narrowed first. A dynamic array has no N to
-     * refill from, so its trailing defaults are significant and it is not trimmed.
+     * @deprecated **Superseded and non-conformant.** MESSAGE_SPEC §3 now defines
+     * `count: N` as a **capacity** and the wire count `M` as the array's
+     * **length**, so nothing may be elided: `[1,2,3,0,0]` and `[1,2,3]` are
+     * different values, and trimming the tail silently shortens the array. There
+     * is no fill-back on decode either. This helper is retained only so generated
+     * code emitted before the change still compiles; new code must not call it,
+     * and it goes away with the generator that emits it. (Its C counterpart,
+     * `_array_trim_count` in object.c, is already gone.)
+     *
+     * The superseded contract it implements: a `count: N` array's canonical
+     * encoding carries `M` = one past the last element that differs from the
+     * element default, and the decoder refills `[M, N)`.
      *
      * Elements compare by **byte image**, never `operator==`: `-0.0 == 0.0` holds
      * in C++, but `-0.0` is a distinct value that must survive the round-trip, and

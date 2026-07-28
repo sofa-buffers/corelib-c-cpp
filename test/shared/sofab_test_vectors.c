@@ -306,6 +306,25 @@ static int load_vector(const sofab_json_t *vj, vector_t *out)
         { free_vector(out); return -1; }
     }
 
+    /*
+     * This engine asserts exactly ONE byte column: "serialized" — the dense,
+     * primitive-layer ground truth, i.e. the bytes produced by replaying the
+     * vector's `fields` ops one-for-one through the raw encoder. Every scenario
+     * below (encode / decode / roundtrip / chunked / skip-ids) is against it.
+     *
+     * Each vector also carries "serialized_sparse" (the same message under the
+     * MESSAGE_SPEC §2 sparse-canonical rule: every leaf equal to its type default
+     * omitted, and a sequence left without content omitted rather than framed
+     * empty). It is deliberately NOT read here, and no test in this repo reads it:
+     * producing that form requires a message layer that knows each field's
+     * declared default, which the corelib's primitive API does not have. The
+     * column exists for the *generator's* conformance drivers
+     * (sofabgen tests/conformance/<lang>/), which encode generated objects and
+     * compare against it; this repo only *emits* it, from test/vectorgen (whose
+     * sparse replay pass opens sequences lazily). Do not read it as a coverage
+     * gap here — and do not "close" it with a test the primitive layer cannot
+     * honestly express.
+     */
     const sofab_json_t *ser = sofab_json_get(vj, "serialized");
     size_t hl; const char *hex = sofab_json_string(sofab_json_get(ser, "hex"), &hl);
     if (!hex || hex2bin(hex, hl, &out->bytes, &out->nbytes))

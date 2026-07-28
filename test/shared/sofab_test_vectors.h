@@ -11,6 +11,12 @@
  *   - roundtrip : encode then decode, compare both ways
  *   - chunked   : encode through a tiny flushing buffer; decode one byte at a time
  *
+ * All four assert the vector's `serialized` column (the dense, primitive-layer
+ * ground truth). The `serialized_sparse` column in the same file is NOT asserted
+ * here — see the note at the load site in sofab_test_vectors.c: it is the
+ * message-layer form (MESSAGE_SPEC §2), consumed by the generator's per-language
+ * conformance drivers, and this repo only emits it (test/vectorgen).
+ *
  * The bulk is a POSITIVE/roundtrip suite. General malformed-input and error-path
  * behaviour (truncated varints, unbalanced sequences, overflow) is covered by
  * the hand-written tests in test/c/test_istream.c, since the shared vector file's

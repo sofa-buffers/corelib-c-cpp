@@ -96,6 +96,53 @@ typedef void (*sofab_ostream_flush_cb_t) (
  * is responsible for supplying and owning the buffer memory; the stream only
  * holds pointers into that memory.
  */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+/*!
+ * @brief How many nested sequence headers sofab_ostream_write_sequence_begin_lazy()
+ *        can hold back at once. Default 8.
+ *
+ * **The documented bound of this heap-free profile** (CORELIB_PLAN §6, "How deep
+ * the hold-back reaches"). An implementation that can allocate MUST hold back to
+ * the full SOFAB_MAX_DEPTH and is canonical at every depth; a heap-free profile
+ * cannot, so it MAY bound the run — and MUST say where the bound is, because two
+ * encoders that disagree about it disagree about *bytes*.
+ *
+ * What the bound costs, concretely:
+ *
+ *   - At nesting depth <= SOFAB_LAZY_SEQ_DEPTH the encoder is **canonical**: an
+ *     all-default sequence field is omitted entirely (MESSAGE_SPEC §2).
+ *   - Deeper than that, the run is committed and the sequence is framed
+ *     **eagerly**. If it then turns out to be all-default, the two-byte empty
+ *     frame §2 would have omitted stays on the wire. That output is
+ *     **well-formed and decodes to the same value** — it is the non-canonical
+ *     form §2 already requires every decoder to accept and normalize — so a
+ *     bounded and an unbounded encoder interoperate. What it is not is
+ *     byte-identical to an unbounded encoder's output.
+ *
+ * This is the same constrained-profile allowance SOFAB_FIXLEN_MAX / SOFAB_ARRAY_MAX
+ * already carry, for the same reason: a bound that costs RAM per stream is a real
+ * cost on a target that has none to spare. Raise it (-DSOFAB_LAZY_SEQ_DEPTH=N) if
+ * a schema nests sequence *fields* deeper than 8 and canonical output matters;
+ * every extra level costs 4 bytes of RAM per output stream.
+ *
+ * **Ceiling: 255.** The run counter (@c sofab_ostream::npending) is a @c uint8_t,
+ * so a larger window could not be counted; the preprocessor check below rejects such a
+ * build rather than let the counter wrap and silently lose a pending run. 255 is
+ * already past SOFAB_MAX_DEPTH-deep sequence *fields* being useful, and a profile
+ * that wants an unbounded window needs a heap, which this corelib does not have.
+ *
+ * Not a wire-format limit and not a nesting limit: nesting itself is bounded by
+ * SOFAB_MAX_DEPTH (255) and that check is unaffected — exceeding
+ * SOFAB_LAZY_SEQ_DEPTH is never an error, only a loss of canonicity.
+ */
+#  if !defined(SOFAB_LAZY_SEQ_DEPTH)
+#    define SOFAB_LAZY_SEQ_DEPTH 8
+#  endif
+#  if SOFAB_LAZY_SEQ_DEPTH < 1 || SOFAB_LAZY_SEQ_DEPTH > 255
+#    error "SOFAB_LAZY_SEQ_DEPTH must be 1..255 (npending is a uint8_t)"
+#  endif
+#endif /* SEQUENCE && LAZY_SEQ */
+
 struct sofab_ostream
 {
     uint8_t *buffer;                /*!< Pointer to the start of the active buffer. */
@@ -103,6 +150,22 @@ struct sofab_ostream
     uint8_t *offset;                /*!< Current write cursor within the buffer. */
     sofab_ostream_flush_cb_t flush; /*!< Optional flush callback invoked when buffer data must be handled. */
     void *usrptr;                   /*!< User-provided pointer passed to the flush callback. */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+    /*! Ids of the innermost open sequences whose header is still held back
+     *  (see sofab_ostream_write_sequence_begin_lazy). Always a contiguous suffix
+     *  of the open sequences: writing any field, opening an eager frame, or
+     *  overflowing the window commits the whole run.
+     *
+     *  Costs 4 * SOFAB_LAZY_SEQ_DEPTH bytes plus the counter -- 36 B per stream at
+     *  the default depth of 8 on a 32-bit target. A pure-C consumer that
+     *  encodes through sofab_object_encode() never needs it -- the descriptor
+     *  decides omission per field before opening anything -- so a footprint build
+     *  can compile the whole mechanism out with SOFAB_DISABLE_LAZY_SEQ_SUPPORT.
+     *  The macro changes this struct's layout, so it MUST be defined identically
+     *  for the library and every one of its users. */
+    sofab_id_t pending[SOFAB_LAZY_SEQ_DEPTH];
+    uint8_t npending;               /*!< Valid entries in @c pending. */
+#endif /* SEQUENCE && LAZY_SEQ */
 };
 
 /* prototypes *****************************************************************/
@@ -570,12 +633,86 @@ static inline sofab_ret_t sofab_ostream_write_array_of_fp64 (
  * sofab_ostream_write_sequence_end() is called. Nested sequences allow
  * hierarchical message structures with a new field identifier space.
  *
+ * This opener frames unconditionally: the header is on the wire before the
+ * content is known, so the sequence reaches the wire even if nothing is written
+ * into it. That is what a hand-written encoder wants (an empty sequence is a
+ * legal wire primitive, §4.9) and what an element position needs (§5.1). A
+ * sequence-typed *field* that may equal its declared default belongs to
+ * sofab_ostream_write_sequence_begin_lazy() instead, which omits it
+ * (MESSAGE_SPEC §2).
+ *
  * @param ctx    Pointer to the output stream context.
  * @param id     Field identifier representing the sequence.
  *
  * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code.
  */
 extern sofab_ret_t sofab_ostream_write_sequence_begin (sofab_ostream_t *ctx, sofab_id_t id);
+
+/*!
+ * @brief Begin a nested sequence whose header is held back until it has content.
+ *
+ * MESSAGE_SPEC §2 omits a sequence-typed field whose value equals its declared
+ * default, and "not one child field was written" is exactly that condition --
+ * evaluated per child field, recursively, for free. A sequence opened with this
+ * function and closed without a single field in it emits **nothing** instead of a
+ * two-byte empty frame, so an all-default message becomes the empty byte string.
+ *
+ * The predicate never touches a byte image of the object, so struct padding
+ * cannot influence it and a non-zero nested default is handled by the caller's
+ * ordinary per-field test.
+ *
+ * This is the message-layer primitive, for generated code and for the C++
+ * wrapper. Two callers keep using the eager sofab_ostream_write_sequence_begin():
+ *   - a direct (hand-written) encoder, for which an empty sequence is a legal
+ *     wire primitive in its own right (§4.9);
+ *   - an array wrapper whose field declares a **non-empty** default, where the
+ *     empty frame is the only encoding of "explicitly empty" (§2, §3).
+ *
+ * The descriptor-driven sofab_object_encode() needs neither: it decides omission
+ * per field, before opening anything.
+ *
+ * **Bounded**: at most @ref SOFAB_LAZY_SEQ_DEPTH headers are held back at once.
+ * A sequence opened deeper than that is framed eagerly and therefore keeps its
+ * empty frame when it turns out to be all-default — well-formed and
+ * value-identical, but not canonical. See @ref SOFAB_LAZY_SEQ_DEPTH for why this
+ * heap-free profile takes that allowance and how to raise the bound.
+ *
+ * **On a full buffer**: whatever commits the run (a field write, an eager
+ * sequence_begin, sofab_ostream_write_sequence_end_keep(), or overflowing the
+ * window) can hit SOFAB_RET_E_BUFFER_FULL partway through it. The ids that did
+ * not reach the buffer stay held back, so a caller that supplies a fresh buffer
+ * with sofab_ostream_buffer_set() and retries emits them then — the pending run
+ * never silently loses a sequence whose end marker is still coming. As everywhere
+ * in this encoder, the *bytes* are not rolled back: the header that hit the wall
+ * may have left a partial varint behind.
+ *
+ * @param ctx    Pointer to the output stream context.
+ * @param id     Field identifier representing the sequence.
+ *
+ * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code.
+ */
+#if !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+extern sofab_ret_t sofab_ostream_write_sequence_begin_lazy (sofab_ostream_t *ctx, sofab_id_t id);
+
+/*!
+ * @brief End a nested sequence, keeping its frame even without content.
+ *
+ * The counterpart of sofab_ostream_write_sequence_end() for a sequence opened
+ * with sofab_ostream_write_sequence_begin_lazy(): it first emits the held-back
+ * headers -- this frame's and every enclosing one's -- and then the end marker,
+ * so an empty sequence reaches the wire as begin + end.
+ *
+ * Required wherever the frame carries information beyond its contents: a
+ * wrapper-array ELEMENT (element presence carries a dynamic array's length,
+ * MESSAGE_SPEC §5.1), and an array field already known to differ from a
+ * non-empty declared default (§2, §3).
+ *
+ * @param ctx   Pointer to the output stream context.
+ *
+ * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code.
+ */
+extern sofab_ret_t sofab_ostream_write_sequence_end_keep (sofab_ostream_t *ctx);
+#endif /* !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT) */
 
 /*!
  * @brief End encoding a nested sequence (end marker).

@@ -132,6 +132,57 @@ static sofab_unsigned_t _type_encode (sofab_unsigned_t var, int type)
     return ((var << 3) | (type & 0x07));
 }
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+/*!
+ * @brief Write out the held-back sequence headers, outermost first.
+ *
+ * Runs at most once per non-default sequence, never per field, so it is kept out
+ * of line: the hot writers only pay the npending test.
+ *
+ * On SOFAB_RET_E_BUFFER_FULL the ids that did NOT reach the buffer stay pending:
+ * they are shifted down so ctx->pending still holds exactly the still-unwritten
+ * (innermost) run, and it still is a suffix of the open sequences — the ones
+ * dropped from it are on the wire, framed. Without that, a partial commit would
+ * forget the rest of the run, and the matching sofab_ostream_write_sequence_end()
+ * calls would emit end markers for headers that were never written, leaving an
+ * unbalanced (INVALID) stream even for a caller that installs a fresh buffer via
+ * sofab_ostream_buffer_set() and retries. Retained is not the same as atomic: the
+ * header that hit the wall may already have pushed the low bytes of its varint,
+ * exactly as every other writer here can (see _push_byte) — the retained run is
+ * what keeps the *bookkeeping* consistent, not a rollback of the buffer.
+ *
+ * @param ctx  Output stream context.
+ * @return SOFAB_RET_OK on success, otherwise an sofab_ret_t error code.
+ */
+SOFAB_NOINLINE
+static sofab_ret_t _commit_pending (sofab_ostream_t *ctx)
+{
+    sofab_ret_t ret = SOFAB_RET_OK;
+    uint8_t n = ctx->npending;
+    uint8_t i = 0;
+
+    for (; i < n; i++)
+    {
+        if (_varint_encode(ctx, _type_encode(ctx->pending[i],
+                                            SOFAB_TYPE_SEQUENCE_START)) < 0)
+        {
+            ret = SOFAB_RET_E_BUFFER_FULL;
+            break;
+        }
+    }
+
+    /* Keep the ids from i on -- everything before it is framed already. On the
+     * success path i == n, so this is "npending = 0" plus an empty loop. */
+    ctx->npending = (uint8_t)(n - i);
+    for (uint8_t k = 0; k < ctx->npending; k++)
+    {
+        ctx->pending[k] = ctx->pending[i + k];
+    }
+
+    return ret;
+}
+#endif /* SEQUENCE && LAZY_SEQ */
+
 /*!
  * @brief Write a field header (id + type) to the buffer as a varint.
  *
@@ -148,6 +199,22 @@ static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_ty
     {
         return SOFAB_RET_E_ARGUMENT;
     }
+
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+    /* Every writer funnels through here, so this is where a held-back sequence
+     * run is committed: the field about to be written is content, which means
+     * every enclosing sequence is non-default and must be framed after all
+     * (MESSAGE_SPEC §2, see sofab_ostream_write_sequence_begin_lazy). */
+    if (ctx->npending != 0
+        && type != SOFAB_TYPE_SEQUENCE_START && type != SOFAB_TYPE_SEQUENCE_END)
+    {
+        sofab_ret_t cret = _commit_pending(ctx);
+        if (cret != SOFAB_RET_OK)
+        {
+            return cret;
+        }
+    }
+#endif /* SEQUENCE && LAZY_SEQ */
 
     if (_varint_encode(ctx, _type_encode(id, type)) < 0)
     {
@@ -257,6 +324,11 @@ extern void sofab_ostream_init (
     ctx->bufend = buffer + buflen;
     ctx->flush = flush;
     ctx->usrptr = usrptr;
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+    /* No sequence is open yet, so nothing is held back. The pending[] slots
+     * themselves stay untouched -- npending bounds every read of them. */
+    ctx->npending = 0;
+#endif /* SEQUENCE && LAZY_SEQ */
 }
 
 extern size_t sofab_ostream_flush (sofab_ostream_t *ctx)
@@ -546,6 +618,16 @@ extern sofab_ret_t sofab_ostream_write_sequence_begin (sofab_ostream_t *ctx, sof
 
     assert(ctx != NULL);
 
+    /* A framed sequence is content for everything enclosing it. Committing here
+     * also keeps ctx->pending a suffix of the open sequences, which
+     * sofab_ostream_write_sequence_end() relies on. */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+    if (ctx->npending != 0 && (ret = _commit_pending(ctx)) != SOFAB_RET_OK)
+    {
+        return ret;
+    }
+#endif /* SEQUENCE && LAZY_SEQ */
+
     if ((ret = _write_id_type(ctx, id, SOFAB_TYPE_SEQUENCE_START)) != SOFAB_RET_OK)
     {
         return ret;
@@ -554,11 +636,69 @@ extern sofab_ret_t sofab_ostream_write_sequence_begin (sofab_ostream_t *ctx, sof
     return SOFAB_RET_OK;
 }
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+extern sofab_ret_t sofab_ostream_write_sequence_begin_lazy (sofab_ostream_t *ctx, sofab_id_t id)
+{
+    sofab_ret_t ret;
+
+    assert(ctx != NULL);
+
+    if (id > SOFAB_ID_MAX)
+    {
+        return SOFAB_RET_E_ARGUMENT;
+    }
+
+    if (ctx->npending < SOFAB_LAZY_SEQ_DEPTH)
+    {
+        ctx->pending[ctx->npending++] = id;
+        return SOFAB_RET_OK;
+    }
+
+    /* Deeper than the hold-back window: commit the run and frame eagerly, which
+     * keeps the suffix invariant above. Valid, just not canonical if this
+     * sequence turns out to be all-default. */
+    if ((ret = _commit_pending(ctx)) != SOFAB_RET_OK)
+    {
+        return ret;
+    }
+
+    return _write_id_type(ctx, id, SOFAB_TYPE_SEQUENCE_START);
+}
+
+extern sofab_ret_t sofab_ostream_write_sequence_end_keep (sofab_ostream_t *ctx)
+{
+    sofab_ret_t ret;
+
+    assert(ctx != NULL);
+
+    /* Like a write: emit the held-back headers first, then the end marker, so a
+     * sequence that never got content still reaches the wire as begin + end
+     * (MESSAGE_SPEC §5.1 -- element presence carries the array length). */
+    if (ctx->npending != 0 && (ret = _commit_pending(ctx)) != SOFAB_RET_OK)
+    {
+        return ret;
+    }
+
+    return _write_id_type(ctx, 0, SOFAB_TYPE_SEQUENCE_END);
+}
+#endif /* SEQUENCE && LAZY_SEQ */
+
 extern sofab_ret_t sofab_ostream_write_sequence_end (sofab_ostream_t *ctx)
 {
     sofab_ret_t ret;
 
     assert(ctx != NULL);
+
+    /* The innermost open sequence is the last held-back one, if any: it had no
+     * content, so the whole field is omitted -- header and end marker both
+     * (MESSAGE_SPEC §2). */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+    if (ctx->npending != 0)
+    {
+        ctx->npending--;
+        return SOFAB_RET_OK;
+    }
+#endif /* SEQUENCE && LAZY_SEQ */
 
     if ((ret = _write_id_type(ctx, 0, SOFAB_TYPE_SEQUENCE_END)) != SOFAB_RET_OK)
     {
