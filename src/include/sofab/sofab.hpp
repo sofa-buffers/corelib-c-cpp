@@ -2463,9 +2463,22 @@ namespace sofab
     /* MESSAGE_SPEC §5 lowers an array of strings, blobs, structs or nested   */
     /* arrays to a sequence whose child ids are the element indices. These    */
     /* collect such a sequence into this profile's heap-free containers. They  */
-    /* mirror sofab::StringSeq / BlobSeq / MessageSeq in corelib-cpp so both  */
-    /* C++ outputs read the same; the difference is the storage they fill —   */
-    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.  */
+    /* mirror sofab::StringSeq / BlobSeq in corelib-cpp so both C++ outputs    */
+    /* read the same; the difference is the storage they fill —                */
+    /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.   */
+    /*                                                                        */
+    /* There is deliberately NO MessageSeq/FixedMessageSeq counterpart here.   */
+    /* The pair that used to sit below appended elements in ARRIVAL ORDER and  */
+    /* grew the container before deciding the child's wire type, so an interior*/
+    /* id gap shifted every later element down by one (§5.1) and a §7.3        */
+    /* mismatched child left a phantom (generator#249). Their four siblings    */
+    /* above always placed at the element id. Nothing used them: generated     */
+    /* code emits its own sofabgen::WrapperSeq — a generator test asserts the  */
+    /* emitted header contains no sofab::MessageSeq — and no test here did     */
+    /* either. A parity API that silently behaves differently from the one it  */
+    /* claims to mirror is worse than none, so they were removed rather than   */
+    /* repaired. corelib-cpp's MessageSeq is unaffected: it places by id and   */
+    /* its own tests exercise it.                                             */
     /* ---------------------------------------------------------------------- */
 
     /**
@@ -2590,62 +2603,6 @@ namespace sofab
             auto &b = (*out)[id];
             b.resize(size);
             if (size) is.read(b.data(), b.size());
-        }
-    };
-
-    /**
-     * @brief Collects a struct/union or nested-array wrapper sequence into inline
-     *        storage.
-     *
-     * Elements arrive in order, so each is emplaced and read in turn:
-     * @ref IStreamImpl::read descends into a struct element's own sub-sequence, or
-     * reads a nested array row, exactly as for a scalar field.
-     *
-     * @tparam Container Inline vector of the element type.
-     */
-    template <typename Container>
-    struct FixedMessageSeq : IStreamMessage
-    {
-        Container *out = nullptr;
-
-        void deserialize(IStreamImpl &is, sofab_id_t, size_t, size_t) noexcept override
-        {
-            is.read(out->emplace_back());
-        }
-    };
-
-    /**
-     * @brief Collects a struct/union or nested-array wrapper sequence into a
-     *        `std::vector<T>` — the `allow_dynamic` storage mode.
-     *
-     * The inline-storage counterpart is @ref FixedMessageSeq, which takes its
-     * bound from the container's capacity. A `std::vector` has none, so the
-     * schema `count` rides in as @ref cap — the bound is the same either way,
-     * only where it is enforced differs. Named to match `sofab::MessageSeq` in
-     * corelib-cpp so both C++ outputs read alike.
-     *
-     * @tparam T Element type.
-     */
-    template <typename T>
-    struct MessageSeq : IStreamMessage
-    {
-        std::vector<T> *out = nullptr;
-        long cap = -1;   //!< Schema `count` N, or -1; an id at or past N is INVALID (§5.1/§7).
-
-        void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
-        {
-            if (cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
-            {
-                is.invalidate();
-                return;
-            }
-            T &row = out->emplace_back();
-            /* A count-less native-array row is a std::vector the read fills only up
-             * to its current size, so size it to the row's wire count first.
-             * Struct/union rows and fixed std::array rows have no resize(). */
-            if constexpr (requires { row.resize(count); } && !std::is_base_of_v<IStreamMessage, T>)
-                row.resize(count);
-            is.read(row);
         }
     };
 
