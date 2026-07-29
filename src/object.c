@@ -186,7 +186,9 @@ static size_t _seq_len (const sofab_object_descr_t *info, const void *obj)
  * (MESSAGE_SPEC §5.1) — and stores it back into the companion member, exactly as a
  * sized blob stores its received byte length. The maximum (rather than a plain
  * assignment) keeps the result independent of element order; an over-index id
- * never reaches here (it is rejected, §7/§7.1) and the clamp is belt and braces.
+ * never reaches here (it matches no slot, so it is rejected under §7/§7.1 or
+ * skipped under §7.3, and either way returns first) and the clamp is belt and
+ * braces.
  * An un-sized holder has nowhere to put it and this is a no-op.
  *
  * "Present" is an element that was actually **bound** as an element — the call
@@ -207,6 +209,74 @@ static void _seq_len_observe (const sofab_object_descr_t *info,
     if ((uint64_t)len > _load_uint(dst + off, width))
     {
         _store_uint(dst + off, width, (uint64_t)len);
+    }
+}
+
+/*!
+ * @brief The wire opt a field of descriptor type @p type would install.
+ *
+ * The pair (wire opt, expected opt) is what settles MESSAGE_SPEC §7.3 — a header
+ * whose wire type, or whose fixlen subtype, contradicts the declared type. For a
+ * MATCHED id the expected opt arrives for free: the read that binds the slot
+ * writes it into @c ctx->target_opt. An UNMATCHED id binds nothing, so the same
+ * value has to be derived from the descriptor, which is what this does.
+ *
+ * The result is meant for the @c 0x3F mask (field type + fixlen subtype), the one
+ * the matched-id test and the sized-blob guard already use: the string reader's
+ * @ref SOFAB_ISTREAM_OPT_STRINGTERM bit (0x40) sits outside it, and a varint array
+ * carries no subtype on either side, so the two agree there too.
+ *
+ * @param type  A @ref SOFAB_OBJECT_FIELDTYPE_UNSIGNED "SOFAB_OBJECT_FIELDTYPE_*" tag.
+ * @return The expected opt (0..0x3F), or -1 for a descriptor type that has no wire
+ *         expectation (an unsupported tag) — the caller must not claim a
+ *         contradiction it cannot establish.
+ */
+static int _expected_opt (uint8_t type)
+{
+    switch (type)
+    {
+        case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED);
+
+        case SOFAB_OBJECT_FIELDTYPE_SIGNED:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED);
+
+        case SOFAB_OBJECT_FIELDTYPE_FP32:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32);
+
+        case SOFAB_OBJECT_FIELDTYPE_FP64:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64);
+
+        case SOFAB_OBJECT_FIELDTYPE_STRING:
+            /* the reader also sets STRINGTERM (0x40); it is outside the 0x3F mask */
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING);
+
+        case SOFAB_OBJECT_FIELDTYPE_BLOB:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB);
+
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED);
+
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED);
+
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32);
+
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64);
+
+        case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
+            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START);
+
+        default:
+            return -1;
     }
 }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
@@ -970,9 +1040,49 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
     // instead of silently dropping it. This is the object-API counterpart of the
     // streaming abort channel from #92/#93 (issue #94); the holder loop above
     // never bound a target, so the invalidate is set synchronously here.
-    if (info->fixed_seq)
+    //
+    // §7.3 is decided FIRST, though (issue #117, Crucible F-0041). A header whose
+    // wire type -- or, for a fixlen element type, whose fixlen subtype --
+    // contradicts the declared type "MUST be skipped, exactly as a field with an
+    // unknown id is skipped", and "against a schema bound, this clause wins". A
+    // skipped field is not an element, so its id is not an array index and there is
+    // no index for the count to bound: CORELIB_PLAN §4.8, "the field was never this
+    // array's value"; §7.4, "an occurrence skipped under §7.3 is not an occurrence
+    // for this clause". The bound applies only to a field that SURVIVES the test --
+    // which is the very test the matched-id path runs before _seq_len_observe
+    // above, with the same 0x3F mask (field type + fixlen subtype). Reading it the
+    // other way round is what split the roster: 11 implementations skip here, this
+    // one rejected.
+    //
+    // An over-index element has no declared slot of its own, so "the declared type"
+    // §7.3 tests against is the ARRAY's element type. Wrapper elements are
+    // homogeneous (§5.1), so slot 0 carries it and no descriptor member is needed.
+    //
+    // The ordering this needs is already in place upstream: sofab_istream_feed ORs
+    // the fixlen subtype into target_opt before it calls this callback, so the
+    // subtype is known here, and a message that ends between an element header and
+    // its fixlen word never reaches the callback at all -- it stays INCOMPLETE
+    // (§5.2), as it already did. Nor is the reject deferred any further: from the
+    // fixlen word on it fires without waiting for a single payload byte.
+    //
+    // Format-level rejects are untouched. An over-wide varint, an id past ID_MAX,
+    // ARRAY_MAX, a reserved fixlen subtype, a bad fp width and MAX_DEPTH all fire
+    // in the istream, before or independently of this callback. §7.3 subordinates
+    // the SCHEMA bound only (CORELIB_PLAN §4.8: "the format ceiling still fires on
+    // the count word whatever the subtype turns out to be").
+    if (info->fixed_seq && info->field_count != 0)
     {
-        sofab_istream_invalidate(ctx);
+        /* field_count == 0 above: a holder with no slot has no element type to
+         * contradict, so §7.3 cannot be settled -- skip, never reject.
+         * expected < 0 below: an unsupported descriptor tag is likewise no
+         * expectation, so no contradiction can be claimed and the bound stands. */
+        const int expected = _expected_opt(info->field_list[0].type);
+
+        if (expected < 0
+            || ((unsigned)(wire_opt ^ (uint8_t)expected) & 0x3Fu) == 0u)
+        {
+            sofab_istream_invalidate(ctx);
+        }
     }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 }
