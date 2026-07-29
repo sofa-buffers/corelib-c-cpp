@@ -1163,6 +1163,282 @@ static void test_msg_invalid_varint_over_64bit (void)
     TEST_ASSERT_EQUAL_UINT8(1, test.calls);
 }
 
+/*****************************************************************************/
+/* CORELIB_PLAN §4.1 / §5.2: the overlong-varint verdict is due on the tenth  */
+/* byte (issue #116, Crucible F-0040).                                       */
+/*                                                                           */
+/* §4.1 makes both overlong tests properties of the ENCODING: a varint is     */
+/* INVALID iff it is longer than ten bytes, or a payload bit lands at bit     */
+/* position >= 64. A continuation flag on the tenth byte already demands an   */
+/* eleventh, so the encoding is overlong at that point — and §5.2 gives       */
+/* INVALID precedence over INCOMPLETE for input that is malformed             */
+/* independently of any bytes that might follow. Waiting for the eleventh     */
+/* byte (which may never arrive) and answering INCOMPLETE — "feed me more" —  */
+/* is the one outcome ruled out.                                             */
+/*                                                                           */
+/* Every varint-decoding state funnels through the same preamble, so the      */
+/* cases below walk the field-header, value, fixlen_word and array-count      */
+/* positions, plus the controls that pin the boundary from both sides.        */
+/*****************************************************************************/
+
+static void test_msg_invalid_varint_ten_continuation_bytes (void)
+{
+    // THE regression vector: ten varint bytes at the field-header position, every
+    // one with the continuation flag set. No eleventh byte follows, and none may:
+    // the encoding is already longer than the ten bytes §4.1 allows -> INVALID.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = NULL,
+        .target_size = 0,
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    // the header never completed, so no field was ever announced
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls);
+}
+
+static void test_msg_invalid_varint_ten_continuation_bytes_bytewise (void)
+{
+    // Chunked equivalence (CORELIB_PLAN §7.2): fed one byte at a time the verdict
+    // must be identical AND arrive on the same byte. The first nine bytes still
+    // leave a varint that a tenth byte could legally terminate -> INCOMPLETE; the
+    // tenth settles it -> INVALID. This is the assertion the one-shot feed cannot
+    // make, and the one that fails when the width guard is evaluated only on entry.
+    sofab_istream_t ctx;
+    const uint8_t buffer[] = {
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = NULL,
+        .target_size = 0,
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    for (size_t i = 0; i < sizeof(buffer); i++)
+    {
+        sofab_ret_t ret = sofab_istream_feed(&ctx, &buffer[i], 1);
+        if (i + 1 < sizeof(buffer))
+            TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+        else
+            TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    }
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls);
+}
+
+static void test_msg_incomplete_nine_continuation_bytes (void)
+{
+    // The near-boundary control that proves the guard is not one byte too early:
+    // nine continuation bytes carry 63 bits, and a tenth byte of 0x00 or 0x01
+    // would still complete a legal varint. More input can save this -> INCOMPLETE.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+    sofab_istream_init(&ctx, _single_field_callback, NULL);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, ret);
+}
+
+static void test_msg_invalid_varint_eleven_bytes (void)
+{
+    // Control: eleven varint bytes at the header position. Already rejected
+    // before this fix (by the on-entry width guard) and still rejected after it,
+    // only one byte earlier. Guards against a "fix" that moves the check instead
+    // of adding one.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00};
+
+    sofab_istream_init(&ctx, _single_field_callback, NULL);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+}
+
+static void test_msg_valid_nonminimal_ten_byte_header_varint (void)
+{
+    // Control for §4.1's accept-and-normalize of non-minimal encodings: nine
+    // continuation bytes then a terminating 0x00 is a legal ten-byte encoding of
+    // 0 - i.e. field id 0, unsigned varint - followed by the value 1. Length
+    // alone must never be a rejection; only the continuation flag ON the tenth
+    // byte is.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x01};
+
+    uint64_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT64(1, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+static void test_msg_valid_ten_byte_varint_max_value (void)
+{
+    // Control: the largest valid ten-byte varint, 2^63, at a VALUE position. The
+    // tenth byte terminates the encoding, so the accumulated shift reaching the
+    // type width must NOT be rejected - the new guard has to sit after the
+    // terminator branch, not before it.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x00,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01};
+
+    uint64_t value = 0;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT64((uint64_t)1 << 63, value);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+static void test_msg_invalid_varint_payload_bit_past_width (void)
+{
+    // Control for §4.1 condition (b), which is a separate test from the length:
+    // the tenth byte terminates, but its payload 0x02 would place a bit at
+    // position >= 64. The pre-accumulate spill check must still be the one that
+    // fires; the new exit guard must not shadow or replace it.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x00,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02};
+
+    uint64_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+}
+
+static void test_msg_invalid_varint_ten_continuation_at_value (void)
+{
+    // Same defect at a VALUE position: header 0x00 (id 0, unsigned varint), then
+    // ten continuation bytes and nothing more.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x00,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+    uint64_t value = 0x55;
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_INT64U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    TEST_ASSERT_EQUAL_UINT8(1, test.calls);
+    TEST_ASSERT_EQUAL_UINT64(0x55, value);
+}
+
+static void test_msg_invalid_varint_ten_continuation_at_fixlen_word (void)
+{
+    // Same defect at a FIXLEN_WORD position (header 0x02 = id 0, fixlen). §5.2's
+    // early-validation rule requires the verdict here, before any payload is
+    // awaited - the decoder must not ask for the length's continuation.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x02,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+    char value[16] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_STRING,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    // the fixlen_word never completed, so the size is unknown and nothing binds
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls);
+}
+
+static void test_msg_invalid_varint_ten_continuation_at_array_count (void)
+{
+    // Same defect at an ARRAY COUNT position (header 0x03 = id 0, array of
+    // unsigned). Together with the header/value/fixlen cases this shows the fix
+    // lands in the shared varint preamble and covers every decoder state.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    const uint8_t buffer[] = {
+        0x03,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+    uint64_t value[4] = {0};
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_INT64U,
+        .target_ptr = &value,
+        .target_size = sizeof(value),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+    // the count never completed, so the array was never announced
+    TEST_ASSERT_EQUAL_UINT8(0, test.calls);
+}
+
 static void test_msg_invalid_fixlen_fp32_wrong_width_truncated (void)
 {
     // A fp32 field is always exactly 4 bytes on the wire. A declared width that is
@@ -3001,6 +3277,16 @@ int test_istream_main (void)
     RUN_TEST(test_msg_incomplete_partial_value_varint);
     RUN_TEST(test_msg_incomplete_truncated_fixlen);
     RUN_TEST(test_msg_invalid_varint_over_64bit);
+    RUN_TEST(test_msg_invalid_varint_ten_continuation_bytes);
+    RUN_TEST(test_msg_invalid_varint_ten_continuation_bytes_bytewise);
+    RUN_TEST(test_msg_incomplete_nine_continuation_bytes);
+    RUN_TEST(test_msg_invalid_varint_eleven_bytes);
+    RUN_TEST(test_msg_valid_nonminimal_ten_byte_header_varint);
+    RUN_TEST(test_msg_valid_ten_byte_varint_max_value);
+    RUN_TEST(test_msg_invalid_varint_payload_bit_past_width);
+    RUN_TEST(test_msg_invalid_varint_ten_continuation_at_value);
+    RUN_TEST(test_msg_invalid_varint_ten_continuation_at_fixlen_word);
+    RUN_TEST(test_msg_invalid_varint_ten_continuation_at_array_count);
     RUN_TEST(test_msg_invalid_fixlen_fp32_wrong_width_truncated);
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     RUN_TEST(test_msg_invalid_fixlen_fp64_wrong_width_truncated);

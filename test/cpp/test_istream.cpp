@@ -848,6 +848,171 @@ TEST_CASE("IStream: truncated input is incomplete, not complete or invalid")
     }
 }
 
+// CORELIB_PLAN §4.1 / §5.2 (issue #116, Crucible F-0040): §4.1 makes both
+// overlong tests properties of the *encoding* - longer than ten bytes, or a
+// payload bit at position >= 64 - and §5.2 gives InvalidMessage precedence over
+// Incomplete for input that is malformed independently of any bytes that might
+// follow. A continuation flag on the tenth byte already demands an eleventh, so
+// the verdict is due on that tenth byte; answering Incomplete ("feed me more")
+// for a stream no continuation can rescue is the one outcome ruled out. The
+// wrapper is a thin layer over the same C decoder, so these cases pin the
+// boundary through the public C++ surface as well.
+TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
+{
+    SECTION("ten continuation bytes and nothing more -> InvalidMessage")
+    {
+        const uint8_t buffer[] = {
+            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+        int calls = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { calls++; }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        REQUIRE_FALSE(result.incomplete());
+        REQUIRE(calls == 0);                        // header never completed
+    }
+
+    SECTION("fed one byte at a time, the tenth byte is the one that rejects")
+    {
+        // Chunked equivalence: same verdict, and on the same byte. The first
+        // nine bytes could still be completed by a legal tenth -> Incomplete.
+        const uint8_t buffer[] = {
+            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+        sofab::IStreamInline istream{
+            [](sofab::id, size_t, size_t) noexcept {}
+        };
+
+        for (size_t i = 0; i < sizeof(buffer); i++)
+        {
+            auto result = istream.feed(&buffer[i], 1);
+            if (i + 1 < sizeof(buffer))
+                REQUIRE(result.code() == sofab::Error::Incomplete);
+            else
+                REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        }
+    }
+
+    SECTION("nine continuation bytes are still Incomplete")
+    {
+        // The near-boundary control: 63 accumulated bits, and a tenth byte of
+        // 0x00 or 0x01 would still complete a legal varint.
+        const uint8_t buffer[] = {
+            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+        sofab::IStreamInline istream{
+            [](sofab::id, size_t, size_t) noexcept {}
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.incomplete());
+        REQUIRE(result.code() == sofab::Error::Incomplete);
+    }
+
+    SECTION("a non-minimal ten-byte varint is still accepted")
+    {
+        // §4.1 accept-and-normalize: nine continuation bytes then a terminating
+        // 0x00 encode 0 - field id 0, unsigned - followed by the value 1. Length
+        // alone is never a rejection.
+        const uint8_t buffer[] = {
+            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x01};
+
+        uint64_t value = 0x55;
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t, size_t) noexcept
+            {
+                if (id == 0) { istream.read(value); }
+            }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(value == 1u);
+    }
+
+    SECTION("the largest valid ten-byte varint is still accepted")
+    {
+        // 2^63 at a value position: the tenth byte terminates, so the guard must
+        // sit after the terminator branch, not before it.
+        const uint8_t buffer[] = {
+            0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01};
+
+        uint64_t value = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t, size_t) noexcept
+            {
+                if (id == 0) { istream.read(value); }
+            }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(value == (uint64_t{1} << 63));
+    }
+
+    SECTION("a tenth byte whose payload spills past the width is invalid")
+    {
+        // §4.1 condition (b), the separate test: the tenth byte terminates but
+        // its payload 0x02 would place a bit at position >= 64.
+        const uint8_t buffer[] = {
+            0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02};
+
+        uint64_t value = 0x55;
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t, size_t) noexcept
+            {
+                if (id == 0) { istream.read(value); }
+            }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+    }
+
+    SECTION("the same defect at a fixlen_word position")
+    {
+        // header 0x02 = id 0, fixlen; the length varint never terminates.
+        const uint8_t buffer[] = {
+            0x02, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+        int calls = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { calls++; }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        REQUIRE(calls == 0);
+    }
+
+    SECTION("the same defect at an array-count position")
+    {
+        // header 0x03 = id 0, array of unsigned; the count varint never
+        // terminates. Proves the fix lives in the shared varint preamble.
+        const uint8_t buffer[] = {
+            0x03, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+
+        int calls = 0;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { calls++; }
+        };
+
+        auto result = istream.feed(buffer, sizeof(buffer));
+
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        REQUIRE(calls == 0);
+    }
+}
+
 //
 // Nested-message round-trip: a parent with a scalar before and after a nested
 // child sequence. Exercises the IStreamImpl::read<T> InputMessage branch both in

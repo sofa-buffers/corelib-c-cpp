@@ -125,6 +125,19 @@ static int _varint_decode (sofab_istream_t *ctx, uint8_t byte, sofab_unsigned_t 
         return 0;
     }
 
+    // A continuation flag on the byte that just filled the value type's width
+    // demands a further byte the encoding is no longer allowed to have: it is
+    // already overlong (CORELIB_PLAN §4.1 - both tests are on the encoding),
+    // and §5.2 gives INVALID precedence over INCOMPLETE for input that is
+    // malformed independently of any bytes that might follow. So the verdict is
+    // reached here, on the byte that settles it, not on a byte that may never
+    // arrive. varint_shift is deliberately left dirty (as on the entry guard
+    // above) so _at_message_boundary() cannot mistake this for a field boundary.
+    if (ctx->varint_shift >= bits)
+    {
+        return -2;
+    }
+
     // need more data
     return -1;
 }
