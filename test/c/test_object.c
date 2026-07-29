@@ -2705,6 +2705,184 @@ static void test_object_sized_wrapper_struct_mistyped_element_absent (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY(one, out, used);
 }
 
+/* --- issue #117 (Crucible F-0041): §7.3 is decided BEFORE the §7 bound --- */
+//
+// An element header that is wrong twice over -- an id past the schema count AND a
+// wire type (or fixlen subtype) that contradicts the declared element type -- must
+// be SKIPPED, not rejected. §7.3: "against a schema bound, this clause wins", and a
+// skipped field is not an element, so its id is not an array index and there is no
+// index left for the count to bound (§7.4: "an occurrence skipped under §7.3 is not
+// an occurrence for this clause"; CORELIB_PLAN §4.8: "the field was never this
+// array's value").
+//
+// Each test pins the isolate together with its controls, because a "fix" that
+// simply drops the bound passes the isolate alone:
+//   - a correctly typed over-index element still REJECTS (the §7/§7.1 bound), and
+//   - an in-range mistyped element is still SKIPPED (the plain §7.3 rule, which was
+//     never in dispute), and
+//   - the ordering relaxes exactly one window, header -> fixlen word: from the word
+//     on the reject fires without waiting for a byte of payload, and the format
+//     ceilings fire whatever the subtype turns out to be.
+//
+// Wrapper id 200 = 0xC6 0x0C; element headers pack (id << 3) | wire_type, so
+// 0x40 = id 8 UNSIGNED, 0x42 = id 8 FIXLEN, 0x46 = id 8 SEQUENCE_START; a fixlen
+// word packs (length << 3) | subtype, so 0x0A = 1 byte of string, 0x0B = 1 byte of
+// blob. Capacity is 5 throughout, so id 8 is over-index.
+//
+
+static void test_object_overindex_mistyped_string_element_skipped (void)
+{
+    _overidx_str_msg_t msg;
+
+    /* THE ISOLATE: id 8 (>= capacity 5) arriving as an UNSIGNED varint where a
+     * string is declared. §7.3 skips it, so no element and no index exist. */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t isolate[] = { 0xC6, 0x0C, 0x40, 0x01, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, isolate, sizeof(isolate)),
+        "a mistyped over-index element must be skipped (§7.3), not rejected");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", msg.arr.strings[0],
+        "a skipped element must leave the array untouched");
+
+    /* CONTROL: the same over-index id, CORRECTLY typed (string "A"). It survives
+     * §7.3, so the schema bound applies -- this must keep rejecting. */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t welltyped[] = { 0xC6, 0x0C, 0x42, 0x0A, 0x41, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG,
+        _overidx_decode(&_overidx_str_msg, &msg, welltyped, sizeof(welltyped)),
+        "a well-typed over-index element must still be INVALID (§7/§7.1)");
+
+    /* CONTROL: an IN-RANGE mistyped id (2) -- the plain §7.3 skip, unchanged. */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t inrange[] = { 0xC6, 0x0C, 0x10, 0x01, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, inrange, sizeof(inrange)),
+        "an in-range mistyped element must be skipped");
+
+    /* SUBTYPE, not just wire type: id 8 with the declared FIXLEN wire type but a
+     * BLOB subtype where a string is declared. Gating on the header alone would
+     * still wrongly reject this. */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t subtype[] = { 0xC6, 0x0C, 0x42, 0x0B, 0x41, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, subtype, sizeof(subtype)),
+        "a contradicting fixlen SUBTYPE is a §7.3 skip too");
+
+    /* CONTROL for it: the same subtype mismatch at an in-range id 2. */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t subtype_inrange[] = { 0xC6, 0x0C, 0x12, 0x0B, 0x41, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_str_msg, &msg, subtype_inrange, sizeof(subtype_inrange)),
+        "an in-range subtype mismatch must be skipped");
+    TEST_ASSERT_EQUAL_STRING("", msg.arr.strings[2]);
+}
+
+static void test_object_overindex_reject_window_unchanged (void)
+{
+    _overidx_str_msg_t msg;
+
+    /* The ONE window that relaxes: the message ends between the element header and
+     * its fixlen word, so the subtype -- and with it the answer to "is this an
+     * element at all?" -- is not yet known. INCOMPLETE, not INVALID (§5.2; the
+     * analogue of CORELIB_PLAN §4.8's ruling for the fixlen array's two words). */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t truncated[] = { 0xC6, 0x0C, 0x42 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_INCOMPLETE,
+        _overidx_decode(&_overidx_str_msg, &msg, truncated, sizeof(truncated)),
+        "a message ending before the fixlen word is INCOMPLETE");
+
+    /* From the fixlen word ON the reject is immediate: the word says string
+     * (subtype 2), length 33, and not one payload byte may be waited for. */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t no_payload[] = { 0xC6, 0x0C, 0x42, 0x8A, 0x02 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG,
+        _overidx_decode(&_overidx_str_msg, &msg, no_payload, sizeof(no_payload)),
+        "the over-index reject must not wait for the payload");
+
+    /* The format ceilings are not subordinated: an over-index element whose own
+     * metadata is malformed regardless of subtype (here an 11-byte count varint on
+     * an array element) is INVALID whatever §7.3 would have done with it. */
+    memset(&msg, 0, sizeof(msg));
+    const uint8_t overlong[] = {
+        0xC6, 0x0C, 0x43,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,
+    };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG,
+        _overidx_decode(&_overidx_str_msg, &msg, overlong, sizeof(overlong)),
+        "§7.3 subordinates the schema bound only, never a format ceiling");
+}
+
+static void test_object_overindex_mistyped_blob_and_struct_element_skipped (void)
+{
+    /* The test is on the declared ELEMENT type, so it must run in both directions
+     * and for a sequence-typed element too. */
+    _overidx_blob_msg_t bmsg;
+
+    /* blob[5]: id 8 as an UNSIGNED varint -> skipped */
+    memset(&bmsg, 0, sizeof(bmsg));
+    const uint8_t b_isolate[] = { 0xC6, 0x0C, 0x40, 0x01, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_blob_msg, &bmsg, b_isolate, sizeof(b_isolate)));
+
+    /* blob[5]: id 8 as a STRING-subtyped fixlen -> the mirror of the string
+     * holder's blob-subtyped element, and skipped for the same reason */
+    memset(&bmsg, 0, sizeof(bmsg));
+    const uint8_t b_string[] = { 0xC6, 0x0C, 0x42, 0x0A, 0x41, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        _overidx_decode(&_overidx_blob_msg, &bmsg, b_string, sizeof(b_string)),
+        "a string-subtyped element in a blob array must be skipped");
+
+    /* CONTROL: id 8 as a correctly typed blob -> still INVALID */
+    memset(&bmsg, 0, sizeof(bmsg));
+    const uint8_t b_welltyped[] = { 0xC6, 0x0C, 0x42, 0x0B, 0x41, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG,
+        _overidx_decode(&_overidx_blob_msg, &bmsg, b_welltyped, sizeof(b_welltyped)),
+        "a well-typed over-index blob element must still be INVALID");
+
+    /* struct[5]: the element type is a SEQUENCE, which the header alone settles --
+     * no metadata word to wait for. id 8 as an UNSIGNED varint -> skipped. */
+    _szk_msg_t kmsg;
+    uint8_t out[64];
+
+    memset(&kmsg, 0, sizeof(kmsg));
+    const uint8_t k_isolate[] = { 0xC6, 0x0C, 0x40, 0x01, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        _szk_decode(&_szk_msg, &kmsg, k_isolate, sizeof(k_isolate)),
+        "a mistyped over-index struct element must be skipped");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, kmsg.arr.len,
+        "a skipped over-index element must not count toward the length");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _sz_encode(&_szk_msg, &kmsg, out, sizeof(out)),
+        "the array must be exactly what it would have been without the element");
+
+    /* CONTROL: id 8 as a correctly typed (empty) element frame -> still INVALID */
+    memset(&kmsg, 0, sizeof(kmsg));
+    const uint8_t k_welltyped[] = { 0xC6, 0x0C, 0x46, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG,
+        _szk_decode(&_szk_msg, &kmsg, k_welltyped, sizeof(k_welltyped)),
+        "a well-typed over-index struct element must still be INVALID");
+}
+
+static void test_object_overindex_skip_leaves_nothing_behind (void)
+{
+    /* The skip must not disturb what already arrived (§5.1 length, §7.4): a valid
+     * element 0 followed by a mistyped over-index element decodes to the array of
+     * just that one element -- length 1, re-encoding to the one-element wrapper. */
+    _szs_msg_t m;
+    uint8_t out[64];
+
+    memset(&m, 0, sizeof(m));
+    const uint8_t wire[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x40, 0x01, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _overidx_decode(&_szs_msg, &m, wire, sizeof(wire)));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, m.arr.len,
+        "a skipped over-index element must not raise the length");
+    TEST_ASSERT_EQUAL_STRING("A", m.arr.s[0]);
+
+    const uint8_t expected[] = { 0xC6, 0x0C, 0x02, 0x0A, 0x41, 0x07 };
+    size_t used = _sz_encode(&_szs_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, out, used);
+}
+
 /* --- blob holder: lengths 0, 1, N-1, N ---------------------------------- */
 //
 // A blob element is a SIZED slot -- { l; b[]; } -- so before the count moved to
@@ -3010,6 +3188,11 @@ int test_object_main (void)
     RUN_TEST(test_object_sized_wrapper_struct_overindex_still_rejected);
     RUN_TEST(test_object_sized_wrapper_leaf_mistyped_element_absent);
     RUN_TEST(test_object_sized_wrapper_struct_mistyped_element_absent);
+
+    RUN_TEST(test_object_overindex_mistyped_string_element_skipped);
+    RUN_TEST(test_object_overindex_reject_window_unchanged);
+    RUN_TEST(test_object_overindex_mistyped_blob_and_struct_element_skipped);
+    RUN_TEST(test_object_overindex_skip_leaves_nothing_behind);
 
     RUN_TEST(test_object_sized_wrapper_blob_lengths);
     RUN_TEST(test_object_sized_wrapper_blob_decode_stores_length);

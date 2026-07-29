@@ -285,6 +285,13 @@ extern "C" {
  * @ref SOFAB_RET_E_INVALID_MSG on decode (MESSAGE_SPEC §7/§7.1), rather than
  * silently skipped the way a message ignores an unknown forward-compatible id.
  *
+ * That bound applies only to a field that survives MESSAGE_SPEC §7.3: an element
+ * header whose wire type — or, for a @c fixlen element type, whose fixlen subtype
+ * — contradicts the declared element type is skipped exactly as an unknown id is,
+ * so its id is not an array index at all and nothing is left for the bound to
+ * reject ("against a schema bound, this clause wins"). The element type tested
+ * against is the one all slots share, taken from slot 0.
+ *
  * The flag also selects the **positional** sparse rule of MESSAGE_SPEC §2/§5.1
  * on encode: inside a holder an element at an @e interior index equal to its
  * default is omitted (leaving an id gap) whatever its kind, and the element at
@@ -399,7 +406,7 @@ typedef struct sofab_object_descr
     const void *const default_values;                       /*!< Pointer to default values for fields (optional, may be NULL) */
     const uint16_t field_count;                             /*!< Number of fields in the object */
     const uint8_t nested_count;                             /*!< Number of nested objects */
-    const uint8_t fixed_seq;                                /*!< Wrapper-array holder marker: bit 0 (@ref SOFAB_OBJECT_SEQ_HOLDER) flags the holder — reject an unmatched (over-index) element id instead of skipping it; the bits above @ref SOFAB_OBJECT_SEQ_LEN_SHIFT carry the byte width of the companion element-count member (0 = un-sized, see @ref SOFAB_OBJECT_DESCR_SEQ_SIZED) */
+    const uint8_t fixed_seq;                                /*!< Wrapper-array holder marker: bit 0 (@ref SOFAB_OBJECT_SEQ_HOLDER) flags the holder — reject an unmatched (over-index) element id instead of skipping it, unless §7.3 already skips it on a contradicting wire type/subtype; the bits above @ref SOFAB_OBJECT_SEQ_LEN_SHIFT carry the byte width of the companion element-count member (0 = un-sized, see @ref SOFAB_OBJECT_DESCR_SEQ_SIZED) */
 } sofab_object_descr_t;
 
 /*!
@@ -507,7 +514,9 @@ extern sofab_ret_t sofab_object_encode (
  * the appropriate read for each known field ID. An unknown field ID is ignored
  * (skipped) for a normal message descriptor, but for a fixed-capacity
  * sequence-holder descriptor (see @ref SOFAB_OBJECT_DESCR_SEQ) it is an
- * over-index element and rejects the message via @ref sofab_istream_invalidate.
+ * over-index element and rejects the message via @ref sofab_istream_invalidate —
+ * unless its header contradicts the declared element type, in which case §7.3
+ * skips it first and no element, and therefore no element index, ever exists.
  *
  * Inside a **sized** holder (@ref SOFAB_OBJECT_DESCR_SEQ_SIZED) a matched element
  * id also raises the companion element-count member to @c id @c + @c 1, so that
