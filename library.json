@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/schema/library.json",
   "name": "sofa-buffers-corelib-c-cpp",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Dependency-free, heap-free, streaming C99/C++20 implementation of the SofaBuffers (Sofab) serialization format. Packs structured fields into a caller-owned buffer and decodes them through a callback-driven decoder, with no allocator and no third-party dependencies.",
   "keywords": "serialization, embedded, streaming, no-alloc, c99, cpp20",
   "license": "MIT",
