@@ -307,11 +307,13 @@ static sofab_ret_t _call_field_callback_masked (
     size_t field_len = ctx->target_len;
     size_t field_count = ctx->target_count;
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     // field is ignored, so let's skip all children
     if (ctx->decoder->skip_depth > 0)
     {
         return SOFAB_RET_OK;
     }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
     // call field callback to notify about new field with size
     ctx->decoder->field_callback(
@@ -412,8 +414,16 @@ static bool _at_message_boundary (const sofab_istream_t *ctx)
     // state, skip_depth) OR-reduce to a single zero test; parent stays a
     // plain (portable) null-pointer check — equivalent to four separate
     // guards, one branch instead of four.
+    //
+    // Without sequence support there is nothing to open: skip_depth can never
+    // rise and no decoder is ever pushed, so those two are constants and only
+    // the two positional counters are left to test.
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     return (ctx->varint_shift | ctx->decoder->state | ctx->decoder->skip_depth) == 0
         && ctx->decoder->parent == NULL;
+#else
+    return (ctx->varint_shift | ctx->decoder->state) == 0;
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 }
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)

@@ -517,10 +517,10 @@ cost is `.text` (flash). Tables below are the size of the built static library
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.5KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.5KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.6KB | 0.0KB | 0.0KB |
-| atmega8 | ~7.9KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.7KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.7KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.8KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.0KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — same as above plus
 `SOFAB_ENABLE_STRICT_UTF8` (off by default). This is the only row where the
@@ -530,10 +530,10 @@ not pay:
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.8KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.8KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.9KB | 0.0KB | 0.0KB |
-| atmega8 | ~8.3KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.9KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.9KB | 0.0KB | 0.0KB |
+| RV32IMC | ~5.0KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.4KB | 0.0KB | 0.0KB |
 
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
 those *Full* rows (it added ~0.27&nbsp;KB on ARMv6-m and ~0.50&nbsp;KB on atmega8).
@@ -551,9 +551,9 @@ below are unaffected either way: they disable sequences outright.
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~1.1KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~1.1KB | 0.0KB | 0.0KB |
-| RV32IMC | ~1.4KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~1.0KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~1.0KB | 0.0KB | 0.0KB |
+| RV32IMC | ~1.3KB | 0.0KB | 0.0KB |
 | atmega8 | ~2.7KB | 0.0KB | 0.0KB |
 
 Same minimal configuration, additionally without `object.c`
