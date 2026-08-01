@@ -1,5 +1,8 @@
-build
-build-*
+# Build directories, at the repo root only. Unanchored these also matched any
+# path component starting with "build-" — which silently kept
+# utils/ci/build-config.sh out of the repository.
+/build
+/build-*
 
 # Local secrets — never commit
 .env

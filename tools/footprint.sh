@@ -22,6 +22,9 @@
 #   AVR               gcc-avr avr-libc binutils-avr
 #   RISC-V (bare)     gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf
 #
+# The per-architecture toolchain files live under utils/; the CI target
+# workflows use the same ones, so this script and CI compile identically.
+#
 # Usage:
 #   tools/footprint.sh            # build everything and print the tables
 #   BUILD_DIR=/path tools/footprint.sh
@@ -44,12 +47,11 @@ COMMON=(
   -DSOFAB_INSTALL=OFF
 )
 
-# Feature switches that define the "minimal" wire format (README).
-MIN_MACROS="-DSOFAB_DISABLE_FIXLEN_SUPPORT \
--DSOFAB_DISABLE_ARRAY_SUPPORT \
--DSOFAB_DISABLE_SEQUENCE_SUPPORT \
--DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK \
--DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL"
+# The four configurations, and the flags that define them, come from the file the
+# CI target workflows also source — so a table regenerated here and a library
+# built by CI cannot disagree about what "minimal" means.
+# shellcheck source=../utils/ci/build-config.sh
+. "${ROOT}/utils/ci/build-config.sh"
 
 # --- target architectures --------------------------------------------------
 # One representative per README row. The label matches the README table; the
@@ -60,31 +62,25 @@ MIN_MACROS="-DSOFAB_DISABLE_FIXLEN_SUPPORT \
 ARCHES=(
   "ARMv6-m|arm-none-eabi-size|-DCMAKE_TOOLCHAIN_FILE=${ROOT}/utils/cortex-m/toolchain-arm-none-eabi.cmake -DARM_MARCH=armv6-m -DARM_MTUNE=cortex-m0"
   "ARMv7-m+fp.dp|arm-none-eabi-size|-DCMAKE_TOOLCHAIN_FILE=${ROOT}/utils/cortex-m/toolchain-arm-none-eabi.cmake -DARM_MARCH=armv7e-m+fp.dp -DARM_MTUNE=cortex-m7"
-  "RV32IMC|riscv64-unknown-elf-size|-DCMAKE_TOOLCHAIN_FILE=${BUILD_DIR}/toolchain-rv32.cmake"
+  "RV32IMC|riscv64-unknown-elf-size|-DCMAKE_TOOLCHAIN_FILE=${ROOT}/utils/riscv32/toolchain-riscv32.cmake"
   "atmega8|avr-size|-DCMAKE_TOOLCHAIN_FILE=${ROOT}/utils/avr/toolchain-avr.cmake -DAVR_MCU=atmega8"
 )
 
 # --- build configurations --------------------------------------------------
-# Each entry: "key|Display Name". The extra CMake args per config are built as a
-# proper array in config_extra() below, because -DCMAKE_C_FLAGS_RELEASE holds a
-# space-separated value that must survive as a single argv element.
-CONFIGS=(
-  "full|Full configuration"
-  "full-strict|Full configuration, strict UTF-8 on"
-  "minimal|Minimal configuration (object API on)"
-  "minimal-noobj|Minimal configuration, without object.c"
+# The keys come from SOFAB_CONFIGS (build-config.sh); only the table headings
+# below are this script's own. sofab_config_args emits one CMake argument per
+# line, so mapfile is what preserves the space-containing
+# -DCMAKE_C_FLAGS_RELEASE as a single argv element.
+declare -A CONFIG_TITLE=(
+  [full]="Full configuration"
+  [full-strict]="Full configuration, strict UTF-8 on"
+  [minimal]="Minimal configuration (object API on)"
+  [minimal-noobj]="Minimal configuration, without object.c"
 )
 
 # Populate the global array CFG_EXTRA with the extra CMake args for a config key.
 config_extra() {
-  case "$1" in
-    full)          CFG_EXTRA=() ;;
-    full-strict)   CFG_EXTRA=( -DSOFAB_ENABLE_STRICT_UTF8=ON ) ;;
-    minimal)       CFG_EXTRA=( -DCMAKE_C_FLAGS_RELEASE="-Os -DNDEBUG ${MIN_MACROS}" ) ;;
-    minimal-noobj) CFG_EXTRA=( -DSOFAB_DISABLE_OBJECT_API=ON
-                               -DCMAKE_C_FLAGS_RELEASE="-Os -DNDEBUG ${MIN_MACROS}" ) ;;
-    *) echo "unknown config: $1" >&2; exit 1 ;;
-  esac
+  mapfile -t CFG_EXTRA < <(sofab_config_args "$1")
 }
 
 # ---------------------------------------------------------------------------
@@ -119,27 +115,6 @@ preflight() {
 }
 
 # ---------------------------------------------------------------------------
-# Generate the RISC-V RV32IMC toolchain file.
-#
-# Ubuntu's gcc-riscv64-unknown-elf ships no C library, so headers come from
-# picolibc via --specs=picolibc.specs. Only the static lib is compiled (never
-# linked), so this is enough. CI does not currently build RV32IMC — the RISC-V
-# workflow targets rv64 linux-gnu under QEMU — so this row is reproduced here.
-# ---------------------------------------------------------------------------
-write_rv32_toolchain() {
-  cat > "${BUILD_DIR}/toolchain-rv32.cmake" <<'EOF'
-set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_SYSTEM_PROCESSOR riscv32)
-set(CMAKE_C_COMPILER   riscv64-unknown-elf-gcc)
-set(CMAKE_CXX_COMPILER riscv64-unknown-elf-g++)
-set(CMAKE_ASM_COMPILER riscv64-unknown-elf-gcc)
-set(CMAKE_C_FLAGS   "-march=rv32imc -mabi=ilp32 --specs=picolibc.specs")
-set(CMAKE_CXX_FLAGS "-march=rv32imc -mabi=ilp32 --specs=picolibc.specs")
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-EOF
-}
-
-# ---------------------------------------------------------------------------
 # Build one (config, arch) pair and echo the .text byte count.
 # ---------------------------------------------------------------------------
 build_one() {
@@ -161,13 +136,12 @@ main() {
   preflight
   rm -rf "${BUILD_DIR}"
   mkdir -p "${BUILD_DIR}"
-  write_rv32_toolchain
 
   declare -A TEXT   # TEXT["cfgkey|label"] = bytes
 
-  local entry cfgkey cfgname a label size_tool arch_args bytes dir
-  for entry in "${CONFIGS[@]}"; do
-    IFS='|' read -r cfgkey cfgname <<<"${entry}"
+  local cfgkey cfgname a label size_tool arch_args bytes dir
+  for cfgkey in "${SOFAB_CONFIGS[@]}"; do
+    cfgname="${CONFIG_TITLE[${cfgkey}]}"
     config_extra "${cfgkey}"
     echo ">> ${cfgname}"
     for a in "${ARCHES[@]}"; do
@@ -183,8 +157,8 @@ main() {
   # --- emit README-shaped markdown tables ---------------------------------
   echo
   echo "==================== README tables (paste-ready) ===================="
-  for entry in "${CONFIGS[@]}"; do
-    IFS='|' read -r cfgkey cfgname _ <<<"${entry}"
+  for cfgkey in "${SOFAB_CONFIGS[@]}"; do
+    cfgname="${CONFIG_TITLE[${cfgkey}]}"
     echo
     echo "**${cfgname}**"
     echo

@@ -27,13 +27,32 @@ name: "Build: AVR"
 on:
   workflow_dispatch:
 
+# Note for whoever restores the triggers above: only the two `full` cells of the
+# config axis below link `sofabtest` at all. The two reduced ones build the
+# library alone, so they are unaffected by the image-size problem and would run
+# today — restoring the job for those two is a smaller step than fixing the link.
+#
+# The mcu axis stays a single entry, but not for the same reason the variants are
+# pruned elsewhere: avr6 (atmega2560) differs from avr4 (atmega8) by ~95 bytes of
+# .text, so it is a genuine variant, not a redundant one the way cortex-m0plus is.
+# It is absent because utils/avr/linker-avr.ld declares a generic OUTPUT_ARCH(avr)
+# and ld then rejects the avr6 runtime libraries ("skipping incompatible ...
+# libc.a") when a test binary is linked — the same linker script the note above
+# already flags as wrong about -mmcu. Both are one fix.
+#
+# The config axis is the four configurations the README footprint tables
+# describe, defined once in utils/ci/build-config.sh and shared with
+# tools/footprint.sh so the tables and this build cannot drift apart.
 jobs:
   build:
+    name: ${{ matrix.mcu }} / ${{ matrix.config }}
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         mcu: [ atmega8 ]
+        config: [ full, full-strict, minimal, minimal-noobj ]
 
     steps:
       - name: Checkout repository
@@ -45,23 +64,31 @@ jobs:
           sudo apt-get install -y \
             avr-libc gcc-avr binutils-avr cmake make
 
-      - name: Configure with CMake (${{ matrix.mcu }})
+      # sofab_config_target picks what is buildable: the whole project for
+      # `full`, the library alone for the rest (see build-config.sh — a reduced
+      # configuration cannot build the max-only unit tests, and the test image is
+      # not worth linking four times for a target that never runs it).
+      - name: Configure and build (${{ matrix.mcu }}, ${{ matrix.config }})
         run: |
+          . utils/ci/build-config.sh
+          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
           cmake -S . -B build \
             -DCMAKE_SYSTEM_PROCESSOR=avr \
             -DAVR_MCU=${{ matrix.mcu }} \
             -DCMAKE_TOOLCHAIN_FILE=utils/avr/toolchain-avr.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF
+            -DSOFAB_ENABLE_BENCH=OFF \
+            "${CFG[@]}"
+          cmake --build build \
+            --target "$(sofab_config_target "${{ matrix.config }}" baremetal)" \
+            --parallel "$(nproc)"
 
-      - name: Build project
-        run: cmake --build build --parallel $(nproc)
-
-      - name: Library size (${{ matrix.mcu }})
+      - name: Library size (${{ matrix.mcu }}, ${{ matrix.config }})
         run: size build/src/libsofabuffers.a
 
       - name: Verify C binary (${{ matrix.mcu }})
+        if: matrix.config == 'full'
         working-directory: build/test/c
         run: |
           file sofabtest
