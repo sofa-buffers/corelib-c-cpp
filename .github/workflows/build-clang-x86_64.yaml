@@ -6,9 +6,26 @@ on:
   pull_request:
     branches: [ main ]
 
+# The config axis is the four configurations the README footprint tables
+# describe, defined once in utils/ci/build-config.sh and shared with
+# tools/footprint.sh. A reduced configuration cannot build the hand-written unit
+# tests — they exercise APIs it removes — so it builds and runs the flag-tolerant
+# vector runner instead, which skips the vectors whose capabilities are compiled
+# out. fail-fast is off so one red configuration does not hide the others.
+#
+# The `full-strict` cell is what CORELIB_PLAN §6.4 requires: strict UTF-8 defaults
+# OFF here, so only that cell compiles the validator in and runs the utf8 unit
+# tests and the invalid_utf8 negative vectors. It replaces the separate
+# strict-UTF-8 leg this workflow used to carry.
 jobs:
   build-and-test:
+    name: ${{ matrix.config }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [ full, full-strict, minimal, minimal-noobj ]
 
     steps:
       - name: Checkout repository
@@ -20,52 +37,42 @@ jobs:
           sudo apt-get install -y \
             clang llvm lld libc++-dev libc++abi-dev cmake make
 
-      - name: Configure with CMake
+      - name: Configure and build (${{ matrix.config }})
         run: |
+          . utils/ci/build-config.sh
+          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
           cmake -S . -B build \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_BUILD_TYPE=Debug
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_CPP="$(sofab_config_cpp "${{ matrix.config }}")" \
+            "${CFG[@]}"
+          cmake --build build \
+            --target "$(sofab_config_target "${{ matrix.config }}" hosted)" \
+            --parallel "$(nproc)"
 
-      - name: Build project
-        run: cmake --build build --parallel $(nproc)
-
-      - name: Library size
+      - name: Library size (${{ matrix.config }})
         run: size build/src/libsofabuffers.a
 
       - name: Verify C binary
+        if: startsWith(matrix.config, 'full')
         working-directory: build/test/c
         run: |
           file sofabtest
           readelf -h -A sofabtest
 
       - name: Verify C++ binary
+        if: startsWith(matrix.config, 'full')
         working-directory: build/test/cpp
         run: |
           file sofabpptest
           readelf -h -A sofabpptest
 
-      - name: Run tests
+      - name: Run tests (${{ matrix.config }})
         working-directory: build
-        run: ctest --output-on-failure --verbose
-
-      # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4),
-      # so the default build above compiles the validator out and skips the utf8
-      # unit tests + negative vectors. Per §6.4 the strict-ON configuration MUST
-      # still be built and conformance-tested, so this second leg opts in with
-      # SOFAB_ENABLE_STRICT_UTF8 and reruns the full ctest suite — the utf8
-      # validator tests and the invalid_utf8 negative vectors now run.
-      - name: Configure with CMake (strict UTF-8 ON)
         run: |
-          cmake -S . -B build-strict-utf8 \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DSOFAB_ENABLE_STRICT_UTF8=ON
-
-      - name: Build project (strict UTF-8 ON)
-        run: cmake --build build-strict-utf8 --parallel $(nproc)
-
-      - name: Run tests (strict UTF-8 ON)
-        working-directory: build-strict-utf8
-        run: ctest --output-on-failure --verbose
+          if [[ "${{ matrix.config }}" == full* ]]; then
+            ctest --output-on-failure --verbose
+          else
+            ctest -R test_vectors_c --output-on-failure --verbose
+          fi

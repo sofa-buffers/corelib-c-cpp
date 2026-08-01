@@ -1,0 +1,73 @@
+name: "Build: RISC-V 32 (bare metal)"
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Bare-metal RV32, the RV32IMC row of the README footprint tables. This is a
+# different target from "Build: RISC-V 64", which builds riscv64-linux-gnu and
+# runs the test suite under QEMU — until this workflow existed, no CI job built
+# the RV32IMC configuration the tables report.
+#
+# VARIANTS — one per ISA profile that actually changes the generated code,
+# verified by compiling the corelib for each and comparing the objects:
+#   rv32imc   the README row and the usual embedded profile
+#   rv32i     no multiply, no compressed instructions — ~50% more .text, the
+#             widest codegen difference in the family
+#   rv32ec    RV32E: 16 registers and the ilp32e ABI, i.e. a different register
+#             file rather than a different instruction set
+# rv32imac is byte-for-byte the same size as rv32imc (the corelib uses no atomics)
+# and rv32im sits between rv32i and rv32imc, so neither is carried.
+#
+# Nothing is linked for the target: there is no RV32 startup or linker script in
+# utils/, and the vector runner needs a filesystem, so tests are off and only the
+# library is built — exactly what tools/footprint.sh does for this row.
+#
+# CONFIGURATIONS come from utils/ci/build-config.sh, shared with
+# tools/footprint.sh so the tables and this build cannot drift apart.
+jobs:
+  build:
+    name: ${{ matrix.variant.march }} / ${{ matrix.config }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [ full, full-strict, minimal, minimal-noobj ]
+        variant:
+          - { march: rv32imc, mabi: ilp32 }
+          - { march: rv32i,   mabi: ilp32 }
+          - { march: rv32ec,  mabi: ilp32e }
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # gcc-riscv64-unknown-elf ships no C library; picolibc supplies the headers
+      # via the --specs=picolibc.specs the toolchain file passes.
+      - name: Install RISC-V bare-metal toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf cmake make
+
+      - name: Configure and build (${{ matrix.variant.march }}, ${{ matrix.config }})
+        run: |
+          . utils/ci/build-config.sh
+          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
+          cmake -S . -B build \
+            -DCMAKE_TOOLCHAIN_FILE=utils/riscv32/toolchain-riscv32.cmake \
+            -DRISCV_MARCH=${{ matrix.variant.march }} \
+            -DRISCV_MABI=${{ matrix.variant.mabi }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSOFAB_ENABLE_CPP=OFF \
+            -DSOFAB_ENABLE_BENCH=OFF \
+            -DSOFAB_BUILD_TESTS=OFF \
+            -DSOFAB_INSTALL=OFF \
+            "${CFG[@]}"
+          cmake --build build --target sofabuffers --parallel "$(nproc)"
+
+      - name: Library size (${{ matrix.variant.march }}, ${{ matrix.config }})
+        run: riscv64-unknown-elf-size build/src/libsofabuffers.a

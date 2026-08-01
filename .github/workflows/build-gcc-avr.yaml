@@ -6,13 +6,27 @@ on:
   pull_request:
     branches: [ main ]
 
+# The mcu axis stays a single entry on purpose. A second AVR family would be
+# worth having — avr6 (atmega2560) differs from avr4 (atmega8) by ~95 bytes of
+# .text, so it is not a redundant variant the way cortex-m0plus is — but
+# utils/avr/linker-avr.ld declares a generic OUTPUT_ARCH(avr), which makes ld
+# reject the avr6 runtime libraries ("skipping incompatible ... libc.a") when the
+# test binary is linked. Only the two full configurations link anything, so the
+# fix belongs in the linker script, not in this matrix.
+#
+# The config axis is the four configurations the README footprint tables
+# describe, defined once in utils/ci/build-config.sh and shared with
+# tools/footprint.sh so the tables and this build cannot drift apart.
 jobs:
   build:
+    name: ${{ matrix.mcu }} / ${{ matrix.config }}
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         mcu: [ atmega8 ]
+        config: [ full, full-strict, minimal, minimal-noobj ]
 
     steps:
       - name: Checkout repository
@@ -24,23 +38,30 @@ jobs:
           sudo apt-get install -y \
             avr-libc gcc-avr binutils-avr cmake make
 
-      - name: Configure with CMake (${{ matrix.mcu }})
+      # A reduced configuration cannot build the hand-written unit tests — they
+      # exercise APIs it removes — so sofab_config_target picks the library alone
+      # there and the whole project for the two full configurations.
+      - name: Configure and build (${{ matrix.mcu }}, ${{ matrix.config }})
         run: |
+          . utils/ci/build-config.sh
+          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
           cmake -S . -B build \
             -DCMAKE_SYSTEM_PROCESSOR=avr \
             -DAVR_MCU=${{ matrix.mcu }} \
             -DCMAKE_TOOLCHAIN_FILE=utils/avr/toolchain-avr.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF
+            -DSOFAB_ENABLE_BENCH=OFF \
+            "${CFG[@]}"
+          cmake --build build \
+            --target "$(sofab_config_target "${{ matrix.config }}" baremetal)" \
+            --parallel "$(nproc)"
 
-      - name: Build project
-        run: cmake --build build --parallel $(nproc)
-
-      - name: Library size (${{ matrix.mcu }})
+      - name: Library size (${{ matrix.mcu }}, ${{ matrix.config }})
         run: size build/src/libsofabuffers.a
 
       - name: Verify C binary (${{ matrix.mcu }})
+        if: startsWith(matrix.config, 'full')
         working-directory: build/test/c
         run: |
           file sofabtest

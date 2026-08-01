@@ -6,9 +6,21 @@ on:
   pull_request:
     branches: [ main ]
 
+# The config axis is the four configurations the README footprint tables
+# describe, defined once in utils/ci/build-config.sh and shared with
+# tools/footprint.sh. A reduced configuration cannot build the hand-written unit
+# tests — they exercise APIs it removes — so it builds and runs the flag-tolerant
+# vector runner instead, which skips the vectors whose capabilities are compiled
+# out. fail-fast is off so one red configuration does not hide the others.
 jobs:
   build-and-test:
+    name: ${{ matrix.config }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [ full, full-strict, minimal, minimal-noobj ]
 
     steps:
       - name: Checkout repository
@@ -20,48 +32,56 @@ jobs:
           sudo apt-get install -y \
             build-essential cmake
 
-      - name: Configure with CMake
+      - name: Configure and build (${{ matrix.config }})
         run: |
+          . utils/ci/build-config.sh
+          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
           cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Debug
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_CPP="$(sofab_config_cpp "${{ matrix.config }}")" \
+            "${CFG[@]}"
+          cmake --build build \
+            --target "$(sofab_config_target "${{ matrix.config }}" hosted)" \
+            --parallel "$(nproc)"
 
-      - name: Build project
-        run: cmake --build build --parallel $(nproc)
-
-      - name: Library size
+      - name: Library size (${{ matrix.config }})
         run: size build/src/libsofabuffers.a
 
       - name: Verify C binary
+        if: startsWith(matrix.config, 'full')
         working-directory: build/test/c/
         run: |
           file sofabtest
           readelf -h -A sofabtest
 
       - name: Verify C++ binary
+        if: startsWith(matrix.config, 'full')
         working-directory: build/test/cpp/
         run: |
           file sofabpptest
           readelf -h -A sofabpptest
 
-      - name: Run tests
+      - name: Run tests (${{ matrix.config }})
         working-directory: build
-        run: ctest --output-on-failure --verbose
+        run: |
+          if [[ "${{ matrix.config }}" == full* ]]; then
+            ctest --output-on-failure --verbose
+          else
+            ctest -R test_vectors_c --output-on-failure --verbose
+          fi
 
-      # This footprint corelib defaults its opt-in features OFF, so the build
-      # above compiles them out and the tests covering them do not run. Each one
-      # must still be built and tested, so this second leg turns them all on and
-      # reruns the full ctest suite:
+      # SOFAB_ENABLE_SKIP_COUNTER is the one opt-in feature no configuration
+      # above turns on — the four README configurations differ in wire features
+      # and in strict UTF-8, not in this diagnostic — so its tests (the
+      # assertions on sofab_istream_skipped / IStreamImpl::skipped) would never
+      # run. This leg turns it on together with strict UTF-8 and reruns the full
+      # suite. It rides on the `full` cell only: the feature is orthogonal to the
+      # wire configuration, so running it four times would prove nothing extra.
       #
-      #   SOFAB_ENABLE_STRICT_UTF8   — CORELIB_PLAN §6.4 requires the strict-ON
-      #                                configuration to be conformance-tested;
-      #                                brings in the utf8 validator tests and the
-      #                                invalid_utf8 negative vectors.
-      #   SOFAB_ENABLE_SKIP_COUNTER  — brings in the assertions on
-      #                                sofab_istream_skipped / IStreamImpl::skipped.
-      #
-      # The default leg above is what proves the library still builds, and the
-      # §7.3 skips still happen, with every one of them compiled out.
+      # The `full` cell above is what proves the library still builds, and the
+      # §7.3 skips still happen, with the counter compiled out.
       - name: Configure with CMake (opt-in features ON)
+        if: matrix.config == 'full'
         run: |
           cmake -S . -B build-optin \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -69,8 +89,10 @@ jobs:
             -DSOFAB_ENABLE_SKIP_COUNTER=ON
 
       - name: Build project (opt-in features ON)
+        if: matrix.config == 'full'
         run: cmake --build build-optin --parallel $(nproc)
 
       - name: Run tests (opt-in features ON)
+        if: matrix.config == 'full'
         working-directory: build-optin
         run: ctest --output-on-failure --verbose

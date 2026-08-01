@@ -55,6 +55,18 @@ foreach(_sofab_feature
     endif()
 endforeach()
 
+# The object descriptor width profile is configured the same way, and for the
+# same reason applied PUBLIC: SOFAB_OBJECT_DESCR_PROFILE selects the integer
+# widths of sofab_object_descr_field_t in the *public* header, so the library and
+# every consumer must agree on it. Left empty by default, which lets sofab.h pick
+# its own default (MEDIUM) rather than this file restating it.
+set(SOFAB_OBJECT_DESCR_PROFILE "" CACHE STRING
+    "Object descriptor size profile: SOFAB_OBJECT_DESCR_SMALL, _MEDIUM or _BIG")
+if(SOFAB_OBJECT_DESCR_PROFILE)
+    target_compile_definitions(sofabuffers PUBLIC
+        SOFAB_OBJECT_DESCR_PROFILE=${SOFAB_OBJECT_DESCR_PROFILE})
+endif()
+
 # Strict UTF-8 validation is opt-IN in this footprint corelib: CORELIB_PLAN §6.4
 # lets constrained profiles default the check OFF (zero .text/.rodata cost), so
 # unlike the SOFAB_DISABLE_* toggles above this one enables a check that is off by
