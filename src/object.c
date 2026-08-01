@@ -77,15 +77,36 @@ static int32_t _array_trim_count (const void *base, size_t n, size_t element_siz
 }
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
-#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+/*!
+ * @brief Widest scalar width (in bytes) this build can load, and that set of
+ *        widths (1/2/4/8) as one bit per width.
+ *
+ * 8 only with 64-bit values; @ref SOFAB_DISABLE_INT64_SUPPORT narrows both the
+ * cap and the set, so the width check in @ref sofab_object_encode and the
+ * @ref _load_uint dispatch stay in agreement by construction.
+ */
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+# define _SOFAB_WIDTH_MAX 8
+#else
+# define _SOFAB_WIDTH_MAX 4
+#endif
+#define _SOFAB_WIDTH_SET ((1u << 1) | (1u << 2) | (1u << 4) | (1u << _SOFAB_WIDTH_MAX))
+
+/* The set test above shifts by a 4-bit descriptor field, so the mask must stay
+ * wide enough that no in-range width shifts a set bit off the end. */
+typedef char _sofab_check_width_set[(_SOFAB_WIDTH_MAX < 16) ? 1 : -1];
+
 /*!
  * @brief Load a host-endian unsigned integer of @p width (1/2/4/8) bytes.
  *
- * Reads a sized blob's companion used-length member, whose C type (and thus
- * width) the caller chooses; @p width comes from the descriptor's @c nested_idx.
- * An unsupported width yields 0 (treated as an empty blob).
+ * Two callers share this one dispatch, so the binary carries a single 1/2/4/8
+ * load: an integer field's raw value in @ref sofab_object_encode (whose signed
+ * path sign-extends the result afterwards), and a sized blob's companion
+ * used-length member, whose C type (and thus width) the caller chooses. @p width
+ * comes from the descriptor's @c element_size or @c nested_idx respectively.
+ * An unsupported width yields 0 (an empty blob; encode screens the width first).
  */
-static uint64_t _load_uint (const void *p, uint8_t width)
+static sofab_unsigned_t _load_uint (const void *p, uint8_t width)
 {
     switch (width)
     {
@@ -99,8 +120,9 @@ static uint64_t _load_uint (const void *p, uint8_t width)
     }
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
 /*! @brief Store @p val as a host-endian unsigned integer of @p width bytes. */
-static void _store_uint (void *p, uint8_t width, uint64_t val)
+static void _store_uint (void *p, uint8_t width, sofab_unsigned_t val)
 {
     switch (width)
     {
@@ -207,6 +229,12 @@ extern sofab_ret_t sofab_object_init (
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+        /* A nested object is seeded field by field, not as a byte image: its own
+         * defaults live in its own descriptor. Without sequence support no
+         * descriptor can carry a reachable SEQUENCE field — encode rejects one
+         * and the field callback declines it — so the recursion compiles out
+         * with the feature, as it already does in _field_is_default and encode. */
         if (field->type == SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
         {
             const sofab_object_descr_t *nested_info = info->nested_list[field->nested_idx];
@@ -215,6 +243,7 @@ extern sofab_ret_t sofab_object_init (
             sofab_object_init(nested_info, nested_obj);
         }
         else
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
         {
             if (info->default_values != NULL)
             {
@@ -236,7 +265,7 @@ extern sofab_ret_t sofab_object_init (
              * stale length, so a dropped element survives as an all-zero blob. */
             if (field->type == SOFAB_OBJECT_FIELDTYPE_BLOB && field->nested_idx != 0)
             {
-                uint64_t dlen = info->default_values != NULL
+                sofab_unsigned_t dlen = info->default_values != NULL
                     ? _load_uint(CAST_TO(const void *, info->default_values,
                                          field->offset - field->nested_idx),
                                  field->nested_idx)
@@ -250,6 +279,91 @@ extern sofab_ret_t sofab_object_init (
 
     return SOFAB_RET_OK;
 }
+
+/*!
+ * @brief The istream read options each descriptor field type binds, indexed by
+ *        the type tag itself.
+ *
+ * Every non-sequence field type binds the same three things — a destination
+ * pointer, a width, and this option word — so the ten per-type arms this
+ * replaces differed only in the constant below. Keeping it as data rather than
+ * code is what collapses them into a single bind.
+ *
+ * The table is only as long as the enabled types reach, so a profile with
+ * fixlen and arrays compiled out carries two bytes of it. A type that is a hole
+ * in the enabled set (an fp64 entry in an fp32-only build) keeps its slot, to
+ * hold the indices aligned with the type tags, and is marked
+ * @ref _READ_OPT_NONE so the bind is declined exactly as an unknown type is.
+ */
+#define _READ_OPT_NONE 0xFFu
+
+/*! @brief Whether the enabled set actually leaves a hole in the table.
+ *
+ * Only two configurations can: fp64 off (an fp32 build still needs the fp32
+ * entries that follow), and fixlen off while arrays stay on (the array entries
+ * sit past the fixlen ones). Anywhere else the table is dense to its end and the
+ * @ref _READ_OPT_NONE test is dead code, so it is not compiled at all.
+ */
+#if defined(SOFAB_DISABLE_FP64_SUPPORT) || \
+    (defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT))
+# define _READ_OPT_HAS_HOLES 1
+#else
+# define _READ_OPT_HAS_HOLES 0
+#endif
+
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+# define _READ_OPT_FP32 \
+    (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) | \
+     SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32))
+# define _READ_OPT_STRING \
+    (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) | \
+     SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING) | \
+     SOFAB_ISTREAM_OPT_STRINGTERM)
+# define _READ_OPT_BLOB \
+    (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) | \
+     SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB))
+# define _READ_OPT_ARRAY_FP32 \
+    (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY) | \
+     SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32))
+# if !defined(SOFAB_DISABLE_FP64_SUPPORT)
+#  define _READ_OPT_FP64 \
+    (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN) | \
+     SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64))
+#  define _READ_OPT_ARRAY_FP64 \
+    (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY) | \
+     SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64))
+# else
+#  define _READ_OPT_FP64       _READ_OPT_NONE
+#  define _READ_OPT_ARRAY_FP64 _READ_OPT_NONE
+# endif
+#else
+# define _READ_OPT_FP32        _READ_OPT_NONE
+# define _READ_OPT_FP64        _READ_OPT_NONE
+# define _READ_OPT_STRING      _READ_OPT_NONE
+# define _READ_OPT_BLOB        _READ_OPT_NONE
+# define _READ_OPT_ARRAY_FP32  _READ_OPT_NONE
+# define _READ_OPT_ARRAY_FP64  _READ_OPT_NONE
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
+/*! @brief The fixlen subtype a field type binds, as carried in @ref _read_opt. */
+#define _SOFAB_READ_OPT_SUBTYPE(type) ((_read_opt[(type)] >> 3) & 0x07u)
+
+static const uint8_t _read_opt[] = {
+    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED),  /* UNSIGNED */
+    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED),    /* SIGNED   */
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    _READ_OPT_FP32,                                           /* FP32     */
+    _READ_OPT_FP64,                                           /* FP64     */
+    _READ_OPT_STRING,                                         /* STRING   */
+    _READ_OPT_BLOB,                                           /* BLOB     */
+#endif
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED), /* ARRAY_UNSIGNED */
+    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED),   /* ARRAY_SIGNED   */
+    _READ_OPT_ARRAY_FP32,                                     /* ARRAY_FP32 */
+    _READ_OPT_ARRAY_FP64,                                     /* ARRAY_FP64 */
+#endif
+};
 
 extern sofab_ret_t sofab_object_encode (
     sofab_ostream_t *ctx,
@@ -320,74 +434,95 @@ extern sofab_ret_t sofab_object_encode (
         switch (field->type)
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
-            {
-                sofab_unsigned_t val;
-                if (field->element_size == sizeof(uint8_t))
-                    val = *CAST_TO(uint8_t *, src, field->offset);
-                else if (field->element_size == sizeof(uint16_t))
-                    val = *CAST_TO(uint16_t *, src, field->offset);
-                else if (field->element_size == sizeof(uint32_t))
-                    val = *CAST_TO(uint32_t *, src, field->offset);
-#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
-                else if (field->element_size == sizeof(uint64_t))
-                    val = *CAST_TO(uint64_t *, src, field->offset);
-#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
-                else
-                    return SOFAB_RET_E_ARGUMENT; // Unsupported size (8 requires 64-bit values)
-
-                ret = sofab_ostream_write_unsigned(ctx, field->id, val);
-                break;
-            }
-
             case SOFAB_OBJECT_FIELDTYPE_SIGNED:
             {
-                sofab_signed_t sval;
-                if (field->element_size == sizeof(int8_t))
-                    sval = *CAST_TO(int8_t *, src, field->offset);
-                else if (field->element_size == sizeof(int16_t))
-                    sval = *CAST_TO(int16_t *, src, field->offset);
-                else if (field->element_size == sizeof(int32_t))
-                    sval = *CAST_TO(int32_t *, src, field->offset);
-#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
-                else if (field->element_size == sizeof(int64_t))
-                    sval = *CAST_TO(int64_t *, src, field->offset);
-#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
-                else
-                    return SOFAB_RET_E_ARGUMENT; // Unsupported size (8 requires 64-bit values)
+                // Both types read the same bytes and differ only in how they are
+                // re-signed, so they share one width dispatch (_load_uint) instead
+                // of carrying a 1/2/4/8 load chain each.
+                // element_size is a 4-bit descriptor field, so it never shifts
+                // the mask past its width and the set test needs no range guard
+                // of its own.
+                const uint8_t width = field->element_size;
+                if (((_SOFAB_WIDTH_SET >> width) & 1u) == 0)
+                {
+                    // Unsupported size (8 requires 64-bit values)
+                    return SOFAB_RET_E_ARGUMENT;
+                }
 
-                ret = sofab_ostream_write_signed(ctx, field->id, sval);
+                sofab_unsigned_t val =
+                    _load_uint(CAST_TO(const void *, src, field->offset), width);
+
+                if (field->type == SOFAB_OBJECT_FIELDTYPE_SIGNED)
+                {
+                    // Re-sign the loaded low bytes. A cast per width, not a
+                    // shift by a computed amount: the widths are a fixed set, so
+                    // each arm is a single sign-extend instruction, while a
+                    // variable shift on a 64-bit value is a multi-instruction
+                    // sequence on every 32-bit target.
+                    sofab_signed_t sval;
+                    switch (width)
+                    {
+                        case 1:  sval = (int8_t)val;  break;
+                        case 2:  sval = (int16_t)val; break;
+                        case 4:  sval = (int32_t)val; break;
+                        default: sval = (sofab_signed_t)val; break; /* full width */
+                    }
+                    ret = sofab_ostream_write_signed(ctx, field->id, sval);
+                }
+                else
+                {
+                    ret = sofab_ostream_write_unsigned(ctx, field->id, val);
+                }
                 break;
             }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_FP32:
-                ret = sofab_ostream_write_fp32(ctx, field->id, *CAST_TO(float *, src, field->offset));
-                break;
-
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_FP64:
-                ret = sofab_ostream_write_fp64(ctx, field->id, *CAST_TO(double *, src, field->offset));
-                break;
 #endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
-
             case SOFAB_OBJECT_FIELDTYPE_STRING:
-                ret = sofab_ostream_write_string(ctx, field->id, CAST_TO(char *, src, field->offset));
-                break;
-
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
             {
-                size_t blob_len = field->size;
-                if (field->nested_idx != 0)
+                /* Every fixlen scalar is the same wire shape — a subtype and a
+                 * byte range — so the four types share one write and differ only
+                 * in how the length is found. The subtype is the one already
+                 * tabulated for the decode side (bits 3..5 of _read_opt), so no
+                 * second table exists to drift from it. Writing the field in
+                 * place also spares the fp cases the stack copy the by-value
+                 * sofab_ostream_write_fp32/64 wrappers would need. */
+                const uint8_t *bytes = CAST_TO(const uint8_t *, src, field->offset);
+                size_t fixlen;
+
+                if (field->type == SOFAB_OBJECT_FIELDTYPE_STRING)
                 {
-                    /* Sized blob: emit only used_len bytes (clamped to capacity).
-                     * used_len sits immediately before the buffer. */
-                    uint64_t used = _load_uint(
-                        CAST_TO(const uint8_t *, src, field->offset - field->nested_idx),
-                        field->nested_idx);
-                    blob_len = used < field->size ? (size_t)used : field->size;
+                    /* A string's length is its content, not its buffer. */
+                    fixlen = strlen((const char *)bytes);
                 }
-                ret = sofab_ostream_write_blob(ctx, field->id,
-                    CAST_TO(uint8_t *, src, field->offset), blob_len);
+                else if (field->type == SOFAB_OBJECT_FIELDTYPE_BLOB)
+                {
+                    fixlen = field->size;
+                    if (field->nested_idx != 0)
+                    {
+                        /* Sized blob: emit only used_len bytes (clamped to
+                         * capacity). used_len sits immediately before the
+                         * buffer. */
+                        sofab_unsigned_t used = _load_uint(
+                            CAST_TO(const uint8_t *, src,
+                                    field->offset - field->nested_idx),
+                            field->nested_idx);
+                        if (used < fixlen) fixlen = (size_t)used;
+                    }
+                }
+                else
+                {
+                    /* fp32 / fp64: the value is exactly one element wide. */
+                    fixlen = field->element_size;
+                }
+
+                ret = sofab_ostream_write_fixlen(ctx, field->id, bytes,
+                    (int32_t)fixlen,
+                    (sofab_fixlentype_t)_SOFAB_READ_OPT_SUBTYPE(field->type));
                 break;
             }
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
@@ -395,46 +530,45 @@ extern sofab_ret_t sofab_object_encode (
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
-            {
-                // Both writers share a signature and differ only in the element
-                // interpretation; select via pointer so the element-count math
-                // and the call are emitted once.
-                sofab_ret_t (*const write_array)(
-                    sofab_ostream_t *, sofab_id_t, const void *, int32_t, int32_t) =
-                    (field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED)
-                        ? sofab_ostream_write_array_of_signed
-                        : sofab_ostream_write_array_of_unsigned;
-                ret = write_array(ctx, field->id,
-                    CAST_TO(const void *, src, field->offset),
-                    _array_trim_count(CAST_TO(const void *, src, field->offset),
-                        field->size / field->element_size, field->element_size),
-                    field->element_size);
-                break;
-            }
-
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
 #endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
             {
-                // FP32/FP64 arrays share the fixlen-array writer; only the
-                // element width and subtype tag differ.
-#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
-                int is_fp64 = (field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64);
-#else
-                const int is_fp64 = 0;
-#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
-                size_t element_size = is_fp64 ? sizeof(double) : sizeof(float);
-                ret = sofab_ostream_write_array_of_fixlen(ctx, field->id,
-                    CAST_TO(const void *, src, field->offset),
-                    _array_trim_count(CAST_TO(const void *, src, field->offset),
-                        field->size / element_size, element_size),
-                    element_size,
-                    is_fp64 ? SOFAB_FIXLENTYPE_FP64 : SOFAB_FIXLENTYPE_FP32);
+                // Every array kind starts the same way — base pointer, element
+                // width, trimmed element count — so that part is computed once
+                // and only the writer differs below.
+                const void *base = CAST_TO(const void *, src, field->offset);
+                const size_t element_size = field->element_size;
+                const int32_t n = element_size != 0
+                    ? _array_trim_count(base, field->size / element_size, element_size)
+                    : 0;
+
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+                if (field->type >= SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32)
+                {
+                    // A float array carries its subtype in the shared fixlen
+                    // word; the subtype is the one _read_opt already records.
+                    ret = sofab_ostream_write_array_of_fixlen(ctx, field->id,
+                        base, n, (int32_t)element_size,
+                        (sofab_fixlentype_t)_SOFAB_READ_OPT_SUBTYPE(field->type));
+                    break;
+                }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
+                // The two integer-array writers share a signature and differ
+                // only in the element interpretation; select via pointer so the
+                // call itself is emitted once.
+                sofab_ret_t (*const write_array)(
+                    sofab_ostream_t *, sofab_id_t, const void *, int32_t, int32_t) =
+                    (field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED)
+                        ? sofab_ostream_write_array_of_signed
+                        : sofab_ostream_write_array_of_unsigned;
+                ret = write_array(ctx, field->id, base, n, (int32_t)element_size);
                 break;
             }
-#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
@@ -482,84 +616,6 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
          * check first -- see the comments there. */
         switch (field->type)
         {
-            case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
-            case SOFAB_OBJECT_FIELDTYPE_SIGNED:
-                // unsigned and signed differ only in the wire type tag
-                sofab_istream_read_field(ctx, decoder->dst + field->offset, field->element_size,
-                    SOFAB_ISTREAM_OPT_FIELDTYPE(
-                        field->type == SOFAB_OBJECT_FIELDTYPE_SIGNED
-                            ? SOFAB_TYPE_VARINT_SIGNED : SOFAB_TYPE_VARINT_UNSIGNED));
-                break;
-
-#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
-            case SOFAB_OBJECT_FIELDTYPE_FP32:
-                sofab_istream_read_fp32(ctx, (float *)(decoder->dst + field->offset));
-                break;
-
-#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
-            case SOFAB_OBJECT_FIELDTYPE_FP64:
-                sofab_istream_read_fp64(ctx, (double *)(decoder->dst + field->offset));
-                break;
-#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
-
-            case SOFAB_OBJECT_FIELDTYPE_STRING:
-                sofab_istream_read_string(ctx, (char *)(decoder->dst + field->offset), field->size);
-                break;
-
-            case SOFAB_OBJECT_FIELDTYPE_BLOB:
-                /* A sized blob writes used_len whether or not the bind survives,
-                 * so a contradicting field would zero the length of the value
-                 * already there. The bind alone would be safe; this is not, so
-                 * settle the wire type (and the fixlen subtype) first. */
-                if (field->nested_idx != 0
-                    && (ctx->target_opt & 0x3F)
-                        != (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                            | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB)))
-                {
-                    break;
-                }
-
-                sofab_istream_read_blob(ctx, decoder->dst + field->offset, field->size);
-                if (field->nested_idx != 0)
-                {
-                    /* Sized blob: record the actual received length in used_len,
-                     * which sits immediately before the buffer. */
-                    size_t used = size < field->size ? size : field->size;
-                    _store_uint(decoder->dst + field->offset - field->nested_idx,
-                                field->nested_idx, (uint64_t)used);
-                }
-                break;
-#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
-
-#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-            case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
-            case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
-                // unsigned and signed arrays differ only in the wire type tag
-                sofab_istream_read_array(ctx,
-                    decoder->dst + field->offset,
-                    field->size / field->element_size, field->element_size,
-                    SOFAB_ISTREAM_OPT_FIELDTYPE(
-                        field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED
-                            ? SOFAB_TYPE_VARINTARRAY_SIGNED : SOFAB_TYPE_VARINTARRAY_UNSIGNED));
-                break;
-
-#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
-            case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
-                sofab_istream_read_array_of_fp32(ctx,
-                    (float *)(decoder->dst + field->offset),
-                    field->size / sizeof(float));
-                break;
-
-#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
-            case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
-                sofab_istream_read_array_of_fp64(ctx,
-                    (double *)(decoder->dst + field->offset),
-                    field->size / sizeof(double));
-                break;
-#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
-#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
-#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
-
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
             {
@@ -609,8 +665,77 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
             default:
-                // Unsupported field type in descriptor
+            {
+                /* Every remaining field type binds a destination and nothing
+                 * else, so one bind serves them all: the option word comes from
+                 * _read_opt, the width from the descriptor. A type outside the
+                 * table -- past its end, or a hole this configuration does not
+                 * implement -- binds nothing, and the field is skipped exactly as
+                 * an unknown id is. */
+                if (field->type >= (uint8_t)(sizeof(_read_opt)))
+                {
+                    // Unsupported field type in descriptor
+                    break;
+                }
+
+                const uint8_t opt = _read_opt[field->type];
+#if _READ_OPT_HAS_HOLES
+                if (opt == _READ_OPT_NONE)
+                {
+                    break;
+                }
+#endif /* _READ_OPT_HAS_HOLES */
+
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+                /* A sized blob is the one type here that does more than bind: it
+                 * writes used_len whether or not the bind survives, so a
+                 * contradicting field would zero the length of the value already
+                 * there. The bind alone would be safe; this is not, so settle the
+                 * wire type (and the fixlen subtype) before either happens. */
+                const bool sized_blob =
+                    (field->type == SOFAB_OBJECT_FIELDTYPE_BLOB &&
+                     field->nested_idx != 0);
+                if (sized_blob && (ctx->target_opt & 0x3F) != opt)
+                {
+                    break;
+                }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
+                /* A string or blob is bound over its whole buffer (its length is
+                 * on the wire); every other type is bound one element wide. */
+                size_t width = field->element_size;
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+                if (field->type == SOFAB_OBJECT_FIELDTYPE_STRING ||
+                    field->type == SOFAB_OBJECT_FIELDTYPE_BLOB)
+                {
+                    width = field->size;
+                }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+                if (field->type >= SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED)
+                {
+                    sofab_istream_read_array(ctx, decoder->dst + field->offset,
+                        width != 0 ? field->size / width : 0, width, opt);
+                    break;
+                }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+
+                sofab_istream_read_field(ctx, decoder->dst + field->offset,
+                                         width, opt);
+
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+                if (sized_blob)
+                {
+                    /* Sized blob: record the actual received length in used_len,
+                     * which sits immediately before the buffer. */
+                    size_t used = size < field->size ? size : field->size;
+                    _store_uint(decoder->dst + field->offset - field->nested_idx,
+                                field->nested_idx, (sofab_unsigned_t)used);
+                }
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
                 break;
+            }
         }
 
         // field handled — done (return, so the over-index reject below only

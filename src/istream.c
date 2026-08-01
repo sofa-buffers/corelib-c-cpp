@@ -32,6 +32,19 @@
 #endif /* !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK) */
 
 /*!
+ * @brief The element count reported to a field callback.
+ *
+ * Only an array field ever carries one, so with array support compiled out the
+ * context holds no such member and the callback is handed the constant every
+ * field would have reported anyway.
+ */
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+# define _SOFAB_TARGET_COUNT(ctx) ((ctx)->target_count)
+#else
+# define _SOFAB_TARGET_COUNT(ctx) ((size_t)0)
+#endif
+
+/*!
  * @brief Keep a shared helper out of line so its one copy is reused.
  *
  * Forcing the shared decode helper out of line makes the toolchain emit a
@@ -61,6 +74,20 @@ typedef enum
     _DECODER_STATE_FIXLEN_VAL,
     _DECODER_STATE_FIXLEN_RAW,
 } _decoder_state_t;
+
+/* The merged scalar-varint state in sofab_istream_feed derives the array wire
+ * type that continues its element loop from the state itself, which holds only
+ * while the signed and unsigned variants sit at the same distance in both
+ * enumerations. Pin that down so a reordering of either breaks the build rather
+ * than the decoder. */
+/* The fixlen length check derives a float's wire width from its subtype tag
+ * (4 << tag). Pin the two tags down so a renumbering breaks the build. */
+typedef char _sofab_check_fixlen_fp32[(SOFAB_FIXLENTYPE_FP32 == 0) ? 1 : -1];
+typedef char _sofab_check_fixlen_fp64[(SOFAB_FIXLENTYPE_FP64 == 1) ? 1 : -1];
+
+typedef char _sofab_check_varintarray_step[
+    (SOFAB_TYPE_VARINTARRAY_SIGNED - SOFAB_TYPE_VARINTARRAY_UNSIGNED
+     == _DECODER_STATE_VARINT_SIGNED - _DECODER_STATE_VARINT_UNSIGNED) ? 1 : -1];
 
 /* prototypes *****************************************************************/
 
@@ -174,7 +201,6 @@ static int _fits_signed_n (sofab_signed_t x, int n)
  * @param value  Value whose low @p len bytes are written.
  * @return 0 on success, -1 if @p len is not a supported width.
  */
-SOFAB_NOINLINE
 static int _store_scalar (uint8_t *p, size_t len, sofab_unsigned_t value)
 {
     if (len == 1)
@@ -292,17 +318,21 @@ static sofab_ret_t _call_field_callback_masked (
     // wire count, which is what drives the element skip.
     uint8_t field_opt = ctx->target_opt;
     size_t field_len = ctx->target_len;
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
     size_t field_count = ctx->target_count;
+#endif
 
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     // field is ignored, so let's skip all children
     if (ctx->decoder->skip_depth > 0)
     {
         return SOFAB_RET_OK;
     }
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
     // call field callback to notify about new field with size
     ctx->decoder->field_callback(
-        ctx, ctx->id, ctx->target_len, ctx->target_count, ctx->decoder->usrptr);
+        ctx, ctx->id, ctx->target_len, _SOFAB_TARGET_COUNT(ctx), ctx->decoder->usrptr);
 
     // after call:
     //   target_ptr can be NULL (not interested in field)
@@ -344,7 +374,9 @@ static sofab_ret_t _call_field_callback_masked (
 
             ctx->target_ptr = NULL;
             ctx->target_len = field_len;
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             ctx->target_count = field_count;
+#endif
             ctx->target_opt = field_opt;
 
 #if SOFAB_SKIP_COUNTER
@@ -399,8 +431,16 @@ static bool _at_message_boundary (const sofab_istream_t *ctx)
     // state, skip_depth) OR-reduce to a single zero test; parent stays a
     // plain (portable) null-pointer check — equivalent to four separate
     // guards, one branch instead of four.
+    //
+    // Without sequence support there is nothing to open: skip_depth can never
+    // rise and no decoder is ever pushed, so those two are constants and only
+    // the two positional counters are left to test.
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     return (ctx->varint_shift | ctx->decoder->state | ctx->decoder->skip_depth) == 0
         && ctx->decoder->parent == NULL;
+#else
+    return (ctx->varint_shift | ctx->decoder->state) == 0;
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 }
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
@@ -533,7 +573,9 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 // reset target infos used in field callback
                 ctx->target_ptr = NULL;
                 ctx->target_len = 0;
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
                 ctx->target_count = 0;
+#endif
 
                 uint8_t callback = 0;
                 switch (type)
@@ -635,68 +677,45 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
             }
 
             case _DECODER_STATE_VARINT_UNSIGNED:
-            {
-                sofab_unsigned_t unsigned_value = decoded;
-
-                if (ctx->target_ptr)
-                {
-                    // store unsigned value in target buffer
-                    if (_store_scalar(ctx->target_ptr, ctx->target_len, unsigned_value) != 0)
-                    {
-                        // target width is not 1/2/4/8: a bad read_* argument
-                        return SOFAB_RET_E_ARGUMENT;
-                    }
-
-                    // optional: check integer overflow
-                    _FITS_UNSIGNED_CHECK(unsigned_value, ctx->target_len * 8);
-                }
-
-#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-                // if decoding an array of unsigned values ...
-                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_VARINTARRAY_UNSIGNED)
-                {
-                    // decode next array element
-                    if (ctx->target_ptr) ctx->target_ptr += ctx->target_len;
-
-                    ctx->target_count--;
-                    if (ctx->target_count > 0)
-                    {
-                        // more array elements to read
-                        continue;
-                    }
-                }
-#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
-
-                // go back to idle
-                ctx->decoder->state = _DECODER_STATE_IDLE;
-                break;
-            }
-
             case _DECODER_STATE_VARINT_SIGNED:
             {
-                sofab_unsigned_t zigzag_value = decoded;
+                // The two scalar-varint states differ in exactly two places --
+                // the ZigZag transform and which array wire type continues the
+                // element loop -- so they share one body. The stored bit pattern
+                // is the same for both once the signed value is reinterpreted as
+                // unsigned (see _store_scalar), and the wire types are aligned
+                // with the states: VARINTARRAY_UNSIGNED/SIGNED sit exactly two
+                // above VARINT_UNSIGNED/SIGNED (asserted below).
+                const bool is_signed =
+                    (ctx->decoder->state == _DECODER_STATE_VARINT_SIGNED);
+                sofab_unsigned_t value =
+                    is_signed ? (sofab_unsigned_t)_zigzag_decode(decoded) : decoded;
 
                 if (ctx->target_ptr)
                 {
-                    // zigzag decode
-                    sofab_signed_t signed_value = _zigzag_decode(zigzag_value);
-
-                    // store signed value in target buffer (low bytes are shared
-                    // with the unsigned path once reinterpreted as unsigned)
-                    if (_store_scalar(ctx->target_ptr, ctx->target_len,
-                            (sofab_unsigned_t)signed_value) != 0)
+                    // store the value in the target buffer
+                    if (_store_scalar(ctx->target_ptr, ctx->target_len, value) != 0)
                     {
                         // target width is not 1/2/4/8: a bad read_* argument
                         return SOFAB_RET_E_ARGUMENT;
                     }
 
                     // optional: check integer overflow
-                    _FITS_SIGNED_CHECK(signed_value, ctx->target_len * 8);
+                    if (is_signed)
+                    {
+                        _FITS_SIGNED_CHECK((sofab_signed_t)value, ctx->target_len * 8);
+                    }
+                    else
+                    {
+                        _FITS_UNSIGNED_CHECK(value, ctx->target_len * 8);
+                    }
                 }
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-                // if decoding an array of signed values ...
-                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_VARINTARRAY_SIGNED)
+                // if decoding an array of values of this signedness ...
+                if (_OPT_FIELDTYPE(ctx->target_opt)
+                    == ctx->decoder->state + (SOFAB_TYPE_VARINTARRAY_UNSIGNED
+                                              - _DECODER_STATE_VARINT_UNSIGNED))
                 {
                     // decode next array element
                     if (ctx->target_ptr) ctx->target_ptr += ctx->target_len;
@@ -723,53 +742,58 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                 // extract type from length
                 uint8_t fixlen_type = _type_decode(&fixlen_length);
-                switch (fixlen_type)
-                {
-                    case SOFAB_FIXLENTYPE_FP32:
-                        // A fp32 field is always exactly 4 bytes on the wire; a
-                        // wrong declared width can never become valid, so reject
-                        // it here (INVALID takes precedence over INCOMPLETE, even
-                        // when the payload is truncated) - see MESSAGE_SPEC §7.
-                        if (fixlen_length != 4)
-                        {
-                            return SOFAB_RET_E_INVALID_MSG;
-                        }
-                        ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
-                        break;
 
-#if !defined(SOFAB_DISABLE_FP64_SUPPORT)
-                    case SOFAB_FIXLENTYPE_FP64:
-                        // Likewise, a fp64 field is always exactly 8 bytes.
-                        if (fixlen_length != 8)
-                        {
-                            return SOFAB_RET_E_INVALID_MSG;
-                        }
-                        ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
-                        break;
-#endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
-
-                    case SOFAB_FIXLENTYPE_STRING:
-                    case SOFAB_FIXLENTYPE_BLOB:
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-                        // MESSAGE_SPEC §4.8: a fixlen ARRAY carries only fp32/fp64
-                        // elements; a string/blob element subtype is malformed.
-                        // Reject it here, on the element word - before waiting for
-                        // any payload - so it reports INVALID, not INCOMPLETE
-                        // (§5.2: INVALID regardless of what follows). This state is
-                        // shared with the scalar FIXLEN path, which does allow
-                        // string/blob, hence the field-type guard. Mirrors the
-                        // scalar fp-width checks above (same bug class as #82).
-                        if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
-                        {
-                            return SOFAB_RET_E_INVALID_MSG;
-                        }
+                // Whether this field is a fixlen ARRAY is settled by the header
+                // type bits, which the subtype OR below leaves alone, so it is
+                // read once here and reused by the three tests further down.
+                const bool is_fixlen_array =
+                    (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY);
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
-                        ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
-                        break;
 
-                    default:
-                        // unsupported fixlen type
+                if (fixlen_type <= SOFAB_FIXLENTYPE_FP64)
+                {
+#if defined(SOFAB_DISABLE_FP64_SUPPORT)
+                    if (fixlen_type != SOFAB_FIXLENTYPE_FP32)
+                    {
+                        // fp64 is not compiled in: undecodable, so malformed
                         return SOFAB_RET_E_INVALID_MSG;
+                    }
+#endif /* defined(SOFAB_DISABLE_FP64_SUPPORT) */
+
+                    // A float field is always exactly its own width on the wire -
+                    // 4 bytes for fp32, 8 for fp64, which is what the subtype tag
+                    // shifts out. A wrong declared width can never become valid,
+                    // so reject it here (INVALID takes precedence over INCOMPLETE,
+                    // even when the payload is truncated) - see MESSAGE_SPEC §7.
+                    if (fixlen_length != (4u << fixlen_type))
+                    {
+                        return SOFAB_RET_E_INVALID_MSG;
+                    }
+                    ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
+                }
+                else if (fixlen_type <= SOFAB_FIXLENTYPE_BLOB)
+                {
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+                    // MESSAGE_SPEC §4.8: a fixlen ARRAY carries only fp32/fp64
+                    // elements; a string/blob element subtype is malformed.
+                    // Reject it here, on the element word - before waiting for
+                    // any payload - so it reports INVALID, not INCOMPLETE
+                    // (§5.2: INVALID regardless of what follows). This state is
+                    // shared with the scalar FIXLEN path, which does allow
+                    // string/blob, hence the field-type guard. Mirrors the
+                    // scalar fp-width checks above (same bug class as #82).
+                    if (is_fixlen_array)
+                    {
+                        return SOFAB_RET_E_INVALID_MSG;
+                    }
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+                    ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
+                }
+                else
+                {
+                    // reserved fixlen subtype 0x4..0x7 (MESSAGE_SPEC §4.6)
+                    return SOFAB_RET_E_INVALID_MSG;
                 }
 
                 if (fixlen_length > SOFAB_FIXLEN_MAX)
@@ -798,7 +822,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 // with the destination capacity: this sets target_count to the
                 // number of elements to read and lets the empty-array early-out
                 // below see the true (0) wire count instead of the capacity.
-                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
+                if (is_fixlen_array)
                 {
                     if ((ret = _bind_array_count(ctx, ctx->array_wire_count)) != SOFAB_RET_OK)
                     {
@@ -833,8 +857,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
                 // An empty fixlen ARRAY has just read its fixlen_word (the callback
                 // above fired with the subtype) but carries no elements - finish.
-                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY &&
-                    ctx->target_count == 0)
+                if (is_fixlen_array && ctx->target_count == 0)
                 {
                     ctx->decoder->state = _DECODER_STATE_IDLE;
                     break;
@@ -872,23 +895,37 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
             }
 
             case _DECODER_STATE_FIXLEN_VAL:
+            case _DECODER_STATE_FIXLEN_RAW:
             {
+                // Both raw-byte states consume the payload the same way and end
+                // the same way, so they share that; what each adds afterwards --
+                // the float array's element loop, the string's UTF-8 check -- is
+                // selected by the state below.
+                const bool is_value =
+                    (ctx->decoder->state == _DECODER_STATE_FIXLEN_VAL);
+
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-                if (_read_fixlen_reverse(ctx, *p) > 0)
+                // Only a float payload (FIXLEN_VAL) is byte-reversed on a
+                // big-endian host; string/blob bytes are copied as they arrive.
+                if (is_value)
                 {
-                    // need more data
-                    continue;
+                    if (_read_fixlen_reverse(ctx, *p) > 0)
+                    {
+                        // need more data
+                        continue;
+                    }
                 }
-#else
+                else
+#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
                 if (_read_fixlen(ctx, *p) > 0)
                 {
                     // need more data
                     continue;
                 }
-#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-                if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
+                if (is_value &&
+                    _OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
                 {
                     ctx->target_count--;
                     if (ctx->target_count > 0)
@@ -902,19 +939,6 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 }
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
-                // go back to idle
-                ctx->decoder->state = _DECODER_STATE_IDLE;
-                break;
-            }
-
-            case _DECODER_STATE_FIXLEN_RAW:
-            {
-                if (_read_fixlen(ctx, *p) > 0)
-                {
-                    // need more data
-                    continue;
-                }
-
 #if SOFAB_STRICT_UTF8
                 // The complete string payload has now been assembled: validate
                 // it as UTF-8. utf8_start is non-NULL only for a materialized,
@@ -927,12 +951,14 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 // end-of-payload truncation (a multi-byte sequence cut short at
                 // the declared length) is therefore INVALID, while an
                 // end-of-chunk split stays INCOMPLETE (CORELIB_PLAN §6.4).
-                if (ctx->utf8_start &&
+                if (!is_value && ctx->utf8_start &&
                     !sofab_utf8_valid(ctx->utf8_start,
                                       (size_t)(ctx->target_ptr - ctx->utf8_start)))
                 {
                     return SOFAB_RET_E_INVALID_MSG;
                 }
+#else
+                (void)is_value;
 #endif /* SOFAB_STRICT_UTF8 */
 
                 // go back to idle
@@ -1081,14 +1107,13 @@ extern void sofab_istream_read_array (
     sofab_istream_t *ctx, void *var,
     size_t element_count, size_t element_size, uint8_t opt)
 {
-    assert(ctx != NULL);
-    assert(var != NULL);
-    assert(element_size > 0);
+    assert(element_count > 0 || var != NULL);
 
-    ctx->target_ptr = (uint8_t *)var;
+    // An array binds exactly what a scalar binds — destination, element width,
+    // options — plus how many elements fit, so it is that bind and one more
+    // store rather than a second copy of it.
+    sofab_istream_read_field(ctx, var, element_size, opt);
     ctx->target_count = element_count;
-    ctx->target_len = element_size;
-    ctx->target_opt = opt;
 }
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 

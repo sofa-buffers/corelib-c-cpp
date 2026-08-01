@@ -73,7 +73,12 @@ static int _push_byte (sofab_ostream_t *ctx, uint8_t byte)
 {
     if (ctx->offset >= ctx->bufend)
     {
-        // buffer full, flush if possible
+        // Buffer full, flush if possible. This repeats sofab_ostream_flush's
+        // drain-and-rewind rather than calling it, deliberately: calling it
+        // stops _push_byte from being a leaf, and the toolchain then keeps it
+        // out of line in every varint writer -- ~12% more instructions on a
+        // typical encode to save a handful of bytes. Footprint is what this
+        // corelib optimizes for, but not at that exchange rate.
         if (ctx->flush)
         {
             size_t used = ctx->offset - ctx->buffer;
@@ -141,7 +146,12 @@ static sofab_unsigned_t _type_encode (sofab_unsigned_t var, int type)
  * @return SOFAB_RET_OK on success, SOFAB_RET_E_ARGUMENT for an out-of-range id,
  *         or SOFAB_RET_E_BUFFER_FULL on overflow.
  */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+/* Out of line only while the sequence writers share it. With sequences compiled
+ * out _write_id_varint is its one caller, and keeping it separate would cost a
+ * call frame to save nothing. */
 SOFAB_NOINLINE
+#endif
 static sofab_ret_t _write_id_type (sofab_ostream_t *ctx, sofab_id_t id, sofab_type_t type)
 {
     if (id > SOFAB_ID_MAX)
@@ -200,11 +210,11 @@ static sofab_ret_t _write_id_varint (
  * @param datalen  Number of bytes to write.
  * @return SOFAB_RET_OK on success, SOFAB_RET_E_BUFFER_FULL on overflow.
  */
-static sofab_ret_t _write_fixlen (sofab_ostream_t *ctx, const void *data, int32_t datalen)
+static sofab_ret_t _write_fixlen (sofab_ostream_t *ctx, const void *data, size_t datalen)
 {
     const uint8_t *bytes = (const uint8_t *)data;
 
-    for (int32_t i = 0; i < datalen; i++)
+    for (size_t i = 0; i < datalen; i++)
     {
         if (_push_byte(ctx, bytes[i]) != 0)
         {
@@ -247,14 +257,10 @@ extern void sofab_ostream_init (
     sofab_ostream_t *ctx, uint8_t *buffer, size_t buflen, size_t offset,
     sofab_ostream_flush_cb_t flush, void *usrptr)
 {
-    assert(ctx != NULL);
-    assert(buffer != NULL);
-    assert(buflen > 0);
-    assert(offset < buflen);
+    // The buffer triple is installed exactly as a mid-stream swap installs it,
+    // so init is that call plus the sink; the argument checks live there too.
+    sofab_ostream_buffer_set(ctx, buffer, buflen, offset);
 
-    ctx->buffer = buffer;
-    ctx->offset = buffer + offset;
-    ctx->bufend = buffer + buflen;
     ctx->flush = flush;
     ctx->usrptr = usrptr;
 }
@@ -351,13 +357,13 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
     }
     else
     {
-        if ((ret = _write_fixlen(ctx, data, datalen)) != SOFAB_RET_OK)
+        if ((ret = _write_fixlen(ctx, data, (size_t)datalen)) != SOFAB_RET_OK)
         {
             return ret;
         }
     }
 #else
-    if ((ret = _write_fixlen(ctx, data, datalen)) != SOFAB_RET_OK)
+    if ((ret = _write_fixlen(ctx, data, (size_t)datalen)) != SOFAB_RET_OK)
     {
         return ret;
     }
@@ -402,42 +408,41 @@ static sofab_ret_t _write_varint_array (
     const uint8_t *ptr = (const uint8_t*)data;
     for (int32_t i = 0; i < element_count; i++)
     {
+        // Both signednesses read the same bytes and differ only in how they are
+        // re-signed afterwards, so one width dispatch serves them and the
+        // element loop carries a single 1/2/4/8 load chain.
         sofab_unsigned_t enc;
+
+        if (element_size == 1)
+            enc = *(const uint8_t *)ptr;
+        else if (element_size == 2)
+            enc = *(const uint16_t *)ptr;
+        else if (element_size == 4)
+            enc = *(const uint32_t *)ptr;
+#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
+        else if (element_size == 8)
+            enc = *(const uint64_t *)ptr;
+#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
+        else
+            // unsupported element size (8 requires 64-bit value support)
+            return SOFAB_RET_E_ARGUMENT;
 
         if (is_signed)
         {
+            // Re-sign the loaded low bytes, then ZigZag them. A cast per width,
+            // not a shift by a computed amount: the widths are a fixed set, so
+            // each arm is a single sign-extend instruction, while a variable
+            // shift on a 64-bit value costs a multi-instruction sequence on a
+            // 32-bit target.
             sofab_signed_t value;
-            if (element_size == 1)
-                value = *(const int8_t *)ptr;
-            else if (element_size == 2)
-                value = *(const int16_t *)ptr;
-            else if (element_size == 4)
-                value = *(const int32_t *)ptr;
-#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
-            else if (element_size == 8)
-                value = *(const int64_t *)ptr;
-#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
-            else
-                // unsupported element size (8 requires 64-bit value support)
-                return SOFAB_RET_E_ARGUMENT;
-
+            switch (element_size)
+            {
+                case 1:  value = (int8_t)enc;  break;
+                case 2:  value = (int16_t)enc; break;
+                case 4:  value = (int32_t)enc; break;
+                default: value = (sofab_signed_t)enc; break; /* full width */
+            }
             enc = _zigzag_encode(value);
-        }
-        else
-        {
-            if (element_size == 1)
-                enc = *(const uint8_t *)ptr;
-            else if (element_size == 2)
-                enc = *(const uint16_t *)ptr;
-            else if (element_size == 4)
-                enc = *(const uint32_t *)ptr;
-#if !defined(SOFAB_DISABLE_INT64_SUPPORT)
-            else if (element_size == 8)
-                enc = *(const uint64_t *)ptr;
-#endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
-            else
-                // unsupported element size (8 requires 64-bit value support)
-                return SOFAB_RET_E_ARGUMENT;
         }
 
         if (_varint_encode(ctx, enc) < 0)
@@ -507,10 +512,12 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
         return SOFAB_RET_E_BUFFER_FULL;
     }
 
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     const uint8_t *ptr = (const uint8_t*)data;
     for (int32_t i = 0; i < element_count; i++)
     {
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        // Big-endian host: each float element is byte-reversed on its way out,
+        // so the payload has to be walked one element at a time.
         if (type == SOFAB_FIXLENTYPE_FP32 || type == SOFAB_FIXLENTYPE_FP64)
         {
             if ((ret = _write_fixlen_reverse(ctx, ptr, element_size)) != SOFAB_RET_OK)
@@ -520,19 +527,23 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
         }
         else
         {
-            if ((ret = _write_fixlen(ctx, ptr, element_size)) != SOFAB_RET_OK)
+            if ((ret = _write_fixlen(ctx, ptr, (size_t)element_size)) != SOFAB_RET_OK)
             {
                 return ret;
             }
         }
-#else
-        if ((ret = _write_fixlen(ctx, ptr, element_size)) != SOFAB_RET_OK)
-        {
-            return ret;
-        }
-#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
         ptr += element_size;
     }
+#else
+    // Little-endian host: the elements are already in wire order and lie
+    // contiguously, so the whole payload is one flat byte range — the per-element
+    // loop would emit exactly these bytes, one call at a time.
+    if ((ret = _write_fixlen(ctx, data,
+             (size_t)element_count * (size_t)element_size)) != SOFAB_RET_OK)
+    {
+        return ret;
+    }
+#endif /* defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ */
 
     return SOFAB_RET_OK;
 }

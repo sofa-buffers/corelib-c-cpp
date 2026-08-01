@@ -105,11 +105,15 @@ typedef void (*sofab_istream_field_cb_t) (
  */
 typedef struct sofab_istream_decoder
 {
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     struct sofab_istream_decoder *parent;       /*!< Pointer to parent decoder for nested levels */
+#endif
     sofab_istream_field_cb_t field_callback;    /*!< User callback for handling field IDs */
     void *usrptr;                               /*!< Optional user pointer for the field callback */
     uint8_t state;                              /*!< Internal parsing state machine */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     uint8_t skip_depth;                         /*!< Counter for skipped nested fields */
+#endif
 } sofab_istream_decoder_t;
 
 /*!
@@ -126,7 +130,15 @@ struct sofab_istream
      * counts bounded by SOFAB_FIXLEN_MAX / SOFAB_ARRAY_MAX (both derived from
      * SIZE_MAX) and are fed straight from the size_t read-function arguments, so
      * they mirror that width exactly and need no narrowing cast — smaller than a
-     * fixed uint32_t on 16-bit-size_t targets. */
+     * fixed uint32_t on 16-bit-size_t targets.
+     *
+     * Members that only one wire feature can ever write are compiled out with
+     * it, the same way utf8_start and skipped are: with fixlen, arrays or
+     * sequences off nothing can set them, so they would be dead RAM in every
+     * context the application holds. Like every other SOFAB_DISABLE_* switch
+     * these reach the public header, so the library and its consumers must be
+     * configured identically (the CMake feature options are applied PUBLIC for
+     * exactly this reason). */
     sofab_unsigned_t varint_value;              /*!< Accumulated varint value under construction */
     sofab_istream_decoder_t default_decoder;    /*!< Top-level decoder instance */
     uint8_t *target_ptr;                        /*!< Pointer to output buffer for field data */
@@ -136,10 +148,14 @@ struct sofab_istream
                                                  *!< validate (non-string, skipped, or empty). */
 #endif
     sofab_istream_decoder_t *decoder;           /*!< Currently active decoder (may be nested) */
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
     size_t fixlen_remaining;                    /*!< Remaining bytes to read for a fixed-length field */
+#endif
     size_t target_len;                          /*!< Target element size or total buffer length */
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
     size_t target_count;                        /*!< Number of elements to read into the target array */
     size_t array_wire_count;                    /*!< Element count declared on the wire (0..capacity) */
+#endif
     sofab_id_t id;                              /*!< Current field ID being processed */
     uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */
     uint8_t varint_shift;                       /*!< Current shift offset for varint decoding */
