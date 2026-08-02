@@ -591,6 +591,27 @@ choice.
 Pick this repo for bare-metal C, MCU-class C++, or a shared C/C++ wire format;
 pick `corelib-cpp` on a hosted C++20 target that wants maximum speed.
 
+### What the speed difference actually is
+
+Instruction counts from the shared Callgrind tooling — deterministic and
+machine-independent, so these compare directly. All three are built at `-O3`,
+and all four columns were re-measured together on one machine (lower is better):
+
+| Workload | C (this) | C++ wrapper (this) | `corelib-cpp` |
+| - | -: | -: | -: |
+| encode: u64 array (1000) | 124 992 | 125 021 | **38 046** |
+| encode: typical message | 908 | 1 008 | **270** |
+| decode: u64 array (1000) | 289 941 | 289 942 | **44 835** |
+| decode: typical message | 2 057 | 2 056 | **1 321** |
+
+`corelib-cpp` runs **1.6× to 6.5× fewer instructions**, widest on the array
+workloads: it establishes a full varint window once and then moves whole 64-bit
+words, where the C core tests bounds and continuation a byte at a time and keeps
+per-field bookkeeping for its deferred-copy contract. That contract is the point
+of this repo — it is what lets decoding target caller-owned, address-stable
+storage with no heap and a fixed footprint — so the gap is the deliberate trade,
+not a defect. Reproduce with `bash bench/run_callgrind.sh` in either repo.
+
 Approximate head-to-head figures from the benchmark arena (best-of-5, comparable
 only within a language):
 
@@ -599,6 +620,11 @@ only within a language):
 | Embedded **C** | `corelib-c-cpp` (C API) | nanopb | ~2.1× | ~3.6&nbsp;KB vs ~6.6&nbsp;KB |
 | Embedded **C++** | `corelib-c-cpp` (C++ wrapper) | EmbeddedProto | ~2.3× | ~6.5&nbsp;KB vs ~9.3&nbsp;KB |
 | Throughput **C++** | `corelib-cpp` (pure C++20) | protobuf | ~1.3× (434 vs 494-byte wire) | — (desktop/server) |
+
+The `corelib-cpp` arena row predates the varint work reflected in the table
+above and has not been re-run, so read it as a floor rather than a current
+figure. The two embedded rows are unaffected — this repo's codecs have not
+changed.
 
 Both C++ ports share the `sofab::` API; the practical differences show up in the
 decode-buffer contract:
