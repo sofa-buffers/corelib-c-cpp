@@ -195,6 +195,15 @@ static void perf_report(const char *what, perf_result_t r, size_t bytes)
     printf("  throughput    : %.1f MB/s  (speedtest, MB = 1e6 bytes)\n", r.mb_s);
 }
 
+/* Sample the CPU clock once per block of operations rather than once per
+ * operation. clock() can cost around a microsecond — comparable to, or larger
+ * than, one operation on this message — so a per-iteration reading lands
+ * squarely inside the measurement. It corrupts cycles/op too, not just the
+ * timing: the cycle counter brackets the whole loop, so every clock() call in
+ * between is counted as work. The block is grown until it spans long enough
+ * that a single reading cannot matter. The printed output is unchanged. */
+#define PERF_BLOCK_SECONDS 0.01 /* clock cost lands under ~0.01% of a block */
+
 static perf_result_t measure_encode(uint8_t *buf, size_t buflen, size_t *msg_size)
 {
     volatile size_t sink = 0;
@@ -204,13 +213,25 @@ static perf_result_t measure_encode(uint8_t *buf, size_t buflen, size_t *msg_siz
         msg = perf_encode(buf, buflen);
     *msg_size = msg;
 
+    /* One clock reading per block of operations, not per operation — see the
+     * note on PERF_BLOCK_SECONDS. */
+    unsigned long block = 1;
+    for (;; block *= 2) {
+        double tc = cpu_now();
+        for (unsigned long k = 0; k < block; k++)
+            sink += perf_encode(buf, buflen);
+        if (cpu_now() - tc >= PERF_BLOCK_SECONDS)
+            break;
+    }
+
     unsigned long it = 0;
     double        el;
     uint64_t      c0 = perf_cycles();
     double        t0 = cpu_now();
     do {
-        sink += perf_encode(buf, buflen);
-        it++;
+        for (unsigned long k = 0; k < block; k++)
+            sink += perf_encode(buf, buflen);
+        it += block;
         el = cpu_now() - t0;
     } while (el < 1.0);
     uint64_t c1 = perf_cycles();
@@ -231,14 +252,27 @@ static perf_result_t measure_decode(const uint8_t *buf, size_t len, perf_out_t *
     for (unsigned i = 0; i < 1000u; i++) /* warmup */
         perf_decode(buf, len, out);
 
+    unsigned long block = 1;
+    for (;; block *= 2) {
+        double tc = cpu_now();
+        for (unsigned long k = 0; k < block; k++) {
+            perf_decode(buf, len, out);
+            sink += out->u32;
+        }
+        if (cpu_now() - tc >= PERF_BLOCK_SECONDS)
+            break;
+    }
+
     unsigned long it = 0;
     double        el;
     uint64_t      c0 = perf_cycles();
     double        t0 = cpu_now();
     do {
-        perf_decode(buf, len, out);
-        sink += out->u32;
-        it++;
+        for (unsigned long k = 0; k < block; k++) {
+            perf_decode(buf, len, out);
+            sink += out->u32;
+        }
+        it += block;
         el = cpu_now() - t0;
     } while (el < 1.0);
     uint64_t c1 = perf_cycles();
