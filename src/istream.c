@@ -601,6 +601,14 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
                     case SOFAB_TYPE_SEQUENCE_START:
+                        if (ctx->depth == SOFAB_MAX_DEPTH)
+                        {
+                            // nesting > MAX_DEPTH → INVALID (MESSAGE_SPEC 5.2:
+                            // malformed regardless of what follows). Tested
+                            // before the callback runs, so the ceiling fires
+                            // whether or not the caller would bind this level.
+                            return SOFAB_RET_E_INVALID_MSG;
+                        }
                         callback = 1;
                         break;
 
@@ -630,15 +638,16 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
                 if (type == SOFAB_TYPE_SEQUENCE_START)
                 {
+                    // one more level open. Every sequence counts towards the
+                    // ceiling, bound or skipped: a bound level is pushed onto
+                    // the decoder chain and leaves skip_depth alone, so
+                    // skip_depth alone would undercount the nesting by exactly
+                    // the number of levels the caller took an interest in.
+                    ctx->depth++;
+
                     // if not interested in sequence ...
                     if (!ctx->target_ptr)
                     {
-                        if (ctx->decoder->skip_depth == SOFAB_MAX_DEPTH)
-                        {
-                            // nesting > MAX_DEPTH → INVALID
-                            return SOFAB_RET_E_INVALID_MSG;
-                        }
-
                         // increase skip_depth counter to skip all fields until sequence end
                         ctx->decoder->skip_depth++;
                     }
@@ -663,6 +672,10 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         // pop decoder
                         ctx->decoder = ctx->decoder->parent;
                     }
+
+                    // the level closed above is no longer open (the unmatched
+                    // end returns above, so this only runs for a real close)
+                    ctx->depth--;
                 }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
