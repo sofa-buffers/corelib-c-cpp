@@ -2696,8 +2696,12 @@ static void test_msg_invalid_nested_sequence_depth (void)
     sofab_ret_t ret;
     /*
      * 0: u8 = 42
-     * 1: nested sequence - invalid 256 levels! (depth limit is 255)
+     * 1: nested sequence - invalid 257 levels! (depth limit is 255)
      * 2: i8 = -42
+     *
+     * _fields binds no sequence, so every level here is a skipped one. The
+     * boundary itself (255 accept / 256 reject) is pinned below, for skipped
+     * and bound levels alike.
      */
     const uint8_t buffer[] = {
         0x00, 0x2A, 0x0E, 0x00, 0x2A, 0x11, 0x53, 0x0E, 0x00, 0x2A, 0x11, 0x53,
@@ -2843,6 +2847,69 @@ static void test_msg_invalid_nested_sequence_depth (void)
     sofab_istream_init(&ctx, _fields, &value);
     ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+}
+
+/*
+ * Feeds a message that opens @p depth nested sequences and, if @p closed, ends
+ * every one of them again. The outermost carries @p first_id; the inner ones
+ * carry id 4, which no callback here binds, so they are skipped levels.
+ *
+ * With first_id 1 the outermost level is BOUND: it is pushed onto the decoder
+ * chain and leaves skip_depth untouched. A ceiling that reads skip_depth alone
+ * therefore undercounts such a message by one level per bound sequence -- the
+ * F-0050 off-by-one, which let 1 bound + 255 skipped through at depth 256.
+ */
+static sofab_ret_t _feed_nesting (unsigned depth, sofab_id_t first_id, int closed)
+{
+    uint8_t buffer[2 * (SOFAB_MAX_DEPTH + 1)];
+    size_t n = 0;
+    unsigned i;
+    sofab_istream_t ctx;
+    test_sequence_t value = {0};
+
+    TEST_ASSERT_TRUE(2 * depth <= sizeof(buffer));
+
+    buffer[n++] = (uint8_t)((first_id << 3) | SOFAB_TYPE_SEQUENCE_START);
+    for (i = 1; i < depth; i++)
+    {
+        buffer[n++] = (uint8_t)((4 << 3) | SOFAB_TYPE_SEQUENCE_START);
+    }
+    if (closed)
+    {
+        for (i = 0; i < depth; i++)
+        {
+            buffer[n++] = (uint8_t)SOFAB_TYPE_SEQUENCE_END;
+        }
+    }
+
+    sofab_istream_init(&ctx, _fields_with_nested_sequence, &value);
+    return sofab_istream_feed(&ctx, buffer, n);
+}
+
+static void test_msg_nested_sequence_depth_boundary_bound (void)
+{
+    // id 1 is bound by _fields_with_nested_sequence: one level on the decoder
+    // chain, the rest skipped.
+
+    // MAX_DEPTH levels is the deepest a message may nest (CORELIB_PLAN 4.9).
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _feed_nesting(SOFAB_MAX_DEPTH, 1, 1));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, _feed_nesting(SOFAB_MAX_DEPTH, 1, 0));
+
+    // One past it is malformed regardless of what follows (MESSAGE_SPEC 5.2) --
+    // including when the message is complete, which is what separates this from
+    // any INVALID-vs-INCOMPLETE precedence question: nothing is truncated in the
+    // first case and the depth is still rejected.
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, _feed_nesting(SOFAB_MAX_DEPTH + 1, 1, 1));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, _feed_nesting(SOFAB_MAX_DEPTH + 1, 1, 0));
+}
+
+static void test_msg_nested_sequence_depth_boundary_skipped (void)
+{
+    // id 4 is bound by nobody: the same boundary with every level skipped.
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _feed_nesting(SOFAB_MAX_DEPTH, 4, 1));
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE, _feed_nesting(SOFAB_MAX_DEPTH, 4, 0));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, _feed_nesting(SOFAB_MAX_DEPTH + 1, 4, 1));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, _feed_nesting(SOFAB_MAX_DEPTH + 1, 4, 0));
 }
 
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
@@ -3263,6 +3330,8 @@ int test_istream_main (void)
     RUN_TEST(test_msg_invalid_array_fixlen_type);
     RUN_TEST(test_msg_invalid_array_fixlen_string_blob_subtype);
     RUN_TEST(test_msg_invalid_nested_sequence_depth);
+    RUN_TEST(test_msg_nested_sequence_depth_boundary_bound);
+    RUN_TEST(test_msg_nested_sequence_depth_boundary_skipped);
     RUN_TEST(test_msg_invalid_nested_sequence_extra_end);
     RUN_TEST(test_msg_invalid_target_len_fixlen);
     RUN_TEST(test_msg_invalid_target_len_fixlen_string);

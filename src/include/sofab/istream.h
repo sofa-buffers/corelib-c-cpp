@@ -144,6 +144,12 @@ struct sofab_istream
     uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */
     uint8_t varint_shift;                       /*!< Current shift offset for varint decoding */
     uint8_t invalid;                            /*!< Sticky flag: a callback rejected the message */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    uint8_t depth;                              /*!< Sequences currently open, bound and skipped
+                                                 *!< alike (0..SOFAB_MAX_DEPTH). The per-decoder
+                                                 *!< skip_depth counts only the skipped ones, so
+                                                 *!< it cannot carry the MAX_DEPTH ceiling. */
+#endif
 #if SOFAB_SKIP_COUNTER
     uint8_t skipped;                            /*!< Saturating count of type-contradicting fields
                                                  *!< skipped per MESSAGE_SPEC 7.3
