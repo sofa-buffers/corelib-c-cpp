@@ -555,7 +555,17 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                 // extract type from id
                 uint8_t type = _type_decode(&id);
-                if (id > SOFAB_ID_MAX)
+
+                // MESSAGE_SPEC 6.2: the ID_MAX ceiling bounds the id of a
+                // value-bearing header only. A sequence-end marker carries no
+                // value, so its id is not bounded: it is accepted whatever it
+                // is, discarded here, and re-encoded as a bare 0x07 (4.9).
+                // Only the 64-bit/10-byte varint bound above still applies.
+                if (type == SOFAB_TYPE_SEQUENCE_END)
+                {
+                    id = 0;
+                }
+                else if (id > SOFAB_ID_MAX)
                 {
                     // invalid field id
                     return SOFAB_RET_E_INVALID_MSG;

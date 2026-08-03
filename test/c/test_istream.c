@@ -2690,6 +2690,98 @@ static void test_msg_invalid_nested_sequence_extra_end (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
 }
 
+// MESSAGE_SPEC 4.9/6.2: the id of a sequence-end header is discarded, not
+// validated. ID_MAX bounds value-bearing headers only, so an end marker is
+// accepted whatever id it carries — including one above the ceiling. Only the
+// varint bound of 4.1 still applies to the header word itself.
+static void test_read_sequence_end_id_over_id_max_skipped (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    /*
+     * 14: sequence (undeclared -> skipped)
+     *     closed by an end marker whose id is 2^31, one past SOFAB_ID_MAX
+     */
+    const uint8_t buffer[] = {0x76, 0x87, 0x80, 0x80, 0x80, 0x40};
+
+    test_nested_t value = {.u8 = 0x55, .i8 = 0x55};
+
+    sofab_istream_init(&ctx, _fields, &value);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+}
+
+static void test_read_sequence_end_id_over_id_max_bound (void)
+{
+    // The same over-ceiling end marker on the *bound* close path (pop the
+    // decoder), not just the skip path: both close surfaces must accept it.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    /*
+     * 0: u8 = 42
+     * 1: nested sequence (bound)
+     *    0: u8 = 42
+     *    2: i8 = -42
+     *    end marker with id 2^31, one past SOFAB_ID_MAX
+     * 2: i8 = -42
+     */
+    const uint8_t buffer[] = {
+        0x00, 0x2A, 0x0E, 0x00, 0x2A, 0x11, 0x53,
+        0x87, 0x80, 0x80, 0x80, 0x40, 0x11, 0x53};
+
+    test_sequence_t value = {0};
+
+    sofab_istream_init(&ctx, _fields_with_nested_sequence, &value);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    TEST_ASSERT_EQUAL_UINT8(42, value.u8);
+    TEST_ASSERT_EQUAL_UINT8(42, value.nested.u8);
+    TEST_ASSERT_EQUAL_INT8(-42, value.nested.i8);
+    TEST_ASSERT_EQUAL_INT8(-42, value.i8);
+}
+
+static void test_read_sequence_end_id_below_id_max (void)
+{
+    // Controls: a small non-zero id and an id exactly at SOFAB_ID_MAX on an end
+    // marker were always accepted and must stay accepted.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    // 14: sequence (skipped), closed by an end marker with id 3
+    const uint8_t small[] = {0x76, 0x1F};
+    // 14: sequence (skipped), closed by an end marker with id SOFAB_ID_MAX
+    const uint8_t at_max[] = {0x76, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F};
+
+    test_nested_t value = {.u8 = 0x55, .i8 = 0x55};
+
+    sofab_istream_init(&ctx, _fields, &value);
+    ret = sofab_istream_feed(&ctx, small, sizeof(small));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+
+    sofab_istream_init(&ctx, _fields, &value);
+    ret = sofab_istream_feed(&ctx, at_max, sizeof(at_max));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+}
+
+static void test_msg_invalid_id_overflow_in_skipped_sequence (void)
+{
+    // Control for the carve-out above: ID_MAX still binds a value-bearing
+    // header, including one inside a skipped subtree where no schema knowledge
+    // is consulted.
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    /*
+     * 14: sequence (undeclared -> skipped)
+     *     u8 field whose id is 2^32-1, above SOFAB_ID_MAX -> INVALID
+     */
+    const uint8_t buffer[] = {0x76, 0xF8, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x07};
+
+    test_nested_t value = {.u8 = 0x55, .i8 = 0x55};
+
+    sofab_istream_init(&ctx, _fields, &value);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG, ret);
+}
+
 static void test_msg_invalid_nested_sequence_depth (void)
 {
     sofab_istream_t ctx;
@@ -3333,6 +3425,10 @@ int test_istream_main (void)
     RUN_TEST(test_msg_nested_sequence_depth_boundary_bound);
     RUN_TEST(test_msg_nested_sequence_depth_boundary_skipped);
     RUN_TEST(test_msg_invalid_nested_sequence_extra_end);
+    RUN_TEST(test_read_sequence_end_id_over_id_max_skipped);
+    RUN_TEST(test_read_sequence_end_id_over_id_max_bound);
+    RUN_TEST(test_read_sequence_end_id_below_id_max);
+    RUN_TEST(test_msg_invalid_id_overflow_in_skipped_sequence);
     RUN_TEST(test_msg_invalid_target_len_fixlen);
     RUN_TEST(test_msg_invalid_target_len_fixlen_string);
     RUN_TEST(test_msg_invalid_target_array_count_too_small);
