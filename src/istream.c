@@ -1130,7 +1130,13 @@ extern void sofab_istream_read_array (
     size_t element_count, size_t element_size, uint8_t opt)
 {
     assert(ctx != NULL);
-    assert(var != NULL);
+    /* A zero-element array has no payload to write, so it has no destination to
+     * require: `var` may be NULL there. That is not a corner case a caller has to
+     * avoid — a growable destination resized to 0 yields exactly this, and
+     * std::vector::data() on an empty vector is permitted to return NULL. The
+     * unconditional assert made a *valid* message (an array field carrying count 0)
+     * abort any asserts-enabled build. */
+    assert(var != NULL || element_count == 0);
     assert(element_size > 0);
 
     ctx->target_ptr = (uint8_t *)var;
