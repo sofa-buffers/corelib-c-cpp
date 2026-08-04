@@ -3296,6 +3296,41 @@ static void test_invalidate_precedence_over_incomplete (void)
         sofab_istream_feed(&ctx, buffer, sizeof(buffer)));
 }
 
+/* A zero-element array binds a NULL destination without aborting.
+ *
+ * sofab_istream_read_array asserted `var != NULL` unconditionally, so a *valid*
+ * message carrying an array field with count 0 aborted any asserts-enabled build.
+ * A caller cannot avoid it: a growable destination resized to 0 is exactly this,
+ * and std::vector::data() on an empty vector may return NULL. There is no payload
+ * to write for a zero-element array, so there is no destination to require. */
+static void _zero_count_array_cb (
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)size;
+    (void)count;
+    unsigned *seen = (unsigned *)usrptr;
+
+    if (id == 0)
+    {
+        (*seen)++;
+        /* NULL destination, zero elements — the case the precondition forbade. */
+        sofab_istream_read_array_of_u8(ctx, NULL, 0);
+    }
+}
+
+static void test_read_array_zero_count_accepts_null_destination (void)
+{
+    sofab_istream_t ctx;
+    unsigned seen = 0;
+
+    /* A top-level unsigned array field, id 0, count 0. */
+    const uint8_t buffer[] = {0x03, 0x00};
+
+    sofab_istream_init(&ctx, _zero_count_array_cb, &seen);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_istream_feed(&ctx, buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL(1, seen);
+}
+
 #endif /* SEQUENCE && FIXLEN support */
 
 int test_istream_main (void)
@@ -3412,6 +3447,7 @@ int test_istream_main (void)
     RUN_TEST(test_invalidate_in_range_accepts);
     RUN_TEST(test_invalidate_sticky_across_feeds);
     RUN_TEST(test_invalidate_precedence_over_incomplete);
+    RUN_TEST(test_read_array_zero_count_accepts_null_destination);
 #endif
 
     RUN_TEST(test_read_full_scale_example);
