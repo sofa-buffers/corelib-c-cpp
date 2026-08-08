@@ -143,6 +143,45 @@ typedef int32_t sofab_signed_t;
  * caller-provided decoder handles (see @c sofab_object_decoder_t::depth). */
 #define SOFAB_MAX_DEPTH (UINT8_MAX)
 
+/*! @brief Smallest output buffer this port accepts **for streaming**
+ *  (CORELIB_PLAN §5.1).
+ *
+ * This port declares **1**. Every writer here reaches the buffer through a
+ * single byte-at-a-time push that flushes and continues when the buffer is
+ * full, so nothing has to land contiguously: a field header varint, a
+ * @c fixlen_word, an @c element_count, an integer value and an fp32/fp64
+ * element may each be split across a flush at any byte. §5.1 calls that
+ * byte-granular case "fully conformant, and the right choice for a footprint
+ * profile" -- a port declaring 1 imposes no requirement on its caller at all.
+ *
+ * **Streaming only.** The minimum binds a buffer installed together with a
+ * flush callback -- at @c sofab_ostream_init() and at every
+ * @c sofab_ostream_buffer_set() -- which must satisfy
+ * @c buflen @c - @c offset @c >= @c SOFAB_MIN_OUTPUT_BUFFER. A buffer installed
+ * *without* a callback is subject to no minimum: no flush can occur, so no unit
+ * can be split, and the buffer either holds the message or reports
+ * @ref SOFAB_RET_E_BUFFER_FULL. That is the case a caller sizes from a
+ * generated @c MAX_SIZE, and it stays exact -- a message that encodes to two
+ * bytes encodes into a two-byte buffer whatever this constant says.
+ *
+ * **Not a build knob.** Unlike @c SOFAB_LAZY_SEQ_DEPTH this states what the
+ * encoder *does*, not what the caller may configure: raising it would not make
+ * any write land contiguously, it would only misinform the caller. Defining it
+ * from the build is therefore an error rather than a silent redefinition.
+ *
+ * **Ceiling 20** (§5.1): a header varint and its value, 2 x 10, which is also
+ * the largest message a schema can bound to a single scalar field. Reserving
+ * further ahead must be handled by flushing, not by raising this declaration.
+ * The check below guards an edit to the value here against that ceiling. */
+#if defined(SOFAB_MIN_OUTPUT_BUFFER)
+# error "SOFAB_MIN_OUTPUT_BUFFER states what this encoder does; it is not configurable"
+#endif
+#define SOFAB_MIN_OUTPUT_BUFFER 1
+
+#if SOFAB_MIN_OUTPUT_BUFFER < 1 || SOFAB_MIN_OUTPUT_BUFFER > 20
+# error "SOFAB_MIN_OUTPUT_BUFFER must be 1..20 (CORELIB_PLAN §5.1)"
+#endif
+
 // disable double support automatically on platforms where double is not 8 bytes
 #if defined(__SIZEOF_DOUBLE__) && __SIZEOF_DOUBLE__ != 8
 # define SOFAB_DISABLE_FP64_SUPPORT

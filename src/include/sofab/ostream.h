@@ -191,6 +191,20 @@ struct sofab_ostream
  *                 buffer[0], offset==buflen makes the buffer effectively full.
  * @param flush    Optional flush callback invoked when the buffer data must be handled.
  * @param usrptr   Optional user pointer passed to @p flush when invoked.
+ *
+ * @note When @p flush is non-NULL the buffer is installed **for streaming** and
+ *       must satisfy @c buflen @c - @c offset @c >= @ref SOFAB_MIN_OUTPUT_BUFFER
+ *       (CORELIB_PLAN §5.1). With @p flush NULL no flush can occur and no
+ *       minimum applies: @p buflen may be 0 and @p offset may equal @p buflen,
+ *       and the buffer either holds the message or reports
+ *       @ref SOFAB_RET_E_BUFFER_FULL. The all-default message is the empty byte
+ *       string (MESSAGE_SPEC §2), so the zero-length case is a real one.
+ *
+ * @note Both preconditions are checked with @c assert(), which is this port's
+ *       mechanism for an out-of-range argument on a @c void entry point. A
+ *       release build (@c NDEBUG) does not reject; an installation that leaves
+ *       no room then surfaces as @ref SOFAB_RET_E_BUFFER_FULL on the first
+ *       write that needs space, never as a write past the buffer.
  */
 extern void sofab_ostream_init (
     sofab_ostream_t *ctx, uint8_t *buffer, size_t buflen, size_t offset,

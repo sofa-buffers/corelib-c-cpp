@@ -272,6 +272,16 @@ at the front for a lower-layer header. When the buffer fills (or on
 `sofab_ostream_flush()`) an optional flush callback drains it; with no callback,
 a full buffer returns `SOFAB_RET_E_BUFFER_FULL` instead of overflowing.
 
+**`SOFAB_MIN_OUTPUT_BUFFER` is `1`.** This is the smallest buffer the encoder
+accepts *for streaming*, and one byte is the floor the wire format was designed
+around: every write goes through a byte-at-a-time push, so a field header, a
+`fixlen_word`, a varint value or a float element may each straddle a flush. A
+buffer installed **with** a flush callback must satisfy
+`buflen - offset >= SOFAB_MIN_OUTPUT_BUFFER`; one installed **without** a
+callback has no minimum at all — it either holds the message or reports
+`SOFAB_RET_E_BUFFER_FULL`, so a caller sizing from a generated `MAX_SIZE` gets
+an exact fit and never a floor imposed on top of it.
+
 **Decode (istream) — deferred-copy binding.** A `read_*()` / `read()` call
 copies nothing: it records only *where* the value goes (pointer, length, type).
 The bytes are written into that destination by later `feed()` calls. Two rules

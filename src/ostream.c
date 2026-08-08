@@ -355,8 +355,15 @@ extern void sofab_ostream_init (
 {
     assert(ctx != NULL);
     assert(buffer != NULL);
-    assert(buflen > 0);
-    assert(offset < buflen);
+    /* CORELIB_PLAN §5.1 binds SOFAB_MIN_OUTPUT_BUFFER to a buffer installed
+     * *with* a sink, "and on no other" (§13). A buffer without one can be
+     * arbitrarily small -- no flush can occur, so nothing can be split, and it
+     * either holds the message or reports SOFAB_RET_E_BUFFER_FULL. That case
+     * has to stay exact: the all-default message is the empty byte string
+     * (MESSAGE_SPEC §2), so a zero-length buffer is a legitimate installation
+     * and offset == buflen is a legitimate (immediately full) cursor. */
+    assert(offset <= buflen);
+    assert(flush == NULL || buflen - offset >= SOFAB_MIN_OUTPUT_BUFFER);
 
     ctx->buffer = buffer;
     ctx->offset = buffer + offset;
@@ -397,8 +404,10 @@ extern void sofab_ostream_buffer_set	(
 {
     assert(ctx != NULL);
     assert(buffer != NULL);
-    assert(buflen > 0);
-    assert(offset < buflen);
+    /* Same split as in sofab_ostream_init(): the minimum binds this
+     * installation only if the stream drains through a sink (§5.1, §13). */
+    assert(offset <= buflen);
+    assert(ctx->flush == NULL || buflen - offset >= SOFAB_MIN_OUTPUT_BUFFER);
 
     ctx->buffer = buffer;
     ctx->offset = buffer + offset;
