@@ -60,6 +60,36 @@ static inline sofab_unsigned_t _zigzag_encode (sofab_signed_t v)
 }
 
 /*!
+ * @brief Hand the buffered bytes to the flush callback.
+ *
+ * The cursor is reset **before** the callback runs, not after. CORELIB_PLAN
+ * §5.1 states the start offset over the *installation* rather than the buffer:
+ * a sofab_ostream_buffer_set() the callback makes begins a new installation
+ * whose cursor starts at *that call's* offset, and that is how a sink reserves
+ * framing-header room in every flushed unit. Resetting after the return would
+ * silently discard the offset the callback just installed -- the buffer swap
+ * would survive and the reservation would not, so every unit but the first
+ * would have its header room overwritten.
+ *
+ * Resetting first also states the other half of the same rule: a sink that
+ * copied and returns without installing anything leaves this reset standing
+ * and the encoder resumes at offset 0.
+ *
+ * Caller checks @c ctx->flush; @p ctx->buffer and the byte count are read
+ * before the call, so the callback is free to install anything it likes.
+ *
+ * @param ctx   Output stream context.
+ */
+static void _drain (sofab_ostream_t *ctx)
+{
+    uint8_t *data = ctx->buffer;
+    size_t used = (size_t)(ctx->offset - data);
+
+    ctx->offset = data;
+    ctx->flush(ctx, data, used, ctx->usrptr);
+}
+
+/*!
  * @brief Push a single byte to the buffer, flushing first if it is full.
  *
  * If the buffer is full and a flush callback is set, it is invoked and the
@@ -76,13 +106,22 @@ static int _push_byte (sofab_ostream_t *ctx, uint8_t byte)
         // buffer full, flush if possible
         if (ctx->flush)
         {
-            size_t used = ctx->offset - ctx->buffer;
-            ctx->flush(ctx, ctx->buffer, used, ctx->usrptr);
-            ctx->offset = ctx->buffer;
+            _drain(ctx);
         }
         else
         {
             // no flush callback, return buffer overflow
+            return -1;
+        }
+
+        /* The callback may have installed a buffer that starts out full -- an
+         * offset at its end, or no length to speak of. There is no room to
+         * write into and nothing further to flush, so report it rather than
+         * run past the end. Before the cursor honoured the installed offset
+         * this could not happen: the post-flush reset forced the cursor to the
+         * buffer start, which guaranteed room. */
+        if (ctx->offset >= ctx->bufend)
+        {
             return -1;
         }
     }
@@ -337,11 +376,10 @@ extern size_t sofab_ostream_flush (sofab_ostream_t *ctx)
 
     assert(ctx != NULL);
 
-    used = ctx->offset - ctx->buffer;
+    used = (size_t)(ctx->offset - ctx->buffer);
     if (ctx->flush && used)
     {
-        ctx->flush(ctx, ctx->buffer, used, ctx->usrptr);
-        ctx->offset = ctx->buffer;
+        _drain(ctx);
     }
 
     return used;

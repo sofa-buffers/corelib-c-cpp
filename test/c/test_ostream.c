@@ -1677,6 +1677,168 @@ static void test_write_full_scale_example (void)
 #endif
 }
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+/* One framing header per packet: the sink hands each unit on and re-arms the
+ * same buffer with room at the front for the next one. */
+#define FRAMING_HDRROOM 4
+#define FRAMING_PKTLEN  16
+#define FRAMING_MAXPKT  8
+
+typedef struct
+{
+    uint8_t  packets[FRAMING_MAXPKT][FRAMING_PKTLEN];
+    size_t   lens[FRAMING_MAXPKT];
+    size_t   n;
+    uint8_t *buf;
+    int      lost_header_room;
+} framing_acc_t;
+
+static void _framing_flush_cb (
+    sofab_ostream_t *ctx, const uint8_t *data, size_t len, void *usrptr)
+{
+    framing_acc_t *acc = (framing_acc_t *)usrptr;
+
+    TEST_ASSERT_TRUE_MESSAGE(acc->n < FRAMING_MAXPKT, "more packets than expected");
+    TEST_ASSERT_TRUE_MESSAGE(len <= FRAMING_PKTLEN, "packet longer than the buffer");
+
+    /* Every unit must still carry the room this sink reserved for it. */
+    if (len < FRAMING_HDRROOM
+        || data[0] != 0xAA || data[1] != 0xAA
+        || data[2] != 0xAA || data[3] != 0xAA)
+    {
+        acc->lost_header_room = 1;
+    }
+
+    memcpy(acc->packets[acc->n], data, len);
+    acc->lens[acc->n] = len;
+    acc->n++;
+
+    /* Re-arm the reservation for the next unit (CORELIB_PLAN §5.1). */
+    memset(acc->buf, 0xAA, FRAMING_HDRROOM);
+    sofab_ostream_buffer_set(ctx, acc->buf, FRAMING_PKTLEN, FRAMING_HDRROOM);
+}
+
+/*
+ * CORELIB_PLAN §5.1: "The start offset belongs to the installation, not to the
+ * buffer. Each buffer-set call begins a new installation and its cursor starts
+ * at *that call's* offset ... that is how a sink gets fresh header room in
+ * EVERY flushed unit, one framing header per packet: buffer_set(buf, len,
+ * offset) re-arms the reservation, where a bare return would not."
+ *
+ * The combination that proves it is a buffer_set() called *from inside the
+ * flush callback* with a non-zero offset, over more than one flush. The first
+ * unit is not evidence: sofab_ostream_init() establishes the same offset, so it
+ * looks right even when the re-arming is being discarded. An encoder that
+ * resets the cursor after the callback returns writes over the reserved bytes
+ * of every unit from the second on.
+ *
+ * The payload bytes are checked too: dropping the reservation must not be
+ * mistakable for a stream that merely renumbered its packets.
+ */
+static void test_flush_callback_buffer_set_keeps_its_offset (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t oneshot[128];
+    uint8_t pktbuf[FRAMING_PKTLEN];
+    uint8_t cat[128];
+    framing_acc_t acc;
+    size_t oneshot_len, cat_len = 0, i;
+    static const uint8_t payload[40] = {
+        0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+        0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53,
+        0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D,
+        0x5E, 0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67};
+
+    /* Reference: the same message through a buffer that never fills. */
+    sofab_ostream_init(&ctx, oneshot, sizeof(oneshot), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "one-shot blob");
+    oneshot_len = sofab_ostream_bytes_used(&ctx);
+
+    /* Now framed: 4 bytes reserved at the front of every flushed unit. */
+    memset(&acc, 0, sizeof(acc));
+    acc.buf = pktbuf;
+    memset(pktbuf, 0xAA, FRAMING_HDRROOM);
+    sofab_ostream_init(&ctx, pktbuf, FRAMING_PKTLEN, FRAMING_HDRROOM,
+                       _framing_flush_cb, &acc);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "framed blob");
+    sofab_ostream_flush(&ctx);
+
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(2, acc.n,
+        "need more than two units for the re-arming to be under test");
+    TEST_ASSERT_FALSE_MESSAGE(acc.lost_header_room,
+        "a flushed unit lost the framing-header room the sink reserved via buffer_set()");
+
+    /* Strip each unit's reserved head; what is left must be the message. */
+    for (i = 0; i < acc.n; i++)
+    {
+        size_t n = acc.lens[i] - FRAMING_HDRROOM;
+        memcpy(cat + cat_len, acc.packets[i] + FRAMING_HDRROOM, n);
+        cat_len += n;
+    }
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(oneshot_len, cat_len,
+        "framed stream length differs from the one-shot encode");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(oneshot, cat, oneshot_len,
+        "framed stream differs from the one-shot encode");
+}
+
+/* A sink that copies and returns without installing anything. */
+typedef struct
+{
+    uint8_t bytes[128];
+    size_t  len;
+} copy_acc_t;
+
+static void _copy_flush_cb (
+    sofab_ostream_t *ctx, const uint8_t *data, size_t len, void *usrptr)
+{
+    copy_acc_t *acc = (copy_acc_t *)usrptr;
+    (void) ctx;
+
+    TEST_ASSERT_TRUE_MESSAGE(acc->len + len <= sizeof(acc->bytes), "accumulator overflow");
+    memcpy(acc->bytes + acc->len, data, len);
+    acc->len += len;
+}
+
+/*
+ * The other half of the returning-callback contract (§5.1): "Returning without
+ * installing a buffer means the sink copied. The active buffer stays active and
+ * the encoder resumes writing into it at offset 0." The initial offset is
+ * consumed once and must not come back per flush -- only the first unit carries
+ * it.
+ */
+static void test_bare_callback_return_resumes_at_zero (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t oneshot[64];
+    uint8_t buf[8];
+    copy_acc_t acc;
+    size_t oneshot_len;
+    static const uint8_t payload[24] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27};
+
+    sofab_ostream_init(&ctx, oneshot, sizeof(oneshot), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "one-shot blob");
+    oneshot_len = sofab_ostream_bytes_used(&ctx);
+
+    memset(&acc, 0, sizeof(acc));
+    sofab_ostream_init(&ctx, buf, sizeof(buf), 3, _copy_flush_cb, &acc);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "streamed blob");
+    sofab_ostream_flush(&ctx);
+
+    /* 3 reserved bytes in the first unit, none in any later one. */
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(oneshot_len + 3, acc.len,
+        "only the first unit may carry the initial offset");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(oneshot, acc.bytes + 3, oneshot_len,
+        "streamed bytes differ from the one-shot encode");
+}
+#endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
+
 int test_ostream_main (void)
 {
     UNITY_BEGIN();
@@ -1684,6 +1846,10 @@ int test_ostream_main (void)
     RUN_TEST(test_init);
     RUN_TEST(test_buffer_set);
     RUN_TEST(test_buffer_flush);
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    RUN_TEST(test_flush_callback_buffer_set_keeps_its_offset);
+    RUN_TEST(test_bare_callback_return_resumes_at_zero);
+#endif
 
     RUN_TEST(test_buffer_overflow_by_id_via_unsigned);
     RUN_TEST(test_buffer_overflow_by_id_via_signed);

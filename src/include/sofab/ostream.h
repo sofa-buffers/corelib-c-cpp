@@ -235,7 +235,13 @@ extern size_t sofab_ostream_bytes_used (sofab_ostream_t *ctx);
  * @param ctx      Pointer to the output stream context.
  * @param buffer   Pointer to the new buffer to use.
  * @param buflen   Size of @p buffer in bytes.
- * @param offset   Initial offset within the new buffer (0..buflen).
+ * @param offset   Initial offset within the new buffer (0..buflen). The offset
+ *                 belongs to *this* installation (CORELIB_PLAN §5.1): the cursor
+ *                 starts at it, and it is consumed, so a later flush the callback
+ *                 returns from without installing anything resumes at 0. Passing
+ *                 the same buffer again is a new installation like any other --
+ *                 that is how a sink re-arms header room in every flushed unit,
+ *                 one framing header per packet.
  */
 extern void sofab_ostream_buffer_set (
     sofab_ostream_t *ctx, uint8_t *buffer, size_t buflen, size_t offset);
