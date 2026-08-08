@@ -5,7 +5,14 @@ OUTPUT_ARCH(arm)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 128K
+    /* The unit-test image is ~124K of Unity plus test data; the library
+     * itself is under 4K. This target is a link-only smoke test -- the
+     * workflow inspects the ELF with file(1) and readelf and never runs it --
+     * so the device model is a fiction, and sizing it to a real
+     * STM32VLDISCOVERY only caps how far the test suite may grow. Library
+     * footprint is tracked by the `size libsofabuffers.a` step and the README
+     * tables, not by this region. */
+    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 512K
     SRAM  (rw!x): ORIGIN = 0x20000000, LENGTH = 8K
 }
 
