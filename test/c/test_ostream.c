@@ -1783,11 +1783,15 @@ static void test_flush_callback_buffer_set_keeps_its_offset (void)
         "framed stream differs from the one-shot encode");
 }
 
-/* A sink that copies and returns without installing anything. */
+/* A sink that copies and returns without installing anything. Accumulates
+ * everything it is handed, and checks where it came from. */
 typedef struct
 {
-    uint8_t bytes[128];
-    size_t  len;
+    uint8_t        bytes[256];
+    size_t         len;
+    const uint8_t *buf;      /* the installed buffer ... */
+    size_t         buflen;   /* ... and its extent */
+    int            foreign;  /* callback argument outside the installed buffer */
 } copy_acc_t;
 
 static void _copy_flush_cb (
@@ -1795,6 +1799,11 @@ static void _copy_flush_cb (
 {
     copy_acc_t *acc = (copy_acc_t *)usrptr;
     (void) ctx;
+
+    /* CORELIB_PLAN §7.2 item 4, "no foreign memory without permission": this
+     * port was never granted pass-through and does not implement it, so every
+     * byte the sink sees must lie inside the buffer the caller installed. */
+    if (data < acc->buf || data + len > acc->buf + acc->buflen) acc->foreign = 1;
 
     TEST_ASSERT_TRUE_MESSAGE(acc->len + len <= sizeof(acc->bytes), "accumulator overflow");
     memcpy(acc->bytes + acc->len, data, len);
@@ -1826,16 +1835,129 @@ static void test_bare_callback_return_resumes_at_zero (void)
     oneshot_len = sofab_ostream_bytes_used(&ctx);
 
     memset(&acc, 0, sizeof(acc));
+    acc.buf = buf;
+    acc.buflen = sizeof(buf);
     sofab_ostream_init(&ctx, buf, sizeof(buf), 3, _copy_flush_cb, &acc);
     TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
         sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "streamed blob");
     sofab_ostream_flush(&ctx);
 
+    TEST_ASSERT_FALSE_MESSAGE(acc.foreign, "sink saw memory outside the installed buffer");
     /* 3 reserved bytes in the first unit, none in any later one. */
     TEST_ASSERT_EQUAL_size_t_MESSAGE(oneshot_len + 3, acc.len,
         "only the first unit may carry the initial offset");
     TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(oneshot, acc.bytes + 3, oneshot_len,
         "streamed bytes differ from the one-shot encode");
+}
+
+/*
+ * CORELIB_PLAN §7.2 item 4, first bullet: encode into a buffer of exactly
+ * SOFAB_MIN_OUTPUT_BUFFER bytes, driving the flush callback repeatedly, and
+ * assert the concatenated output is byte-identical to the one-shot output.
+ * The spec asks for the port's own declared minimum rather than merely
+ * "smaller than the message" -- it is the size that proves the constant is
+ * real. At the declared 1 that means every byte of the message crosses a flush
+ * boundary, header varints and fixlen words included.
+ *
+ * The message carries a blob longer than the buffer, so the divisible-run path
+ * of §5.1 is exercised whatever the declared value is.
+ */
+static void test_min_output_buffer_matches_one_shot (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t oneshot[128];
+    uint8_t tiny[SOFAB_MIN_OUTPUT_BUFFER];
+    copy_acc_t acc;
+    size_t oneshot_len;
+    static const uint8_t payload[40] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+        0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13,
+        0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D,
+        0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27};
+
+    /* Reference: a buffer that never fills, installed without a sink -- the
+     * path §5.1 exempts from the minimum entirely. */
+    sofab_ostream_init(&ctx, oneshot, sizeof(oneshot), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_unsigned(&ctx, 1, 300), "one-shot unsigned");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "one-shot blob");
+    oneshot_len = sofab_ostream_bytes_used(&ctx);
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(sizeof(tiny), oneshot_len,
+        "the message must be longer than the minimum buffer for this to prove anything");
+
+    /* The same message through exactly SOFAB_MIN_OUTPUT_BUFFER bytes. */
+    memset(&acc, 0, sizeof(acc));
+    acc.buf = tiny;
+    acc.buflen = sizeof(tiny);
+    sofab_ostream_init(&ctx, tiny, sizeof(tiny), 0, _copy_flush_cb, &acc);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_unsigned(&ctx, 1, 300), "streamed unsigned");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "streamed blob");
+    sofab_ostream_flush(&ctx);
+
+    TEST_ASSERT_FALSE_MESSAGE(acc.foreign,
+        "the sink was handed memory outside the installed buffer without pass-through");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(oneshot_len, acc.len,
+        "streamed length differs from the one-shot encode");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(oneshot, acc.bytes, oneshot_len,
+        "streamed bytes differ from the one-shot encode");
+}
+
+/*
+ * §5.1: "A buffer installed without a sink is subject to no minimum ... it
+ * stays exact -- a message that encodes to two bytes may be encoded into a
+ * two-byte buffer on any port, whatever that port declares." The converse the
+ * spec pairs with the rejection test: the minimum is a streaming constant and
+ * must not become a floor on the one-shot path.
+ */
+static void test_no_minimum_without_a_sink (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t exact[2];
+
+    /* id 1, unsigned, value 42 -> exactly two bytes, into exactly two bytes. */
+    sofab_ostream_init(&ctx, exact, sizeof(exact), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_unsigned(&ctx, 1, 42),
+        "a message that fits must encode into a buffer sized to it");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(2, sofab_ostream_bytes_used(&ctx), "exact fit");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x08, exact[0], "header");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(0x2A, exact[1], "value");
+}
+
+/*
+ * The degenerate end of the same rule, and the one the preconditions used to
+ * forbid outright. §5.1: a buffer installed without a sink "is subject to no
+ * minimum", and the case stays exact. MESSAGE_SPEC §2 omits a sequence-typed
+ * field equal to its default, so the all-default message *is* the empty byte
+ * string -- a zero-length buffer is the right size for it, and a cursor that
+ * starts at the end of the buffer is simply a buffer with nothing left.
+ *
+ * This runs under the ctest build, i.e. with assert() live: it is the debug
+ * preconditions that have to admit the case, not just the release build.
+ */
+static void test_zero_room_without_a_sink_is_legal (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t buf[2];
+
+    /* No buffer at all is enough for the message that has no bytes. */
+    sofab_ostream_init(&ctx, buf, 0, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_bytes_used(&ctx),
+        "the empty message occupies no bytes");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_flush(&ctx),
+        "nothing to flush");
+
+    /* offset == buflen: a legitimate installation with no room left. Writing
+     * into it is buffer-full, not a precondition violation. */
+    sofab_ostream_init(&ctx, buf, sizeof(buf), sizeof(buf), NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_BUFFER_FULL,
+        sofab_ostream_write_unsigned(&ctx, 1, 42),
+        "a full buffer reports buffer-full");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(buf), sofab_ostream_bytes_used(&ctx),
+        "the cursor stays where it was installed");
 }
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
@@ -1849,6 +1971,9 @@ int test_ostream_main (void)
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
     RUN_TEST(test_flush_callback_buffer_set_keeps_its_offset);
     RUN_TEST(test_bare_callback_return_resumes_at_zero);
+    RUN_TEST(test_min_output_buffer_matches_one_shot);
+    RUN_TEST(test_no_minimum_without_a_sink);
+    RUN_TEST(test_zero_room_without_a_sink_is_legal);
 #endif
 
     RUN_TEST(test_buffer_overflow_by_id_via_unsigned);
