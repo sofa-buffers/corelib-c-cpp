@@ -30,7 +30,24 @@ fi
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
-WORKLOADS=(encode_u64_array encode_typical decode_u64_array decode_typical)
+# In BENCH_SPEC row order. The blob rows are where the instruction count earns
+# its keep: the one-shot-to-streaming delta is the divisible-run cost
+# (CORELIB_PLAN §5.1) with the host's memory subsystem and scheduler taken out
+# of it, which under MB/s drowns in memory bandwidth. The optional
+# `blob 1MB passthrough` row is absent because this port does not implement
+# pass-through -- a port that does not omits the row rather than faking it.
+WORKLOADS=(
+    encode_u64_array
+    encode_typical
+    encode_blob_oneshot
+    encode_blob_streaming
+    encode_composite
+    decode_u64_array
+    decode_typical
+    decode_blob
+    decode_composite
+    decode_composite_skip
+)
 
 run_cg() { # $1 binary, $2 tag, $3 workload
     valgrind --tool=callgrind --collect-atstart=no --toggle-collect="run_$3" \
@@ -49,10 +66,16 @@ bytes_of() { grep -ohE 'BYTES=[0-9]+' "$OUT/c.$1.log" 2>/dev/null | head -1 | cu
 
 label() {
     case "$1" in
-        encode_u64_array) echo "encode: u64 array (1000)";;
-        encode_typical)   echo "encode: typical message";;
-        decode_u64_array) echo "decode: u64 array (1000)";;
-        decode_typical)   echo "decode: typical message";;
+        encode_u64_array)      echo "encode: u64 array (1000)";;
+        encode_typical)        echo "encode: typical message";;
+        encode_blob_oneshot)   echo "encode: blob 1MB one-shot";;
+        encode_blob_streaming) echo "encode: blob 1MB streaming";;
+        encode_composite)      echo "encode: composite";;
+        decode_u64_array)      echo "decode: u64 array (1000)";;
+        decode_typical)        echo "decode: typical message";;
+        decode_blob)           echo "decode: blob 1MB";;
+        decode_composite)      echo "decode: composite";;
+        decode_composite_skip) echo "decode: composite skip-all";;
     esac
 }
 
