@@ -114,6 +114,38 @@ preflight() {
   fi
 }
 
+# --- per-switch table ------------------------------------------------------
+# The four configurations above answer "how small can it get". They do not
+# answer "what is this one switch worth", which is the question a reader who
+# needs exactly one feature gone actually has. Each entry below is the full
+# configuration plus one switch, measured on one architecture (ARMv6-m, the
+# README's smallest row) — a delta per switch, all against the same baseline.
+#
+# Each entry: "label|cmake args..."
+#
+# SOFAB_DISABLE_LAZY_SEQ_SUPPORT is the one row passed as a compiler define
+# rather than a CMake option, because it is the one switch that has no option:
+# src/CMakeLists.txt declares the other five SOFAB_DISABLE_*_SUPPORT flags in a
+# foreach and this one is not in it. -DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON on the
+# command line is therefore silently ignored, which is worth knowing before
+# trusting a number measured that way. Overriding CMAKE_C_FLAGS_RELEASE means
+# restating its default (-O3 -DNDEBUG); the -Os comes from add_compile_options()
+# in the top-level CMakeLists and is unaffected.
+SWITCHES=(
+  "SOFAB_DISABLE_FIXLEN_SUPPORT|-DSOFAB_DISABLE_FIXLEN_SUPPORT=ON"
+  "SOFAB_DISABLE_ARRAY_SUPPORT|-DSOFAB_DISABLE_ARRAY_SUPPORT=ON"
+  "SOFAB_DISABLE_SEQUENCE_SUPPORT|-DSOFAB_DISABLE_SEQUENCE_SUPPORT=ON"
+  "SOFAB_DISABLE_LAZY_SEQ_SUPPORT|-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=1"
+  "SOFAB_DISABLE_FP64_SUPPORT|-DSOFAB_DISABLE_FP64_SUPPORT=ON"
+  "SOFAB_DISABLE_INT64_SUPPORT|-DSOFAB_DISABLE_INT64_SUPPORT=ON"
+  "SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK|-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK=ON"
+  "SOFAB_DISABLE_OBJECT_API|-DSOFAB_DISABLE_OBJECT_API=ON"
+  "SOFAB_ENABLE_STRICT_UTF8|-DSOFAB_ENABLE_STRICT_UTF8=ON"
+  "SOFAB_ENABLE_SKIP_COUNTER|-DSOFAB_ENABLE_SKIP_COUNTER=ON"
+  "SOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL|-DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL"
+  "SOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_BIG|-DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_BIG"
+)
+
 # ---------------------------------------------------------------------------
 # Build one (config, arch) pair and echo the .text byte count.
 # ---------------------------------------------------------------------------
@@ -154,6 +186,27 @@ main() {
     done
   done
 
+  # --- per-switch deltas on one architecture ------------------------------
+  # ARMv6-m is the README's smallest row, so it is the one an embedded reader
+  # is budgeting against. The baseline is the `full` figure already measured.
+  local arm_args base label sw_args sw_bytes
+  IFS='|' read -r _ _ arm_args <<<"${ARCHES[0]}"
+  base="${TEXT["full|ARMv6-m"]}"
+  echo
+  echo ">> What each switch is worth (ARMv6-m, against full = ${base} B)"
+  declare -A SWITCH_TEXT
+  local s
+  for s in "${SWITCHES[@]}"; do
+    IFS='|' read -r label sw_args <<<"${s}"
+    dir="${BUILD_DIR}/switch-${label//[^A-Za-z0-9]/_}"
+    # sw_args holds exactly one argument, which may contain spaces (the
+    # CMAKE_C_FLAGS_RELEASE row), so it is passed quoted rather than split.
+    sw_bytes="$(build_one "arm-none-eabi-size" "${dir}" "${arm_args}" "${sw_args}")"
+    SWITCH_TEXT["${label}"]="${sw_bytes}"
+    printf '   %-38s %6s B  (%+d B)\n' "${label}" "${sw_bytes}" \
+      "$((sw_bytes - base))"
+  done
+
   # --- emit README-shaped markdown tables ---------------------------------
   echo
   echo "==================== README tables (paste-ready) ===================="
@@ -170,6 +223,18 @@ main() {
       printf '| %s | ~%.1fKB | 0.0KB | 0.0KB |\n' "${label}" \
         "$(awk "BEGIN{print ${bytes}/1024}")"
     done
+  done
+
+  echo
+  echo "**What each switch is worth** (ARMv6-m, full = ${base}&nbsp;B \`.text\`)"
+  echo
+  echo "| Switch | \`.text\` | delta |"
+  echo "| - | -: | -: |"
+  for s in "${SWITCHES[@]}"; do
+    IFS='|' read -r label _ <<<"${s}"
+    sw_bytes="${SWITCH_TEXT["${label}"]}"
+    printf '| `%s` | %s&nbsp;B | %+d&nbsp;B |\n' "${label}" "${sw_bytes}" \
+      "$((sw_bytes - base))"
   done
 }
 
