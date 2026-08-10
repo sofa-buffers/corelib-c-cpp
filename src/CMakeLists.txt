@@ -55,6 +55,26 @@ foreach(_sofab_feature
     endif()
 endforeach()
 
+# The hold-back sequence openers are configured the same way and for the same
+# reason, but declared here rather than in the loop above, because what this one
+# does differs in kind from its six siblings:
+#   - it removes an encoder mechanism, not a wire type. The bytes differ only for
+#     a sequence field that turns out all-default, which this build frames empty
+#     instead of omitting (MESSAGE_SPEC §2) -- well-formed, value-identical and
+#     accepted by every decoder, just not canonical (CORELIB_PLAN §6);
+#   - it changes the *layout* of sofab_ostream_t (the pending run and its counter
+#     leave the struct), so a library and a consumer that disagree about it is a
+#     silent ABI mismatch, not a missing declaration. PUBLIC is what makes that
+#     impossible, which is why this must not be passed as a bare -D;
+#   - the C++ wrapper rejects it outright with an #error: it is a footprint switch
+#     for pure-C consumers, which encode through sofab_object_encode() and never
+#     open a lazy sequence at all.
+option(SOFAB_DISABLE_LAZY_SEQ_SUPPORT
+    "Exclude the hold-back sequence openers and the pending run in sofab_ostream_t" OFF)
+if(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+    target_compile_definitions(sofabuffers PUBLIC SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
+endif()
+
 # The object descriptor width profile is configured the same way, and for the
 # same reason applied PUBLIC: SOFAB_OBJECT_DESCR_PROFILE selects the integer
 # widths of sofab_object_descr_field_t in the *public* header, so the library and

@@ -266,7 +266,7 @@ what each switch is worth in bytes is measured under
 [Footprint](#footprint).
 
 **Prefer the CMake option over the bare macro.** Every switch below except the
-two marked *macro only* is a CMake option that `src/CMakeLists.txt` applies
+one marked *macro only* is a CMake option that `src/CMakeLists.txt` applies
 `PUBLIC`, so the library **and** every consumer of its headers are configured
 identically. Several of these macros appear in the public headers and two of them
 change a public struct's layout, so a library and a consumer that disagree is a
@@ -279,19 +279,20 @@ variable with `set()` and discard whatever the command line put there.
 | `SOFAB_DISABLE_FIXLEN_SUPPORT` | CMake option | off | Drop fixed-length fields: floats, strings, and blobs |
 | `SOFAB_DISABLE_ARRAY_SUPPORT` | CMake option | off | Drop array fields (scalar arrays and fixed-length arrays) |
 | `SOFAB_DISABLE_SEQUENCE_SUPPORT` | CMake option | off | Drop nested sequence framing |
-| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | **macro only** | off | Drop the hold-back sequence openers (`..._begin_lazy` / `..._end_keep`) and the pending-run state in `sofab_ostream_t`. Takes back 276&nbsp;B of ARMv6-m `.text`, 36&nbsp;B of RAM per stream and 6&nbsp;Ir per typical encode — see [Sequence framing](#sequence-framing-and-the-hold-back-window); a pure-C consumer encoding through `sofab_object_encode()` never needs them. **Changes the `sofab_ostream_t` layout** (and is rejected by the C++ wrapper) |
+| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | CMake option | off | Drop the hold-back sequence openers (`..._begin_lazy` / `..._end_keep`) and the pending-run state in `sofab_ostream_t`. Takes back 276&nbsp;B of ARMv6-m `.text`, 36&nbsp;B of RAM per stream and 6&nbsp;Ir per typical encode — see [Sequence framing](#sequence-framing-and-the-hold-back-window); a pure-C consumer encoding through `sofab_object_encode()` never needs them. **Changes the `sofab_ostream_t` layout** (and is rejected by the C++ wrapper) |
 | `SOFAB_DISABLE_FP64_SUPPORT` | CMake option | off | Drop 64-bit float (`fp64`); auto-defined where `double` is not 8 bytes |
 | `SOFAB_DISABLE_INT64_SUPPORT` | CMake option | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | CMake option | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
 | `SOFAB_DISABLE_OBJECT_API` | CMake option | off | Exclude the descriptor-driven object API (`object.c`) and leave the bare stream corelib |
 
-> **`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` has no CMake option**, unlike its five
-> siblings, which `src/CMakeLists.txt` declares in one `foreach`. A
-> `-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON` on the CMake command line is therefore
-> **silently ignored** — the build comes out unreduced while looking configured.
-> Pass it as a compile definition instead (`target_compile_definitions(... PUBLIC
-> SOFAB_DISABLE_LAZY_SEQ_SUPPORT)`), and pass it to every consumer too: it changes
-> the layout of `sofab_ostream_t`.
+> **`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` is the one switch that changes the wire
+> output rather than removing a wire type.** A sequence field that turns out
+> all-default is framed empty instead of being omitted (MESSAGE_SPEC §2) — still
+> well-formed, still the same value, and accepted by every decoder, but no longer
+> canonical. It is also the switch that is *not* about the format at all: it drops
+> an encoder mechanism the descriptor-driven `sofab_object_encode()` never uses,
+> which is why it is a footprint switch for pure-C consumers and why the C++
+> wrapper rejects it with an `#error` rather than adapting to it.
 
 Two switches **tune** rather than remove:
 
@@ -406,7 +407,7 @@ the one function every writer funnels through, so a default build pays it *per
 field* — including a pure-C consumer that encodes through `sofab_object_encode()`
 and never opens a lazy sequence at all. Measured with Callgrind (`bench_c` at
 `-O3`, `cmake --build build --target run_bench_callgrind`, against the same build
-with the macro defined):
+configured with `-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON`):
 
 | Workload | default | `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | delta |
 | - | -: | -: | -: |

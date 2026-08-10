@@ -121,21 +121,13 @@ preflight() {
 # configuration plus one switch, measured on one architecture (ARMv6-m, the
 # README's smallest row) — a delta per switch, all against the same baseline.
 #
-# Each entry: "label|cmake args..."
-#
-# SOFAB_DISABLE_LAZY_SEQ_SUPPORT is the one row passed as a compiler define
-# rather than a CMake option, because it is the one switch that has no option:
-# src/CMakeLists.txt declares the other five SOFAB_DISABLE_*_SUPPORT flags in a
-# foreach and this one is not in it. -DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON on the
-# command line is therefore silently ignored, which is worth knowing before
-# trusting a number measured that way. Overriding CMAKE_C_FLAGS_RELEASE means
-# restating its default (-O3 -DNDEBUG); the -Os comes from add_compile_options()
-# in the top-level CMakeLists and is unaffected.
+# Each entry: "label|cmake args..." — every switch is a CMake option applied
+# PUBLIC by src/CMakeLists.txt, so what is measured here is what a consumer gets.
 SWITCHES=(
   "SOFAB_DISABLE_FIXLEN_SUPPORT|-DSOFAB_DISABLE_FIXLEN_SUPPORT=ON"
   "SOFAB_DISABLE_ARRAY_SUPPORT|-DSOFAB_DISABLE_ARRAY_SUPPORT=ON"
   "SOFAB_DISABLE_SEQUENCE_SUPPORT|-DSOFAB_DISABLE_SEQUENCE_SUPPORT=ON"
-  "SOFAB_DISABLE_LAZY_SEQ_SUPPORT|-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=1"
+  "SOFAB_DISABLE_LAZY_SEQ_SUPPORT|-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON"
   "SOFAB_DISABLE_FP64_SUPPORT|-DSOFAB_DISABLE_FP64_SUPPORT=ON"
   "SOFAB_DISABLE_INT64_SUPPORT|-DSOFAB_DISABLE_INT64_SUPPORT=ON"
   "SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK|-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK=ON"
@@ -199,8 +191,8 @@ main() {
   for s in "${SWITCHES[@]}"; do
     IFS='|' read -r label sw_args <<<"${s}"
     dir="${BUILD_DIR}/switch-${label//[^A-Za-z0-9]/_}"
-    # sw_args holds exactly one argument, which may contain spaces (the
-    # CMAKE_C_FLAGS_RELEASE row), so it is passed quoted rather than split.
+    # sw_args holds exactly one argument, so it is passed quoted rather than
+    # split — a switch that ever grows a space stays one argv element.
     sw_bytes="$(build_one "arm-none-eabi-size" "${dir}" "${arm_args}" "${sw_args}")"
     SWITCH_TEXT["${label}"]="${sw_bytes}"
     printf '   %-38s %6s B  (%+d B)\n' "${label}" "${sw_bytes}" \
