@@ -2467,18 +2467,15 @@ namespace sofab
     /* read the same; the difference is the storage they fill —                */
     /* InlineVector<FixedString<M>, N> here, std::vector<std::string> there.   */
     /*                                                                        */
-    /* There is deliberately NO MessageSeq/FixedMessageSeq counterpart here.   */
-    /* The pair that used to sit below appended elements in ARRIVAL ORDER and  */
-    /* grew the container before deciding the child's wire type, so an interior*/
-    /* id gap shifted every later element down by one (§5.1) and a §7.3        */
-    /* mismatched child left a phantom (generator#249). Their four siblings    */
-    /* above always placed at the element id. Nothing used them: generated     */
-    /* code emits its own sofabgen::WrapperSeq — a generator test asserts the  */
-    /* emitted header contains no sofab::MessageSeq — and no test here did     */
-    /* either. A parity API that silently behaves differently from the one it  */
-    /* claims to mirror is worse than none, so they were removed rather than   */
-    /* repaired. corelib-cpp's MessageSeq is unaffected: it places by id and   */
-    /* its own tests exercise it.                                             */
+    /* The MessageSeq/FixedMessageSeq counterpart for struct, union and row    */
+    /* elements is in seq.hpp, which this header includes. It used to be       */
+    /* missing: an earlier pair appended elements in ARRIVAL ORDER and grew    */
+    /* the container before deciding the child's wire type, so an interior id  */
+    /* gap shifted every later element down by one (§5.1) and a §7.3           */
+    /* mismatched child left a phantom (generator#249), and it was removed     */
+    /* rather than shipped as a parity API that behaves unlike the one it      */
+    /* claims to mirror. The pair in seq.hpp places at the element id, like    */
+    /* the four below and like corelib-cpp's MessageSeq.                       */
     /* ---------------------------------------------------------------------- */
 
     /**
@@ -2641,5 +2638,11 @@ namespace sofab
 };
 
 /** @} */ // end of defgroup
+
+/* The wrapper-array collectors for object and row elements live in their own
+ * header (the static-helper layer), but they are part of the same API: including
+ * sofab.hpp gives you all six. seq.hpp includes this file back, which the
+ * include guards resolve either way round. */
+#include "sofab/seq.hpp"
 
 #endif // SOFAB_HPP

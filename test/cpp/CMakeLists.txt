@@ -26,6 +26,7 @@ add_executable(sofabpptest
     main.cpp
     test_ostream.cpp
     test_istream.cpp
+    test_seq.cpp
 )
 
 target_compile_options(sofabpptest
