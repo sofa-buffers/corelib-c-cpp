@@ -24,7 +24,12 @@ namespace
 {
 
 //! A two-field struct element, as a wrapper array of structs carries it.
-struct Point : sofab::IStreamMessage
+//
+// `final` because the collectors hold elements BY VALUE in a container, which
+// destroys them through their own type: clang's
+// -Wdelete-non-abstract-non-virtual-dtor flags that for any non-final class with
+// virtual functions and a non-virtual destructor, which IStreamMessage is.
+struct Point final : sofab::IStreamMessage
 {
     uint32_t x = 0;
     uint32_t y = 0;
