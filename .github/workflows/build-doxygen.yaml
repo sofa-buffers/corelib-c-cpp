@@ -3,8 +3,6 @@ name: Docs
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 permissions:
   contents: read
@@ -45,8 +43,9 @@ jobs:
         with:
           path: build/docs/html
 
-  # Publish only on pushes to main; pull requests just build the docs above to
-  # verify they compile, without overwriting the live site.
+  # The docs are built and published on pushes to main only — the rest of the
+  # family does the same. The guard below stays so a manual/other-event run
+  # cannot overwrite the live site.
   deploy:
     needs: build-documentation
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

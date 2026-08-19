@@ -2,13 +2,19 @@ name: "Version consistency"
 
 # The git tag is the source of truth for the version: every package manifest
 # and the CMake project() version must match it. Each config is checked in its
-# own step. On branch/PR runs the latest tag is used as the reference.
+# own step.
+#
+# Tags only: the comparison is only meaningful when there is a tag to compare
+# against. Between releases a manifest may legitimately sit ahead of the newest
+# tag, so running this on every push and pull request produced noise, not signal
+# — and cost a runner slot per run.
 on:
   push:
-    branches: [ main ]
     tags: [ 'v*' ]
-  pull_request:
-    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   check-versions:

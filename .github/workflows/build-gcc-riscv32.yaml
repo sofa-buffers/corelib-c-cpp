@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # Bare-metal RV32, the RV32IMC row of the README footprint tables. This is a
 # different target from "Build: RISC-V 64", which builds riscv64-linux-gnu and
 # runs the test suite under QEMU — until this workflow existed, no CI job built
@@ -50,7 +54,7 @@ jobs:
       - name: Install RISC-V bare-metal toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf cmake make
 
       - name: Configure and build (${{ matrix.variant.march }}, ${{ matrix.config }})

@@ -27,6 +27,10 @@ name: "Build: AVR"
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # Note for whoever restores the triggers above: only the two `full` cells of the
 # config axis below link `sofabtest` at all. The two reduced ones build the
 # library alone, so they are unaffected by the image-size problem and would run
@@ -61,7 +65,7 @@ jobs:
       - name: Install AVR toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             avr-libc gcc-avr binutils-avr cmake make
 
       # sofab_config_target picks what is buildable: the whole project for

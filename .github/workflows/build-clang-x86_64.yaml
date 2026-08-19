@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # The config axis is the four configurations the README footprint tables
 # describe, defined once in utils/ci/build-config.sh and shared with
 # tools/footprint.sh. A reduced configuration cannot build the hand-written unit
@@ -31,11 +35,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # clang++ is used with the default libstdc++ and the default linker: the
+      # cmake call below passes no -stdlib=libc++ and no -fuse-ld=lld, and no
+      # step invokes an llvm-* tool, so lld, libc++ and the llvm meta-package
+      # were installed and never used.
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            clang llvm lld libc++-dev libc++abi-dev cmake make
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake make
 
       - name: Configure and build (${{ matrix.config }})
         run: |

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # Two matrix axes: the ISA variant and the build configuration.
 #
 # VARIANTS — one representative per march that actually changes the generated
@@ -41,16 +45,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Only what this job compiles with. --no-install-recommends keeps apt from
+      # pulling the 463 MB C++ multilib (libstdc++-arm-none-eabi-newlib), which
+      # this workflow cannot use anyway: it builds with -DSOFAB_ENABLE_CPP=OFF.
+      # gdb-arm-none-eabi is gone too — nothing here ever runs a debugger.
       - name: Install ARM Cortex-M toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-arm-none-eabi gdb-arm-none-eabi cmake make
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi cmake make
 
       # sofab_config_target picks what is buildable: the whole project for
       # `full`, the library alone for the rest (see build-config.sh — a reduced
       # configuration cannot build the max-only unit tests, and the test image is
       # not worth linking four times for a target that never runs it).
+      #
+      # CMAKE_CXX_COMPILER_WORKS=ON skips CMake's own C++ hello-world *link*
+      # test. project() lists C and CXX unconditionally, so CMake link-tests
+      # arm-none-eabi-g++ even though this job compiles no C++ at all
+      # (SOFAB_ENABLE_CPP=OFF), and that link needs the 463 MB
+      # libstdc++-arm-none-eabi-newlib the install above no longer pulls in.
+      # Nothing that this workflow builds is skipped by it.
       - name: Configure and build (${{ matrix.variant.march }}, ${{ matrix.config }})
         run: |
           . utils/ci/build-config.sh
@@ -59,6 +74,7 @@ jobs:
             -DCMAKE_SYSTEM_PROCESSOR=arm \
             -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_WORKS=ON \
             -DSOFAB_ENABLE_CPP=OFF \
             -DSOFAB_ENABLE_BENCH=OFF \
             -DARM_MARCH=${{ matrix.variant.march }} \
