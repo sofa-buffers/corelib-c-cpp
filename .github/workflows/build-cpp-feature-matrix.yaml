@@ -33,9 +33,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
   # --- configs the wrapper supports gracefully: build + run the smoke ---
   graceful:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     name: graceful (${{ matrix.arch }})
 
     strategy:
@@ -50,14 +56,28 @@ jobs:
       - name: Install dependencies (x86_64)
         if: matrix.arch == 'x86_64'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends build-essential cmake \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
 
       - name: Install dependencies (PowerPC big-endian + qemu)
         if: matrix.arch == 'powerpc-be'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++-powerpc-linux-gnu cmake make qemu-user-static
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends g++-powerpc-linux-gnu cmake make qemu-user-static \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
 
       - name: Arch CMake flags
         run: |
@@ -106,6 +126,7 @@ jobs:
   # --- configs the wrapper rejects: assert the #error fires at compile time ---
   rejected:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     name: rejected
 
     steps:
@@ -114,8 +135,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends build-essential cmake \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
 
       - name: no-fixlen (expect FIXLEN #error)
         run: |

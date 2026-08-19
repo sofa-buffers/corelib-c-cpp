@@ -19,9 +19,15 @@ concurrency:
 # filesystem) is unavailable either way. fail-fast is off so one red
 # configuration does not hide the others.
 jobs:
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
   build:
     name: rl78 / ${{ matrix.config }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -38,9 +44,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            curl cmake make
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                   curl cmake make \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
 
       - name: Prepare Toolchain Directory
         run: |
@@ -57,8 +70,18 @@ jobs:
       - name: Download RL78 toolchain
         if: steps.cache-rl78.outputs.cache-hit != 'true'
         run: |
-          curl -L "https://llvm-gcc-renesas.com/downloads/download.php?s=cdn&f=rl78/${{ env.LLVM_VERSION }}/llvm-${{ env.LLVM_VERSION }}-rl78-elf.tar.gz" -o /tmp/rl78-llvm.tar.gz
-          tar -xzf /tmp/rl78-llvm.tar.gz -C ${{ env.TOOLCHAIN_PATH }} --strip-components=2
+          # Same retry as the apt steps: this is a third-party CDN, and a
+          # truncated tarball reads as a broken toolchain rather than a fetch
+          # failure. tar is inside the loop so a partial download is retried.
+          for i in 1 2 3; do
+            curl -L "https://llvm-gcc-renesas.com/downloads/download.php?s=cdn&f=rl78/${{ env.LLVM_VERSION }}/llvm-${{ env.LLVM_VERSION }}-rl78-elf.tar.gz" -o /tmp/rl78-llvm.tar.gz \
+              && tar -xzf /tmp/rl78-llvm.tar.gz -C ${{ env.TOOLCHAIN_PATH }} --strip-components=2 \
+              && exit 0
+            echo "::warning::toolchain download attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::RL78 toolchain download failed after 3 attempts"
+          exit 1
 
       - name: Configure and build (${{ matrix.config }})
         run: |

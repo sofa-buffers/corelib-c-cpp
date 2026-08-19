@@ -48,9 +48,15 @@ concurrency:
 # describe, defined once in utils/ci/build-config.sh and shared with
 # tools/footprint.sh so the tables and this build cannot drift apart.
 jobs:
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
   build:
     name: ${{ matrix.mcu }} / ${{ matrix.config }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -64,9 +70,16 @@ jobs:
 
       - name: Install AVR toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            avr-libc gcc-avr binutils-avr cmake make
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                   avr-libc gcc-avr binutils-avr cmake make \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
 
       # sofab_config_target picks what is buildable: the whole project for
       # `full`, the library alone for the rest (see build-config.sh — a reduced
