@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # Bare-metal RV32, the RV32IMC row of the README footprint tables. This is a
 # different target from "Build: RISC-V 64", which builds riscv64-linux-gnu and
 # runs the test suite under QEMU — until this workflow existed, no CI job built

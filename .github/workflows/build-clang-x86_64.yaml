@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # The config axis is the four configurations the README footprint tables
 # describe, defined once in utils/ci/build-config.sh and shared with
 # tools/footprint.sh. A reduced configuration cannot build the hand-written unit
