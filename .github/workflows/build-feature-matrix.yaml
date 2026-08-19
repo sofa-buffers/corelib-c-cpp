@@ -42,13 +42,13 @@ jobs:
         if: matrix.arch == 'x86_64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake
+          sudo apt-get install -y --no-install-recommends build-essential cmake
 
       - name: Install dependencies (PowerPC big-endian + qemu)
         if: matrix.arch == 'powerpc-be'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-powerpc-linux-gnu cmake make qemu-user-static
+          sudo apt-get install -y --no-install-recommends gcc-powerpc-linux-gnu cmake make qemu-user-static
 
       - name: Arch CMake flags
         run: |
