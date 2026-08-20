@@ -20,6 +20,10 @@
 #   SOFAB_RUN_TESTS    1 to run ctest after the build (hosted targets only)
 #   SOFAB_VERIFY_CXX   1 to also inspect the C++ test binary
 #   SOFAB_VERIFY_C     1 to inspect the C test binary (default 1)
+#   SOFAB_VERIFY_CONFIGS  which configurations actually produce a test binary,
+#                      space separated (default "full full-strict"). The
+#                      bare-metal targets build the test image for `full` only,
+#                      so naming the list beats guessing from the config name.
 #   SOFAB_CPP_FROM_CONFIG  1 to derive -DSOFAB_ENABLE_CPP from the configuration
 #   SOFAB_BUILD_TARGET     override the CMake target (riscv32 builds the library
 #                          alone, with SOFAB_BUILD_TESTS=OFF)
@@ -56,7 +60,12 @@ echo "::endgroup::"
 
 # The test binaries only exist for the `full*` configurations; the reduced ones
 # build the library alone (see build-config.sh).
-if [[ "$config" == full* ]]; then
+verify=0
+for c in ${SOFAB_VERIFY_CONFIGS:-full full-strict}; do
+  [[ "$c" == "$config" ]] && verify=1
+done
+
+if [[ "$verify" == 1 ]]; then
   if [[ "${SOFAB_VERIFY_C:-1}" == 1 ]]; then
     echo "::group::verify C binary ($config)"
     ( cd "$dir/test/c" && file sofabtest && readelf -h -A sofabtest )

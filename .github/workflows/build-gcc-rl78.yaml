@@ -41,6 +41,8 @@ jobs:
     # are identical in every workflow and delegate to build-one.sh.
     env:
       SOFAB_TARGET_KIND: baremetal
+      # These targets build the test image for `full` only.
+      SOFAB_VERIFY_CONFIGS: full
       SOFAB_CMAKE_ARGS: |
         -DLLVM_PATH=${{ env.TOOLCHAIN_PATH }}/bin
         -DCMAKE_TOOLCHAIN_FILE=utils/rl78/toolchain-rl78.cmake
