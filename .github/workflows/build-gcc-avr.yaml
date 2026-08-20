@@ -54,7 +54,7 @@ jobs:
   # The values are roughly 4x the job's observed runtime, so a slow runner still
   # passes and only a genuine wedge is cut off.
   build:
-    name: ${{ matrix.mcu }} / ${{ matrix.config }}
+    name: ${{ matrix.mcu }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -62,8 +62,18 @@ jobs:
       fail-fast: false
       matrix:
         mcu: [ atmega8 ]
-        config: [ full, full-strict, minimal, minimal-noobj ]
 
+    # Everything that differs per target lives here; the build steps below
+    # are identical in every workflow and delegate to build-one.sh.
+    env:
+      SOFAB_TARGET_KIND: baremetal
+      SOFAB_CMAKE_ARGS: |
+        -DCMAKE_SYSTEM_PROCESSOR=avr
+        -DAVR_MCU=${{ matrix.mcu }}
+        -DCMAKE_TOOLCHAIN_FILE=utils/avr/toolchain-avr.cmake
+        -DCMAKE_BUILD_TYPE=Release
+        -DSOFAB_ENABLE_CPP=OFF
+        -DSOFAB_ENABLE_BENCH=OFF
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -85,28 +95,22 @@ jobs:
       # `full`, the library alone for the rest (see build-config.sh — a reduced
       # configuration cannot build the max-only unit tests, and the test image is
       # not worth linking four times for a target that never runs it).
-      - name: Configure and build (${{ matrix.mcu }}, ${{ matrix.config }})
-        run: |
-          . utils/ci/build-config.sh
-          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
-          cmake -S . -B build \
-            -DCMAKE_SYSTEM_PROCESSOR=avr \
-            -DAVR_MCU=${{ matrix.mcu }} \
-            -DCMAKE_TOOLCHAIN_FILE=utils/avr/toolchain-avr.cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
-            "${CFG[@]}"
-          cmake --build build \
-            --target "$(sofab_config_target "${{ matrix.config }}" baremetal)" \
-            --parallel "$(nproc)"
 
-      - name: Library size (${{ matrix.mcu }}, ${{ matrix.config }})
-        run: size build/src/libsofabuffers.a
+      # The four configurations are steps, not a matrix axis: one toolchain
+      # install serves all four, and `if: always()` keeps a failing one from
+      # hiding the others. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
 
-      - name: Verify C binary (${{ matrix.mcu }})
-        if: matrix.config == 'full'
-        working-directory: build/test/c
-        run: |
-          file sofabtest
-          readelf -h -A sofabtest
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
+
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
+
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj
