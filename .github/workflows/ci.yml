@@ -709,6 +709,11 @@ jobs:
   # The values are roughly 4x the job's observed runtime, so a slow runner still
   # passes and only a genuine wedge is cut off.
   coverage:
+    # Scoped to this job alone: it is the only one that writes, and it
+    # writes exactly one file to the badges branch. The permission used to
+    # sit at workflow level in coverage.yaml and was lost when the job moved.
+    permissions:
+      contents: write
     needs: [gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
