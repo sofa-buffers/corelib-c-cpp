@@ -14,8 +14,14 @@ permissions:
   contents: write
 
 jobs:
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
   coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -23,9 +29,16 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake gcovr jq
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                   build-essential cmake gcovr jq \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
 
       - name: Configure with CMake
         # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4);

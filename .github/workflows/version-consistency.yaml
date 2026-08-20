@@ -17,8 +17,14 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
   check-versions:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
