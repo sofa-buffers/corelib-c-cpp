@@ -25,19 +25,28 @@ jobs:
   # The values are roughly 4x the job's observed runtime, so a slow runner still
   # passes and only a genuine wedge is cut off.
   build:
-    name: rl78 / ${{ matrix.config }}
+    name: rl78
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    strategy:
-      fail-fast: false
-      matrix:
-        config: [ full, full-strict, minimal, minimal-noobj ]
 
+    # One env block: a job may only have one, and everything that differs per
+    # target lives here. LLVM_PATH is spelled out rather than built from
+    # TOOLCHAIN_PATH, because the env context is not available inside a job's
+    # own env block -- the two values are kept next to each other so they
+    # cannot drift apart unnoticed.
     env:
       LLVM_VERSION: "17.0.1.202512"
       TOOLCHAIN_PATH: "/opt/llvm-rl78-elf"
-
+      SOFAB_TARGET_KIND: baremetal
+      # This target builds the test image for `full` only.
+      SOFAB_VERIFY_CONFIGS: full
+      SOFAB_CMAKE_ARGS: |
+        -DLLVM_PATH=/opt/llvm-rl78-elf/bin
+        -DCMAKE_TOOLCHAIN_FILE=utils/rl78/toolchain-rl78.cmake
+        -DCMAKE_BUILD_TYPE=Release
+        -DSOFAB_ENABLE_CPP=OFF
+        -DSOFAB_ENABLE_BENCH=OFF
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -83,27 +92,21 @@ jobs:
           echo "::error::RL78 toolchain download failed after 3 attempts"
           exit 1
 
-      - name: Configure and build (${{ matrix.config }})
-        run: |
-          . utils/ci/build-config.sh
-          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
-          cmake -S . -B build \
-            -DLLVM_PATH=${{ env.TOOLCHAIN_PATH }}/bin \
-            -DCMAKE_TOOLCHAIN_FILE=utils/rl78/toolchain-rl78.cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
-            "${CFG[@]}"
-          cmake --build build \
-            --target "$(sofab_config_target "${{ matrix.config }}" baremetal)" \
-            --parallel "$(nproc)"
+      # The four configurations are steps, not a matrix axis: one toolchain
+      # install serves all four, and `if: always()` keeps a failing one from
+      # hiding the others. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
 
-      - name: Library size (${{ matrix.config }})
-        run: size build/src/libsofabuffers.a
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
 
-      - name: Verify C binary
-        if: matrix.config == 'full'
-        working-directory: build/test/c
-        run: |
-          file sofabtest
-          readelf -h -A sofabtest
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
+
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj

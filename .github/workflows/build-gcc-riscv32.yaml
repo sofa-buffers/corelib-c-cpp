@@ -38,19 +38,33 @@ jobs:
   # The values are roughly 4x the job's observed runtime, so a slow runner still
   # passes and only a genuine wedge is cut off.
   build:
-    name: ${{ matrix.variant.march }} / ${{ matrix.config }}
+    name: ${{ matrix.variant.march }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     strategy:
       fail-fast: false
       matrix:
-        config: [ full, full-strict, minimal, minimal-noobj ]
         variant:
           - { march: rv32imc, mabi: ilp32 }
           - { march: rv32i,   mabi: ilp32 }
           - { march: rv32ec,  mabi: ilp32e }
 
+    # Everything that differs per target lives here; the four build steps
+    # below are identical in every workflow and delegate to build-one.sh.
+    env:
+      SOFAB_TARGET_KIND: baremetal
+      SOFAB_VERIFY_C: 0
+      SOFAB_BUILD_TARGET: sofabuffers
+      SOFAB_CMAKE_ARGS: |
+        -DCMAKE_TOOLCHAIN_FILE=utils/riscv32/toolchain-riscv32.cmake
+        -DRISCV_MARCH=${{ matrix.variant.march }}
+        -DRISCV_MABI=${{ matrix.variant.mabi }}
+        -DCMAKE_BUILD_TYPE=Release
+        -DSOFAB_ENABLE_CPP=OFF
+        -DSOFAB_ENABLE_BENCH=OFF
+        -DSOFAB_BUILD_TESTS=OFF
+        -DSOFAB_INSTALL=OFF
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -70,21 +84,21 @@ jobs:
           echo "::error::apt-get failed after 3 attempts"
           exit 1
 
-      - name: Configure and build (${{ matrix.variant.march }}, ${{ matrix.config }})
-        run: |
-          . utils/ci/build-config.sh
-          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
-          cmake -S . -B build \
-            -DCMAKE_TOOLCHAIN_FILE=utils/riscv32/toolchain-riscv32.cmake \
-            -DRISCV_MARCH=${{ matrix.variant.march }} \
-            -DRISCV_MABI=${{ matrix.variant.mabi }} \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
-            -DSOFAB_BUILD_TESTS=OFF \
-            -DSOFAB_INSTALL=OFF \
-            "${CFG[@]}"
-          cmake --build build --target sofabuffers --parallel "$(nproc)"
+      # The four configurations are steps, not a matrix axis: they share one
+      # toolchain install, and `if: always()` keeps a failing one from hiding
+      # the other three. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
 
-      - name: Library size (${{ matrix.variant.march }}, ${{ matrix.config }})
-        run: riscv64-unknown-elf-size build/src/libsofabuffers.a
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
+
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
+
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj

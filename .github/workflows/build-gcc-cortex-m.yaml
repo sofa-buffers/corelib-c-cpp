@@ -32,14 +32,13 @@ jobs:
   # The values are roughly 4x the job's observed runtime, so a slow runner still
   # passes and only a genuine wedge is cut off.
   build:
-    name: ${{ matrix.variant.mtune }} / ${{ matrix.config }}
+    name: ${{ matrix.variant.mtune }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     strategy:
       fail-fast: false
       matrix:
-        config: [ full, full-strict, minimal, minimal-noobj ]
         variant:
           - { mtune: cortex-m0,  march: armv6-m }
           - { mtune: cortex-m3,  march: armv7-m }
@@ -47,6 +46,21 @@ jobs:
           - { mtune: cortex-m23, march: armv8-m.base }
           - { mtune: cortex-m55, march: armv8.1-m.main+mve }
 
+    # Everything that differs per target lives here; the four build steps
+    # below are identical in every workflow and delegate to build-one.sh.
+    env:
+      SOFAB_TARGET_KIND: baremetal
+      # These targets build the test image for `full` only.
+      SOFAB_VERIFY_CONFIGS: full
+      SOFAB_CMAKE_ARGS: |
+        -DCMAKE_SYSTEM_PROCESSOR=arm
+        -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_CXX_COMPILER_WORKS=ON
+        -DSOFAB_ENABLE_CPP=OFF
+        -DSOFAB_ENABLE_BENCH=OFF
+        -DARM_MARCH=${{ matrix.variant.march }}
+        -DARM_MTUNE=${{ matrix.variant.mtune }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -79,30 +93,22 @@ jobs:
       # (SOFAB_ENABLE_CPP=OFF), and that link needs the 463 MB
       # libstdc++-arm-none-eabi-newlib the install above no longer pulls in.
       # Nothing that this workflow builds is skipped by it.
-      - name: Configure and build (${{ matrix.variant.march }}, ${{ matrix.config }})
-        run: |
-          . utils/ci/build-config.sh
-          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
-          cmake -S . -B build \
-            -DCMAKE_SYSTEM_PROCESSOR=arm \
-            -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER_WORKS=ON \
-            -DSOFAB_ENABLE_CPP=OFF \
-            -DSOFAB_ENABLE_BENCH=OFF \
-            -DARM_MARCH=${{ matrix.variant.march }} \
-            -DARM_MTUNE=${{ matrix.variant.mtune }} \
-            "${CFG[@]}"
-          cmake --build build \
-            --target "$(sofab_config_target "${{ matrix.config }}" baremetal)" \
-            --parallel "$(nproc)"
 
-      - name: Library size (${{ matrix.variant.mtune }}, ${{ matrix.config }})
-        run: size build/src/libsofabuffers.a
+      # The four configurations are steps, not a matrix axis: they share one
+      # toolchain install, and `if: always()` keeps a failing one from hiding
+      # the other three. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
 
-      - name: Verify C binary
-        if: matrix.config == 'full'
-        working-directory: build/test/c
-        run: |
-          file sofabtest
-          readelf -h -A sofabtest
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
+
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
+
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj

@@ -23,15 +23,25 @@ jobs:
   # The values are roughly 4x the job's observed runtime, so a slow runner still
   # passes and only a genuine wedge is cut off.
   build-and-test:
-    name: ${{ matrix.config }}
+    name: mips
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    strategy:
-      fail-fast: false
-      matrix:
-        config: [ full, full-strict, minimal, minimal-noobj ]
 
+    # Everything that differs per target lives here; the four build steps
+    # below are identical in every workflow and delegate to build-one.sh.
+    env:
+      SOFAB_TARGET_KIND: hosted
+      SOFAB_RUN_TESTS: 1
+      SOFAB_VERIFY_CXX: 1
+      SOFAB_CPP_FROM_CONFIG: 1
+      SOFAB_CMAKE_ARGS: |
+        -DCMAKE_SYSTEM_PROCESSOR=mips
+        -DCMAKE_SYSTEM_NAME=Linux
+        -DCMAKE_C_COMPILER=mips-linux-gnu-gcc
+        -DCMAKE_CXX_COMPILER=mips-linux-gnu-g++
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_EXE_LINKER_FLAGS=-static
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -54,45 +64,21 @@ jobs:
           echo "::error::apt-get failed after 3 attempts"
           exit 1
 
-      - name: Configure and build (${{ matrix.config }})
-        run: |
-          . utils/ci/build-config.sh
-          mapfile -t CFG < <(sofab_config_args "${{ matrix.config }}")
-          cmake -S . -B build \
-            -DCMAKE_SYSTEM_PROCESSOR=mips \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_C_COMPILER=mips-linux-gnu-gcc \
-            -DCMAKE_CXX_COMPILER=mips-linux-gnu-g++ \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_EXE_LINKER_FLAGS="-static" \
-            -DSOFAB_ENABLE_CPP="$(sofab_config_cpp "${{ matrix.config }}")" \
-            "${CFG[@]}"
-          cmake --build build \
-            --target "$(sofab_config_target "${{ matrix.config }}" hosted)" \
-            --parallel "$(nproc)"
+      # The four configurations are steps, not a matrix axis: they share one
+      # toolchain install, and `if: always()` keeps a failing one from hiding
+      # the other three. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
 
-      - name: Library size (${{ matrix.config }})
-        run: size build/src/libsofabuffers.a
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
 
-      - name: Verify C binary
-        if: startsWith(matrix.config, 'full')
-        working-directory: build/test/c
-        run: |
-          file sofabtest
-          readelf -h -A sofabtest
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
 
-      - name: Verify C++ binary
-        if: startsWith(matrix.config, 'full')
-        working-directory: build/test/cpp
-        run: |
-          file sofabpptest
-          readelf -h -A sofabpptest
-
-      - name: Run tests (${{ matrix.config }})
-        working-directory: build
-        run: |
-          if [[ "${{ matrix.config }}" == full* ]]; then
-            ctest --output-on-failure --verbose
-          else
-            ctest -R test_vectors_c --output-on-failure --verbose
-          fi
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj
