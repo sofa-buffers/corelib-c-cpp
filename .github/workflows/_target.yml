@@ -1,0 +1,123 @@
+# One build target, parameterised.
+#
+# Ten near-identical workflow files used to say the same thing with a different
+# package list and a different handful of CMake flags. They are one file now,
+# called once per target from ci.yml, which is also what lets a gate exist at
+# all: `needs:` cannot cross workflow files, so as long as every target was its
+# own file, nothing could be sequenced in front of them.
+#
+# What differs per target arrives as inputs; what differs per *variant* of a
+# target (an MCU core, a RISC-V ISA string) travels inside `variants`, because
+# the caller cannot interpolate the callee's matrix into a `with:` value.
+name: target
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: Display name, used when a target has a single variant.
+        type: string
+        required: true
+      packages:
+        description: apt packages this target needs.
+        type: string
+        required: true
+      cmake-args:
+        description: CMake arguments shared by every variant, one per line.
+        type: string
+        default: ""
+      variants:
+        description: >-
+          JSON array of variants. Each entry needs a `label` and may carry
+          `args`, appended to cmake-args for that variant alone.
+        type: string
+        default: '[{"label": "", "args": ""}]'
+      target-kind:
+        description: hosted or baremetal — picks the CMake target set.
+        type: string
+        default: hosted
+      run-tests:
+        description: Run ctest after each configuration.
+        type: boolean
+        default: false
+      verify-c:
+        description: Inspect the C test binary.
+        type: boolean
+        default: true
+      verify-cxx:
+        description: Inspect the C++ test binary.
+        type: boolean
+        default: false
+      verify-configs:
+        description: Which configurations produce a test binary.
+        type: string
+        default: full full-strict
+      cpp-from-config:
+        description: Derive -DSOFAB_ENABLE_CPP from the configuration.
+        type: boolean
+        default: false
+      build-target:
+        description: Override the CMake target (riscv32 builds the library alone).
+        type: string
+        default: ""
+      timeout-minutes:
+        description: Bound on the job, generous against a slow mirror.
+        type: number
+        default: 20
+
+jobs:
+  build:
+    name: ${{ matrix.variant.label || inputs.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      # One red variant must not hide the others: this is a matrix over
+      # genuinely different hardware, and every cell carries its own answer.
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(inputs.variants) }}
+    env:
+      SOFAB_TARGET_KIND: ${{ inputs.target-kind }}
+      SOFAB_RUN_TESTS: ${{ inputs.run-tests && 1 || 0 }}
+      SOFAB_VERIFY_C: ${{ inputs.verify-c && 1 || 0 }}
+      SOFAB_VERIFY_CXX: ${{ inputs.verify-cxx && 1 || 0 }}
+      SOFAB_VERIFY_CONFIGS: ${{ inputs.verify-configs }}
+      SOFAB_CPP_FROM_CONFIG: ${{ inputs.cpp-from-config && 1 || 0 }}
+      SOFAB_BUILD_TARGET: ${{ inputs.build-target }}
+      SOFAB_CMAKE_ARGS: |
+        ${{ inputs.cmake-args }}
+        ${{ matrix.variant.args }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends ${{ inputs.packages }} \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      # The four configurations are steps, not a matrix axis: one toolchain
+      # install serves all four, and `if: always()` keeps a failing one from
+      # hiding the others. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
+
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
+
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
+
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj

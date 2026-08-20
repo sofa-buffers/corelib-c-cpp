@@ -1,0 +1,789 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # ---------------------------------------------------------------- the gate
+  # One compile on the host before anything fans out. A broken build used to be
+  # discovered by every job separately -- 69 of them, 51 runner-minutes and 69
+  # of the account's 20 concurrent slots to learn one fact. Here it costs one
+  # job and about half a minute.
+  #
+  # It compiles, it does not test: the tests are the fan-out's job, and a gate
+  # that runs them is a second pipeline rather than a gate.
+  gate:
+    name: build (gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends build-essential cmake \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: Compile (full, host)
+        run: |
+          . utils/ci/build-config.sh
+          mapfile -t CFG < <(sofab_config_args full)
+          cmake -S . -B build/gate \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_CPP="$(sofab_config_cpp full)" \
+            "${CFG[@]}"
+          cmake --build build/gate \
+            --target "$(sofab_config_target full hosted)" \
+            --parallel "$(nproc)"
+
+  # ------------------------------------------------------------- the fan-out
+  # One call site, one reusable workflow, ten targets. Twelve separate `uses:`
+  # entries would also work and would sit near the 20-calls-per-run ceiling;
+  # a matrix over one call site does not.
+  cross:
+    name: ${{ matrix.target.name }}
+    needs: [gate]
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: x86_64 (GCC)
+            packages: build-essential cmake
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "", "args": ""}]'
+            args: |
+              -DCMAKE_BUILD_TYPE=Debug
+
+          - name: x86_64 (Clang)
+            packages: clang cmake make
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "", "args": ""}]'
+            args: |
+              -DCMAKE_C_COMPILER=clang
+              -DCMAKE_CXX_COMPILER=clang++
+              -DCMAKE_BUILD_TYPE=Debug
+
+          - name: aarch64
+            packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake make
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "", "args": ""}]'
+            args: |
+              -DCMAKE_SYSTEM_PROCESSOR=aarch64
+              -DCMAKE_SYSTEM_NAME=Linux
+              -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+              -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_EXE_LINKER_FLAGS=-static
+
+          - name: mips
+            packages: gcc-mips-linux-gnu g++-mips-linux-gnu cmake make
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "", "args": ""}]'
+            args: |
+              -DCMAKE_SYSTEM_PROCESSOR=mips
+              -DCMAKE_SYSTEM_NAME=Linux
+              -DCMAKE_C_COMPILER=mips-linux-gnu-gcc
+              -DCMAKE_CXX_COMPILER=mips-linux-gnu-g++
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_EXE_LINKER_FLAGS=-static
+
+          - name: powerpc
+            packages: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu cmake make
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "", "args": ""}]'
+            args: |
+              -DCMAKE_SYSTEM_PROCESSOR=powerpc
+              -DCMAKE_SYSTEM_NAME=Linux
+              -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc
+              -DCMAKE_CXX_COMPILER=powerpc-linux-gnu-g++
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_EXE_LINKER_FLAGS=-static
+
+          - name: riscv64
+            packages: gcc-riscv64-linux-gnu g++-riscv64-linux-gnu cmake make
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "", "args": ""}]'
+            args: |
+              -DCMAKE_SYSTEM_PROCESSOR=riscv64
+              -DCMAKE_SYSTEM_NAME=Linux
+              -DCMAKE_C_COMPILER=riscv64-linux-gnu-gcc
+              -DCMAKE_CXX_COMPILER=riscv64-linux-gnu-g++
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_EXE_LINKER_FLAGS=-static
+
+          # Bare metal from here down: no tests to run, and the test image is
+          # built for `full` only.
+          - name: cortex-m
+            packages: gcc-arm-none-eabi libnewlib-arm-none-eabi cmake make
+            kind: baremetal
+            verify-configs: full
+            args: |
+              -DCMAKE_SYSTEM_PROCESSOR=arm
+              -DCMAKE_TOOLCHAIN_FILE=utils/cortex-m/toolchain-arm-none-eabi.cmake
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_CXX_COMPILER_WORKS=ON
+              -DSOFAB_ENABLE_CPP=OFF
+              -DSOFAB_ENABLE_BENCH=OFF
+            variants: >-
+              [{"label": "cortex-m0",  "args": "-DARM_MARCH=armv6-m\n-DARM_MTUNE=cortex-m0"},
+               {"label": "cortex-m3",  "args": "-DARM_MARCH=armv7-m\n-DARM_MTUNE=cortex-m3"},
+               {"label": "cortex-m7",  "args": "-DARM_MARCH=armv7e-m+fp.dp\n-DARM_MTUNE=cortex-m7"},
+               {"label": "cortex-m23", "args": "-DARM_MARCH=armv8-m.base\n-DARM_MTUNE=cortex-m23"},
+               {"label": "cortex-m55", "args": "-DARM_MARCH=armv8.1-m.main+mve\n-DARM_MTUNE=cortex-m55"}]
+
+          - name: riscv32
+            packages: gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf cmake make
+            kind: baremetal
+            verify-c: false
+            build-target: sofabuffers
+            args: |
+              -DCMAKE_TOOLCHAIN_FILE=utils/riscv32/toolchain-riscv32.cmake
+              -DCMAKE_BUILD_TYPE=Release
+              -DSOFAB_ENABLE_CPP=OFF
+              -DSOFAB_ENABLE_BENCH=OFF
+              -DSOFAB_BUILD_TESTS=OFF
+              -DSOFAB_INSTALL=OFF
+            variants: >-
+              [{"label": "rv32i",   "args": "-DRISCV_MARCH=rv32i\n-DRISCV_MABI=ilp32"},
+               {"label": "rv32imc", "args": "-DRISCV_MARCH=rv32imc\n-DRISCV_MABI=ilp32"},
+               {"label": "rv32ec",  "args": "-DRISCV_MARCH=rv32ec\n-DRISCV_MABI=ilp32e"}]
+    uses: ./.github/workflows/_target.yml
+    with:
+      name: ${{ matrix.target.name }}
+      packages: ${{ matrix.target.packages }}
+      cmake-args: ${{ matrix.target.args }}
+      variants: ${{ matrix.target.variants }}
+      target-kind: ${{ matrix.target.kind }}
+      run-tests: ${{ matrix.target.tests || false }}
+      verify-c: ${{ matrix.target.verify-c != false }}
+      verify-cxx: ${{ matrix.target.cxx || false }}
+      verify-configs: ${{ matrix.target.verify-configs || 'full full-strict' }}
+      cpp-from-config: ${{ matrix.target.cpp-from-config || false }}
+      build-target: ${{ matrix.target.build-target || '' }}
+
+  # ---- moved from build-gcc-rl78.yaml
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
+  rl78:
+    needs: [gate]
+    name: rl78
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+
+    # One env block: a job may only have one, and everything that differs per
+    # target lives here. LLVM_PATH is spelled out rather than built from
+    # TOOLCHAIN_PATH, because the env context is not available inside a job's
+    # own env block -- the two values are kept next to each other so they
+    # cannot drift apart unnoticed.
+    env:
+      LLVM_VERSION: "17.0.1.202512"
+      TOOLCHAIN_PATH: "/opt/llvm-rl78-elf"
+      SOFAB_TARGET_KIND: baremetal
+      # This target builds the test image for `full` only.
+      SOFAB_VERIFY_CONFIGS: full
+      SOFAB_CMAKE_ARGS: |
+        -DLLVM_PATH=/opt/llvm-rl78-elf/bin
+        -DCMAKE_TOOLCHAIN_FILE=utils/rl78/toolchain-rl78.cmake
+        -DCMAKE_BUILD_TYPE=Release
+        -DSOFAB_ENABLE_CPP=OFF
+        -DSOFAB_ENABLE_BENCH=OFF
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                   curl cmake make \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: Prepare Toolchain Directory
+        run: |
+          sudo mkdir -p ${{ env.TOOLCHAIN_PATH }}
+          sudo chown $USER:$USER ${{ env.TOOLCHAIN_PATH }}
+
+      - name: Cache RL78 toolchain
+        id: cache-rl78
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.TOOLCHAIN_PATH }}
+          key: rl78-toolchain-${{ env.LLVM_VERSION }}
+
+      - name: Download RL78 toolchain
+        if: steps.cache-rl78.outputs.cache-hit != 'true'
+        run: |
+          # Same retry as the apt steps: this is a third-party CDN, and a
+          # truncated tarball reads as a broken toolchain rather than a fetch
+          # failure. tar is inside the loop so a partial download is retried.
+          for i in 1 2 3; do
+            curl -L "https://llvm-gcc-renesas.com/downloads/download.php?s=cdn&f=rl78/${{ env.LLVM_VERSION }}/llvm-${{ env.LLVM_VERSION }}-rl78-elf.tar.gz" -o /tmp/rl78-llvm.tar.gz \
+              && tar -xzf /tmp/rl78-llvm.tar.gz -C ${{ env.TOOLCHAIN_PATH }} --strip-components=2 \
+              && exit 0
+            echo "::warning::toolchain download attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::RL78 toolchain download failed after 3 attempts"
+          exit 1
+
+      # The four configurations are steps, not a matrix axis: one toolchain
+      # install serves all four, and `if: always()` keeps a failing one from
+      # hiding the others. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
+
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
+
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
+
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj
+
+  # ---- moved from build-gcc-avr.yaml
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
+  avr:
+    needs: [gate]
+    if: github.event_name == 'workflow_dispatch'
+    name: ${{ matrix.mcu }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        mcu: [ atmega8 ]
+
+    # Everything that differs per target lives here; the build steps below
+    # are identical in every workflow and delegate to build-one.sh.
+    env:
+      SOFAB_TARGET_KIND: baremetal
+      # These targets build the test image for `full` only.
+      SOFAB_VERIFY_CONFIGS: full
+      SOFAB_CMAKE_ARGS: |
+        -DCMAKE_SYSTEM_PROCESSOR=avr
+        -DAVR_MCU=${{ matrix.mcu }}
+        -DCMAKE_TOOLCHAIN_FILE=utils/avr/toolchain-avr.cmake
+        -DCMAKE_BUILD_TYPE=Release
+        -DSOFAB_ENABLE_CPP=OFF
+        -DSOFAB_ENABLE_BENCH=OFF
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install AVR toolchain
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                   avr-libc gcc-avr binutils-avr cmake make \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      # sofab_config_target picks what is buildable: the whole project for
+      # `full`, the library alone for the rest (see build-config.sh — a reduced
+      # configuration cannot build the max-only unit tests, and the test image is
+      # not worth linking four times for a target that never runs it).
+
+      # The four configurations are steps, not a matrix axis: one toolchain
+      # install serves all four, and `if: always()` keeps a failing one from
+      # hiding the others. Each still reports its own name, duration and log.
+      - name: full
+        if: always()
+        run: utils/ci/build-one.sh full
+
+      - name: full-strict
+        if: always()
+        run: utils/ci/build-one.sh full-strict
+
+      - name: minimal
+        if: always()
+        run: utils/ci/build-one.sh minimal
+
+      - name: minimal-noobj
+        if: always()
+        run: utils/ci/build-one.sh minimal-noobj
+
+  # ---- moved from build-feature-matrix.yaml
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
+  vectors:
+    needs: [gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: ${{ matrix.arch }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, powerpc-be]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies (x86_64)
+        if: matrix.arch == 'x86_64'
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends build-essential cmake \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: Install dependencies (PowerPC big-endian + qemu)
+        if: matrix.arch == 'powerpc-be'
+        run: |
+          # libc6-dev-powerpc-cross is a *recommendation* of the cross gcc, and
+          # this leg genuinely needs it (crt1.o, libc): unlike the other cross
+          # jobs it installs no cross g++, which would have pulled it in as a
+          # hard dependency. Named explicitly now that recommends are off.
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                   gcc-powerpc-linux-gnu libc6-dev-powerpc-cross cmake make qemu-user-static \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: Arch CMake flags
+        run: |
+          if [ "${{ matrix.arch }}" = powerpc-be ]; then
+            echo "CM_ARGS=-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=powerpc \
+              -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc -DCMAKE_BUILD_TYPE=Release \
+              -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DCMAKE_EXE_LINKER_FLAGS=-static" >> "$GITHUB_ENV"
+            echo "RUN=qemu-ppc-static" >> "$GITHUB_ENV"
+          else
+            echo "CM_ARGS=-DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF" >> "$GITHUB_ENV"
+            echo "RUN=" >> "$GITHUB_ENV"
+          fi
+
+      # Build only the flag-tolerant vector runner: the hand-written unit tests
+      # are intentionally max-only and would not compile in reduced configs.
+      - name: max
+        run: |
+          cmake -S . -B build/max $CM_ARGS -DCMAKE_C_FLAGS=""
+          cmake --build build/max --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/max/test/c/sofab_vectortest
+
+      - name: no-fp64
+        run: |
+          cmake -S . -B build/no-fp64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT"
+          cmake --build build/no-fp64 --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-fp64/test/c/sofab_vectortest
+
+      - name: no-int64
+        run: |
+          cmake -S . -B build/no-int64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT"
+          cmake --build build/no-int64 --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-int64/test/c/sofab_vectortest
+
+      - name: no-array
+        run: |
+          cmake -S . -B build/no-array $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT"
+          cmake --build build/no-array --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-array/test/c/sofab_vectortest
+
+      - name: no-sequence
+        run: |
+          cmake -S . -B build/no-sequence $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
+          cmake --build build/no-sequence --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-sequence/test/c/sofab_vectortest
+
+      - name: no-fixlen
+        run: |
+          cmake -S . -B build/no-fixlen $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT"
+          cmake --build build/no-fixlen --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-fixlen/test/c/sofab_vectortest
+
+      # The hold-back openers compiled out, and with them the pending run in
+      # sofab_ostream_t. A pure-C consumer encodes through sofab_object_encode(),
+      # which decides omission per field before opening anything, so it never needs
+      # them — this leg proves the core still builds and round-trips without them.
+      #
+      # Unlike every other configuration here, this one takes away no wire
+      # capability: it is a full-featured build that a real pure-C consumer ships,
+      # so the hand-written unit suite must compile and pass in it as well, not
+      # only the flag-tolerant vector runner. The tests that call the hold-back
+      # openers are #if-guarded in test_ostream.c for exactly this build.
+      - name: no-lazy-seq
+        run: |
+          cmake -S . -B build/no-lazy-seq $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT"
+          cmake --build build/no-lazy-seq --target sofab_vectortest sofabtest --parallel $(nproc)
+          $RUN ./build/no-lazy-seq/test/c/sofab_vectortest
+          $RUN ./build/no-lazy-seq/test/c/sofabtest
+
+      # The hold-back window is a documented, tunable bound (SOFAB_LAZY_SEQ_DEPTH,
+      # CORELIB_PLAN §6), so a build that moves it must still pass the suite: the
+      # bound costs canonicity past its depth, never validity.
+      - name: lazy-seq-depth-2
+        run: |
+          cmake -S . -B build/lazy-seq-depth-2 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_LAZY_SEQ_DEPTH=2"
+          cmake --build build/lazy-seq-depth-2 --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/lazy-seq-depth-2/test/c/sofab_vectortest
+
+      # ...but the tunable has a ceiling: the pending-run counter is a uint8_t, so
+      # a window of 256 would wrap it and silently lose a whole run. Such a build
+      # must be rejected at compile time, not miscompiled into wrong bytes.
+      - name: lazy-seq-depth-256 (expect #error)
+        run: |
+          cmake -S . -B build/lazy-seq-depth-256 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_LAZY_SEQ_DEPTH=256"
+          if out=$(cmake --build build/lazy-seq-depth-256 --target sofab_vectortest 2>&1); then
+            echo "$out"; echo "::error::Expected the over-wide hold-back window to be rejected."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "SOFAB_LAZY_SEQ_DEPTH must be 1..255" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
+
+      - name: no-overflow-check
+        run: |
+          cmake -S . -B build/no-overflow-check $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          cmake --build build/no-overflow-check --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-overflow-check/test/c/sofab_vectortest
+
+      - name: minimal
+        run: |
+          cmake -S . -B build/minimal $CM_ARGS \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          cmake --build build/minimal --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/minimal/test/c/sofab_vectortest
+
+      # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4),
+      # so the negative `invalid_utf8` vectors are skipped in every leg above.
+      # This leg turns the check ON explicitly (opt-in SOFAB_ENABLE_STRICT_UTF8)
+      # so those negative vectors actually RUN and are asserted rejected — the
+      # spec-mandated strict-ON configuration for a non-strict default build.
+      - name: strict-utf8-on
+        run: |
+          cmake -S . -B build/strict-utf8-on $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_ENABLE_STRICT_UTF8"
+          cmake --build build/strict-utf8-on --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/strict-utf8-on/test/c/sofab_vectortest
+
+  # ---- moved from build-cpp-feature-matrix.yaml
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
+  # --- configs the wrapper supports gracefully: build + run the smoke ---
+  graceful:
+    needs: [gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: graceful (${{ matrix.arch }})
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, powerpc-be]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies (x86_64)
+        if: matrix.arch == 'x86_64'
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends build-essential cmake \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: Install dependencies (PowerPC big-endian + qemu)
+        if: matrix.arch == 'powerpc-be'
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends g++-powerpc-linux-gnu cmake make qemu-user-static \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: Arch CMake flags
+        run: |
+          if [ "${{ matrix.arch }}" = powerpc-be ]; then
+            echo "CM_ARGS=-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=powerpc \
+              -DCMAKE_C_COMPILER=powerpc-linux-gnu-gcc -DCMAKE_CXX_COMPILER=powerpc-linux-gnu-g++ \
+              -DCMAKE_BUILD_TYPE=Release -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF \
+              -DSOFAB_ENABLE_CPP_SMOKE=ON -DCMAKE_EXE_LINKER_FLAGS=-static" >> "$GITHUB_ENV"
+            echo "RUN=qemu-ppc-static" >> "$GITHUB_ENV"
+          else
+            echo "CM_ARGS=-DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF \
+              -DSOFAB_ENABLE_CPP_SMOKE=ON" >> "$GITHUB_ENV"
+            echo "RUN=" >> "$GITHUB_ENV"
+          fi
+
+      - name: max
+        run: |
+          cmake -S . -B build/max $CM_ARGS -DCMAKE_C_FLAGS="" -DCMAKE_CXX_FLAGS=""
+          cmake --build build/max --target sofab_cpp_smoke --parallel $(nproc)
+          $RUN ./build/max/test/cpp-smoke/sofab_cpp_smoke
+
+      - name: no-fp64
+        run: |
+          cmake -S . -B build/no-fp64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_FP64_SUPPORT"
+          cmake --build build/no-fp64 --target sofab_cpp_smoke --parallel $(nproc)
+          $RUN ./build/no-fp64/test/cpp-smoke/sofab_cpp_smoke
+
+      - name: no-int64
+        run: |
+          cmake -S . -B build/no-int64 $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_INT64_SUPPORT"
+          cmake --build build/no-int64 --target sofab_cpp_smoke --parallel $(nproc)
+          $RUN ./build/no-int64/test/cpp-smoke/sofab_cpp_smoke
+
+      - name: no-array
+        run: |
+          cmake -S . -B build/no-array $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_ARRAY_SUPPORT"
+          cmake --build build/no-array --target sofab_cpp_smoke --parallel $(nproc)
+          $RUN ./build/no-array/test/cpp-smoke/sofab_cpp_smoke
+
+      - name: no-overflow
+        run: |
+          cmake -S . -B build/no-overflow $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          cmake --build build/no-overflow --target sofab_cpp_smoke --parallel $(nproc)
+          $RUN ./build/no-overflow/test/cpp-smoke/sofab_cpp_smoke
+
+  # --- configs the wrapper rejects: assert the #error fires at compile time ---
+  rejected:
+    needs: [gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: rejected
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends build-essential cmake \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: no-fixlen (expect FIXLEN #error)
+        run: |
+          cmake -S . -B build/no-fixlen \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT"
+          if out=$(cmake --build build/no-fixlen --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires FIXLEN support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
+
+      - name: no-sequence (expect SEQUENCE #error)
+        run: |
+          cmake -S . -B build/no-sequence \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_SEQUENCE_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_SEQUENCE_SUPPORT"
+          if out=$(cmake --build build/no-sequence --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires SEQUENCE support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
+
+      # The wrapper's nested-message writes are defined in terms of the hold-back
+      # framing of MESSAGE_SPEC §2 (sequenceBeginLazy / sequenceEndKeep), which has
+      # no eager substitute producing the same bytes — so LAZY_SEQ is structural for
+      # C++ and the build must be rejected, not fail with "was not declared".
+      - name: no-lazy-seq (expect LAZY_SEQ #error)
+        run: |
+          cmake -S . -B build/no-lazy-seq \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT" -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT"
+          if out=$(cmake --build build/no-lazy-seq --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires LAZY_SEQ support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
+
+      - name: minimal (expect FIXLEN #error)
+        run: |
+          cmake -S . -B build/minimal \
+            -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_CPP=OFF -DSOFAB_ENABLE_BENCH=OFF -DSOFAB_ENABLE_CPP_SMOKE=ON \
+            -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK" \
+            -DCMAKE_CXX_FLAGS="-DSOFAB_DISABLE_FIXLEN_SUPPORT -DSOFAB_DISABLE_ARRAY_SUPPORT -DSOFAB_DISABLE_SEQUENCE_SUPPORT -DSOFAB_DISABLE_INTEGER_OVERFLOW_CHECK"
+          if out=$(cmake --build build/minimal --target sofab_cpp_smoke 2>&1); then
+            echo "$out"; echo "::error::Expected the C++ wrapper build to fail, but it succeeded."; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -qF "requires FIXLEN support" \
+            || { echo "::error::Build failed, but not with the expected #error."; exit 1; }
+          echo "OK: build rejected with the expected #error."
+
+  # ---- moved from coverage.yaml
+  # Every job below carries a timeout-minutes. A hung step must fail fast and
+  # name itself: the account's Actions concurrency is 20, and one wedged job is a
+  # slot everyone else waits on -- for six hours, at GitHub's 360-minute default.
+  # The values are roughly 4x the job's observed runtime, so a slow runner still
+  # passes and only a genuine wedge is cut off.
+  coverage:
+    needs: [gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                   build-essential cmake gcovr jq \
+              && exit 0
+            echo "::warning::apt attempt $i failed, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::apt-get failed after 3 attempts"
+          exit 1
+
+      - name: Configure with CMake
+        # Strict UTF-8 defaults OFF in this footprint corelib (CORELIB_PLAN §6.4);
+        # enable it here so utf8.c (the validator) and the strict decode/encode
+        # paths are compiled in and counted, and the utf8 unit tests + negative
+        # vectors run under coverage.
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSOFAB_ENABLE_COVERAGE=ON \
+            -DSOFAB_ENABLE_STRICT_UTF8=ON
+
+      - name: Build project
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure --verbose
+
+      - name: Test coverage report
+        run: |
+          gcovr \
+            --root . \
+            --filter '^src/.*\.(c|h)$' \
+            --exclude-directories '.*/_deps/.*' \
+            --object-directory build \
+            --print-summary
+
+      - name: Test coverage badge JSON
+        run: |
+          gcovr \
+            --root . \
+            --filter '^src/.*\.(c|h)$' \
+            --exclude-directories '.*/_deps/.*' \
+            --object-directory build \
+            --json-summary coverage.json
+          jq -n --argjson cov "$(<coverage.json)" '
+            ($cov.line_covered / $cov.line_total * 100) as $pct |
+            {
+              schemaVersion: 1,
+              label: "gcovr",
+              message: ($pct | tostring[0:4] + "%"),
+              color: (if $pct >= 90 then "brightgreen" elif $pct >= 75 then "yellow" else "red" end)
+            }
+          ' > badge.json
+          echo "$(<badge.json)"
+
+      - name: Publish coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir badge-out
+          cp badge.json badge-out/coverage-c.json
+          cd badge-out
+          git init -q
+          git checkout -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage-c.json
+          git commit -q -m "ci: update C coverage badge"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
