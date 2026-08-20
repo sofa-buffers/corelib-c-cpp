@@ -30,18 +30,19 @@ jobs:
     timeout-minutes: 20
 
 
+    # One env block: a job may only have one, and everything that differs per
+    # target lives here. LLVM_PATH is spelled out rather than built from
+    # TOOLCHAIN_PATH, because the env context is not available inside a job's
+    # own env block -- the two values are kept next to each other so they
+    # cannot drift apart unnoticed.
     env:
       LLVM_VERSION: "17.0.1.202512"
       TOOLCHAIN_PATH: "/opt/llvm-rl78-elf"
-
-    # Everything that differs per target lives here; the build steps below
-    # are identical in every workflow and delegate to build-one.sh.
-    env:
       SOFAB_TARGET_KIND: baremetal
-      # These targets build the test image for `full` only.
+      # This target builds the test image for `full` only.
       SOFAB_VERIFY_CONFIGS: full
       SOFAB_CMAKE_ARGS: |
-        -DLLVM_PATH=${{ env.TOOLCHAIN_PATH }}/bin
+        -DLLVM_PATH=/opt/llvm-rl78-elf/bin
         -DCMAKE_TOOLCHAIN_FILE=utils/rl78/toolchain-rl78.cmake
         -DCMAKE_BUILD_TYPE=Release
         -DSOFAB_ENABLE_CPP=OFF
