@@ -9,8 +9,8 @@
 
 ## SofaBuffers C/C++ library
 
-[![CI](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml)
-[![C coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/badges/coverage-c.json)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/coverage.yaml)
+[![CI](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/ci.yml)
+[![C coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/badges/coverage-c.json)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://sofa-buffers.github.io/corelib-c-cpp/)
 
 [GitHub repository](https://github.com/sofa-buffers/corelib-c-cpp)
@@ -47,17 +47,25 @@ pulls in only the C++ standard library; its heap-free subset (`OStreamInline`,
 CI builds the corelib across many architectures and endiannesses (non-native
 targets run under [QEMU](https://www.qemu.org/) user-mode emulation):
 
-| Target | Status |
-| - | - |
-| x86_64 (GCC, little endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-x86_64.yaml) |
-| x86_64 (Clang, little endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-clang-x86_64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-clang-x86_64.yaml) |
-| AArch64 (GCC) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-aarch64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-aarch64.yaml) |
-| Cortex-M (GCC, bare metal) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-cortex-m.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-cortex-m.yaml) |
-| AVR / ATmega (GCC) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-avr.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-avr.yaml) |
-| RL78 (GCC) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-rl78.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-rl78.yaml) |
-| MIPS (GCC, big endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-mips.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-mips.yaml) |
-| PowerPC (GCC, big endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-powerpc.yaml) |
-| RISC-V 64 (GCC, little endian) | [![badge](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml/badge.svg)](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/build-gcc-riscv64.yaml) |
+| Target | Toolchain | Runs |
+| - | - | - |
+| x86_64 (little endian) | GCC and Clang | build + full test suite |
+| AArch64 | GCC | build + test suite under QEMU |
+| MIPS (big endian) | GCC | build + test suite under QEMU |
+| PowerPC (big endian) | GCC | build + test suite under QEMU |
+| RISC-V 64 (little endian) | GCC | build + test suite under QEMU |
+| Cortex-M0/M3/M7/M23/M55 | arm-none-eabi | bare-metal build |
+| RISC-V 32 (rv32i, rv32imc, rv32ec) | riscv64-unknown-elf | bare-metal build |
+| RL78 | LLVM for RL78 | bare-metal build |
+| AVR / ATmega | avr-gcc | bare-metal build, on demand |
+
+Every target builds all four configurations of the library — `full`,
+`full-strict`, `minimal` and `minimal-noobj` — and each reports separately.
+
+The badge above covers all of them: GitHub publishes one badge per workflow
+file, and since these are one pipeline they share one. The
+[CI run](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/ci.yml)
+shows the per-target result.
 
 ### Packaging
 
