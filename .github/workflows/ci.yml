@@ -68,7 +68,7 @@ jobs:
             tests: true
             cxx: true
             cpp-from-config: true
-            variants: '[{"label": "", "args": ""}]'
+            variants: '[{"label": "build", "args": ""}]'
             args: |
               -DCMAKE_BUILD_TYPE=Debug
 
@@ -78,19 +78,20 @@ jobs:
             tests: true
             cxx: true
             cpp-from-config: true
-            variants: '[{"label": "", "args": ""}]'
+            variants: '[{"label": "build", "args": ""}]'
             args: |
               -DCMAKE_C_COMPILER=clang
               -DCMAKE_CXX_COMPILER=clang++
               -DCMAKE_BUILD_TYPE=Debug
 
           - name: aarch64
-            packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake make
+            # qemu-user-static: this target's tests run under emulation.
+            packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake make qemu-user-static
             kind: hosted
             tests: true
             cxx: true
             cpp-from-config: true
-            variants: '[{"label": "", "args": ""}]'
+            variants: '[{"label": "build", "args": ""}]'
             args: |
               -DCMAKE_SYSTEM_PROCESSOR=aarch64
               -DCMAKE_SYSTEM_NAME=Linux
@@ -100,12 +101,13 @@ jobs:
               -DCMAKE_EXE_LINKER_FLAGS=-static
 
           - name: mips
-            packages: gcc-mips-linux-gnu g++-mips-linux-gnu cmake make
+            # qemu-user-static: this target's tests run under emulation.
+            packages: gcc-mips-linux-gnu g++-mips-linux-gnu cmake make qemu-user-static
             kind: hosted
             tests: true
             cxx: true
             cpp-from-config: true
-            variants: '[{"label": "", "args": ""}]'
+            variants: '[{"label": "build", "args": ""}]'
             args: |
               -DCMAKE_SYSTEM_PROCESSOR=mips
               -DCMAKE_SYSTEM_NAME=Linux
@@ -115,12 +117,13 @@ jobs:
               -DCMAKE_EXE_LINKER_FLAGS=-static
 
           - name: powerpc
-            packages: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu cmake make
+            # qemu-user-static: this target's tests run under emulation.
+            packages: gcc-powerpc-linux-gnu g++-powerpc-linux-gnu cmake make qemu-user-static
             kind: hosted
             tests: true
             cxx: true
             cpp-from-config: true
-            variants: '[{"label": "", "args": ""}]'
+            variants: '[{"label": "build", "args": ""}]'
             args: |
               -DCMAKE_SYSTEM_PROCESSOR=powerpc
               -DCMAKE_SYSTEM_NAME=Linux
@@ -130,12 +133,13 @@ jobs:
               -DCMAKE_EXE_LINKER_FLAGS=-static
 
           - name: riscv64
-            packages: gcc-riscv64-linux-gnu g++-riscv64-linux-gnu cmake make
+            # qemu-user-static: this target's tests run under emulation.
+            packages: gcc-riscv64-linux-gnu g++-riscv64-linux-gnu cmake make qemu-user-static
             kind: hosted
             tests: true
             cxx: true
             cpp-from-config: true
-            variants: '[{"label": "", "args": ""}]'
+            variants: '[{"label": "build", "args": ""}]'
             args: |
               -DCMAKE_SYSTEM_PROCESSOR=riscv64
               -DCMAKE_SYSTEM_NAME=Linux
