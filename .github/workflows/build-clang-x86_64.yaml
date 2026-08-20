@@ -32,9 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    strategy:
-      fail-fast: false
-      matrix:
 
     # Everything that differs per target lives here; the four build steps
     # below are identical in every workflow and delegate to build-one.sh.

@@ -29,9 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    strategy:
-      fail-fast: false
-      matrix:
 
     env:
       LLVM_VERSION: "17.0.1.202512"
