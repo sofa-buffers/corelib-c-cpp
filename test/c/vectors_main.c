@@ -3,10 +3,12 @@
  * @brief Standalone runner for the shared conformance-vector suite.
  *
  * Unlike the hand-written unit tests (which run only in the full-feature "max"
- * build), this runner is feature-flag tolerant: the shared engine skips vectors
- * that need a capability this build was compiled without (SOFAB_DISABLE_*). That
- * lets CI run the same vector file across every feature configuration. It has no
- * Unity/Catch2 dependency so it links in the most reduced builds.
+ * build), this runner is feature-flag tolerant: a vector needing a capability
+ * this build was compiled without (SOFAB_DISABLE_*) is run as a NEGATIVE case —
+ * the build must reject it — instead of being dropped. That lets CI run the same
+ * vector file across every feature configuration, and makes the reduced builds
+ * assert the contract that defines them. It has no Unity/Catch2 dependency so it
+ * links in the most reduced builds.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -24,8 +26,8 @@ int main(void)
     sofab_test_vectors_result_t r;
     int rc = sofab_test_vectors_run_all(SOFAB_TEST_VECTORS_PATH, &r);
 
-    printf("[vectors] %d vectors, %d run, %d skipped, %d checks, %d failures\n",
-           r.vectors, r.vectors - r.skipped, r.skipped, r.checks, r.failures);
+    printf("[vectors] %d vectors, %d decoded, %d asserted rejected, %d checks, %d failures\n",
+           r.vectors, r.vectors - r.rejected, r.rejected, r.checks, r.failures);
     printf("[invalid_utf8] %d negative vectors, %d checks\n",
            r.invalid_vectors, r.invalid_checks);
 
@@ -39,9 +41,9 @@ int main(void)
         printf("  no vectors found\n");
         return 1;
     }
-    if (r.vectors - r.skipped <= 0)
+    if (r.checks <= 0)
     {
-        printf("  every vector was skipped — nothing exercised\n");
+        printf("  no checks ran — nothing exercised\n");
         return 1;
     }
     if (r.failures)

@@ -54,7 +54,12 @@ typedef enum
                                  //!< Always a defect in the calling code, never in the
                                  //!< data on the wire.
     SOFAB_RET_E_BUFFER_FULL,     //!< Sofab serialization failed due to buffer overflow
-    SOFAB_RET_E_INVALID_MSG,     //!< Sofab deserialization failed due to invalid message
+    SOFAB_RET_E_INVALID_MSG,     //!< Sofab deserialization failed: the message is malformed, or it
+                                 //!< carries a wire construct this build was compiled without (the
+                                 //!< SOFAB_DISABLE_*_SUPPORT switches below). **Terminal**: once
+                                 //!< sofab_istream_feed returns it, every subsequent feed on that
+                                 //!< context returns it too and no further callback fires
+                                 //!< (CORELIB_PLAN §5.2) — only sofab_istream_init resets it.
 } sofab_ret_t;
 
 /*! @brief SofaBuffers 3bit field data types */
@@ -188,16 +193,46 @@ typedef int32_t sofab_signed_t;
 #endif
 
 /* configuration **************************************************************/
-/*! @brief Disable support for 64-bit floating point types (if the check above fails). */
+/*!
+ * @brief Wire-construct switches — what a reduced build does on the wire.
+ *
+ * @warning The @c SOFAB_DISABLE_*_SUPPORT switches below remove a **wire
+ * construct**, not merely the ability to store one. A decoder built without a
+ * construct **rejects** any message that carries it with
+ * @ref SOFAB_RET_E_INVALID_MSG — terminally, per
+ * @ref sofab_istream_feed — even where the field would otherwise have been
+ * skipped: an unknown id, a field the callback declined, or a field inside a
+ * sequence nobody bound. The decoder is schema-agnostic and cannot tell those
+ * apart from a field the caller wanted.
+ *
+ * The consequence is an **interop bound, and it is the caller's to manage**: such
+ * a build only talks to peers that never emit the removed construct, in any field,
+ * ever — including fields added by a later revision of the schema. That rules out
+ * the usual forward-compatibility story, where a reader ignores ids it does not
+ * know (MESSAGE_SPEC §7.3 describes the skip a full build performs). Enable these
+ * when both ends of the link are yours and the wire profile is fixed; do not
+ * enable them on a receiver exposed to messages you do not control.
+ *
+ * Nothing is silently dropped either way: the message is rejected, never
+ * half-accepted. But note that fields *preceding* the offending one have already
+ * been delivered to the callback when the rejection lands — @ref sofab_istream_feed
+ * documents what the caller must do about that.
+ */
+
+/*! @brief Disable support for 64-bit floating point types (if the check above fails).
+ *  Rejects any message carrying an fp64 fixlen subtype — see the warning above. */
 // #define SOFAB_DISABLE_FP64_SUPPORT
 
-/*! @brief Disable support for fixed-length fields (floating point types, strings, and blobs). */
+/*! @brief Disable support for fixed-length fields (floating point types, strings, and blobs).
+ *  Rejects any message carrying a fixlen or fixlen-array field — see the warning above. */
 // #define SOFAB_DISABLE_FIXLEN_SUPPORT
 
-/*! @brief Disable support for array fields. */
+/*! @brief Disable support for array fields.
+ *  Rejects any message carrying an array field — see the warning above. */
 // #define SOFAB_DISABLE_ARRAY_SUPPORT
 
-/*! @brief Disable support for sequence fields. */
+/*! @brief Disable support for sequence fields.
+ *  Rejects any message carrying a sequence — see the warning above. */
 // #define SOFAB_DISABLE_SEQUENCE_SUPPORT
 
 /*! @brief Disable integer overflow checks when reading integer values. */

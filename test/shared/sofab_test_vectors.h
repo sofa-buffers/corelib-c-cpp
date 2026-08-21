@@ -20,11 +20,19 @@
  * The bulk is a POSITIVE/roundtrip suite. General malformed-input and error-path
  * behaviour (truncated varints, unbalanced sequences, overflow) is covered by
  * the hand-written tests in test/c/test_istream.c, since the shared vector file's
- * positive vectors carry only valid encoder output. The one exception is the
- * shared NEGATIVE conformance group: the file's top-level "invalid_utf8" array
- * (invalid-UTF-8 `string` payloads, see assets/test_vectors_README.md). Under a
- * strict build (SOFAB_STRICT_UTF8) the engine asserts each decodes to INVALID and
- * refuses to encode; a non-strict build counts but does not exercise them.
+ * positive vectors carry only valid encoder output. There are two NEGATIVE
+ * groups:
+ *
+ *   - the file's top-level "invalid_utf8" array (invalid-UTF-8 `string` payloads,
+ *     see assets/test_vectors_README.md). Under a strict build (SOFAB_STRICT_UTF8)
+ *     the engine asserts each decodes to INVALID and refuses to encode; a
+ *     non-strict build counts but does not exercise them.
+ *   - in a REDUCED build, every positive vector whose `requires` tags name a
+ *     capability this build lacks. Such a vector carries a wire construct the
+ *     build was compiled without, and sofab.h makes that a rejection: the engine
+ *     asserts it decodes to INVALID, terminally. These used to be dropped on the
+ *     floor — in the minimal configuration that silently discarded most of the
+ *     suite, which is precisely the set of messages the build's contract is about.
  *
  * The engine is plain C (linked into both the C/Unity and C++/Catch2 test
  * binaries). Both languages call sofab_test_vectors_run_all().
@@ -45,7 +53,8 @@ typedef struct
 {
     int  loaded;            /*!< 1 if the vector file parsed successfully */
     int  vectors;           /*!< number of positive vectors found */
-    int  skipped;           /*!< vectors skipped: they require a feature this build lacks */
+    int  rejected;          /*!< vectors run as NEGATIVE cases: they carry a wire construct
+                             *!< this build was compiled without, so it must reject them */
     int  checks;            /*!< number of (vector, scenario) checks run */
     int  failures;          /*!< number of failed checks (positive + negative) */
     int  invalid_vectors;   /*!< number of negative (invalid-UTF-8) vectors found */

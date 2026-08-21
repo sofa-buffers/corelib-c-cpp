@@ -20,12 +20,15 @@
 #define _OPT_FIXLENTYPE(type)   (((type) >> 3) & 0x07)
 #define _OPT_STRINGTERM(type)   ((type) & 0x40)
 
+/* The two width checks reject the message, so they jump to sofab_istream_feed's
+ * shared `invalid:` exit (which makes the verdict terminal) rather than returning
+ * directly — they are only ever expanded inside that function. */
 #if !defined(SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK)
 # define _FITS_UNSIGNED_CHECK(val, bits) \
-    if (!_fits_unsigned_n((val), (bits))) return SOFAB_RET_E_INVALID_MSG;
+    if (!_fits_unsigned_n((val), (bits))) goto invalid;
 
 # define _FITS_SIGNED_CHECK(val, bits) \
-    if (!_fits_signed_n((val), (bits))) return SOFAB_RET_E_INVALID_MSG;
+    if (!_fits_signed_n((val), (bits))) goto invalid;
 #else
 # define _FITS_UNSIGNED_CHECK(val, bits)   do {} while (0)
 # define _FITS_SIGNED_CHECK(val, bits)     do {} while (0)
@@ -516,9 +519,9 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
      */
     assert(datalen == 0 || data != NULL);
 
-    // A callback may have already rejected the message on an earlier feed. The
-    // flag is sticky, so short-circuit rather than decode bytes that belong to a
-    // message already condemned.
+    // The message may already have been rejected on an earlier feed -- by a
+    // callback, or by the decoder itself. The flag is sticky, so short-circuit
+    // rather than decode bytes that belong to a message already condemned.
     if (ctx->invalid)
     {
         return SOFAB_RET_E_INVALID_MSG;
@@ -543,7 +546,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
             if (dec < 0)
             {
                 // varint overflow
-                return SOFAB_RET_E_INVALID_MSG;
+                goto invalid;
             }
         }
 
@@ -558,7 +561,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 if (id > SOFAB_ID_MAX)
                 {
                     // invalid field id
-                    return SOFAB_RET_E_INVALID_MSG;
+                    goto invalid;
                 }
 
                 // store current field id and type
@@ -607,7 +610,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                             // malformed regardless of what follows). Tested
                             // before the callback runs, so the ceiling fires
                             // whether or not the caller would bind this level.
-                            return SOFAB_RET_E_INVALID_MSG;
+                            goto invalid;
                         }
                         callback = 1;
                         break;
@@ -620,18 +623,25 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     defined(SOFAB_DISABLE_ARRAY_SUPPORT) || \
     defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
                     default:
-                        // unsupported field type
-                        return SOFAB_RET_E_INVALID_MSG;
+                        // A wire type this build was compiled without. Reaching
+                        // here means the message uses a construct the reduced
+                        // build cannot decode -- including a field it would
+                        // otherwise have skipped, since the decoder is
+                        // schema-agnostic and cannot tell "the caller wanted
+                        // this" from "an id nobody knows". Rejected, and via the
+                        // shared exit so the rejection is terminal: the fields
+                        // already delivered are the caller's to discard. This is
+                        // the documented cost of the SOFAB_DISABLE_*_SUPPORT
+                        // switches -- see the warning in sofab.h.
+                        goto invalid;
 #endif
                 }
 
                 if (callback)
                 {
-                    sofab_ret_t ret;
-
-                    if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
+                    if (_call_field_callback(ctx) != SOFAB_RET_OK)
                     {
-                        return ret;
+                        goto invalid;
                     }
                 }
 
@@ -666,7 +676,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         {
                             // no parent decoder to return to,
                             // due to invalid sequence end
-                            return SOFAB_RET_E_INVALID_MSG;
+                            goto invalid;
                         }
 
                         // pop decoder
@@ -766,7 +776,6 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
             case _DECODER_STATE_FIXLEN_LEN:
             {
-                sofab_ret_t ret;
                 sofab_unsigned_t fixlen_length = decoded;
 
                 // extract type from length
@@ -780,7 +789,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         // when the payload is truncated) - see MESSAGE_SPEC §7.
                         if (fixlen_length != 4)
                         {
-                            return SOFAB_RET_E_INVALID_MSG;
+                            goto invalid;
                         }
                         ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
                         break;
@@ -790,7 +799,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         // Likewise, a fp64 field is always exactly 8 bytes.
                         if (fixlen_length != 8)
                         {
-                            return SOFAB_RET_E_INVALID_MSG;
+                            goto invalid;
                         }
                         ctx->decoder->state = _DECODER_STATE_FIXLEN_VAL;
                         break;
@@ -809,7 +818,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         // scalar fp-width checks above (same bug class as #82).
                         if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
                         {
-                            return SOFAB_RET_E_INVALID_MSG;
+                            goto invalid;
                         }
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
                         ctx->decoder->state = _DECODER_STATE_FIXLEN_RAW;
@@ -817,13 +826,13 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                     default:
                         // unsupported fixlen type
-                        return SOFAB_RET_E_INVALID_MSG;
+                        goto invalid;
                 }
 
                 if (fixlen_length > SOFAB_FIXLEN_MAX)
                 {
                     // invalid fixlen length in message
-                    return SOFAB_RET_E_INVALID_MSG;
+                    goto invalid;
                 }
 
                 // store fixlen type and length
@@ -834,9 +843,9 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 // fixlen filed with zero length are allowed
                 // e.g., empty strings or blobs
 
-                if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
+                if (_call_field_callback(ctx) != SOFAB_RET_OK)
                 {
-                    return ret;
+                    goto invalid;
                 }
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
@@ -848,9 +857,9 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                 // below see the true (0) wire count instead of the capacity.
                 if (_OPT_FIELDTYPE(ctx->target_opt) == SOFAB_TYPE_FIXLENARRAY)
                 {
-                    if ((ret = _bind_array_count(ctx, ctx->array_wire_count)) != SOFAB_RET_OK)
+                    if (_bind_array_count(ctx, ctx->array_wire_count) != SOFAB_RET_OK)
                     {
-                        return ret;
+                        goto invalid;
                     }
                 }
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
@@ -862,7 +871,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         if (length > ctx->target_len - 1)
                         {
                             // message too long to be stored as null-terminated string
-                            return SOFAB_RET_E_INVALID_MSG;
+                            goto invalid;
                         }
 
                         // add null-terminator after string
@@ -873,7 +882,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         if (length > ctx->target_len)
                         {
                             // message too long to be stored in target buffer
-                            return SOFAB_RET_E_INVALID_MSG;
+                            goto invalid;
                         }
                     }
                 }
@@ -979,7 +988,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     !sofab_utf8_valid(ctx->utf8_start,
                                       (size_t)(ctx->target_ptr - ctx->utf8_start)))
                 {
-                    return SOFAB_RET_E_INVALID_MSG;
+                    goto invalid;
                 }
 #endif /* SOFAB_STRICT_UTF8 */
 
@@ -992,13 +1001,12 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case _DECODER_STATE_ARRAY_COUNT:
             {
-                sofab_ret_t ret;
                 sofab_unsigned_t array_count = decoded;
 
                 if (array_count > SOFAB_ARRAY_MAX)
                 {
                     // invalid array count in message
-                    return SOFAB_RET_E_INVALID_MSG;
+                    goto invalid;
                 }
 
                 // The wire carries the ACTUAL element count (0..N per
@@ -1032,15 +1040,15 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                     // A zero-count varint (integer) array carries no fixlen_word;
                     // its element width is API-only, so match the field type
                     // (0x07) without a subtype and finish.
-                    if ((ret = _call_field_callback_masked(ctx, 0x07)) != SOFAB_RET_OK)
+                    if (_call_field_callback_masked(ctx, 0x07) != SOFAB_RET_OK)
                     {
-                        return ret;
+                        goto invalid;
                     }
 
                     // An empty array is valid against any capacity >= 0.
-                    if ((ret = _bind_array_count(ctx, count)) != SOFAB_RET_OK)
+                    if (_bind_array_count(ctx, count) != SOFAB_RET_OK)
                     {
-                        return ret;
+                        goto invalid;
                     }
 
                     ctx->decoder->state = _DECODER_STATE_IDLE;
@@ -1049,17 +1057,17 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                 if (type != SOFAB_TYPE_FIXLENARRAY)
                 {
-                    if ((ret = _call_field_callback(ctx)) != SOFAB_RET_OK)
+                    if (_call_field_callback(ctx) != SOFAB_RET_OK)
                     {
-                        return ret;
+                        goto invalid;
                     }
 
                     // A varint array is fully bound now: accept a wire count up to
                     // the destination capacity, reading exactly that many. (Fixlen
                     // arrays bind later, in _DECODER_STATE_FIXLEN_LEN.)
-                    if ((ret = _bind_array_count(ctx, count)) != SOFAB_RET_OK)
+                    if (_bind_array_count(ctx, count) != SOFAB_RET_OK)
                     {
-                        return ret;
+                        goto invalid;
                     }
                 }
 
@@ -1083,7 +1091,7 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     // final and takes precedence over both a clean boundary and a partial decode.
     if (ctx->invalid)
     {
-        return SOFAB_RET_E_INVALID_MSG;
+        goto invalid;
     }
 
     // All input consumed without an error. Distinguish a complete message
@@ -1092,6 +1100,37 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
     // valid but partial decode, NOT a rejection: the caller owns end-of-input
     // and may resume by feeding more bytes. There is no finalize step.
     return _at_message_boundary(ctx) ? SOFAB_RET_OK : SOFAB_RET_INCOMPLETE;
+
+invalid:
+    /*
+     * The single exit for every rejection, reached by goto rather than by
+     * returning on the spot so that condemning the stream is written once — two
+     * dozen verdict sites cannot each forget it, and a shared epilogue is what
+     * the toolchain tail-merges the identical returns into anyway. The two
+     * helpers that can also reject (_call_field_callback, _bind_array_count)
+     * report only this outcome, so their callers land here as well rather than
+     * propagating a code; SOFAB_RET_E_ARGUMENT, which is a caller bug and not a
+     * verdict on the message, deliberately does not pass through here.
+     *
+     * CORELIB_PLAN §5.2 makes INVALID terminal: "no continuation of bytes can
+     * make such input valid". The flag ENFORCES that rather than documenting it.
+     * Without it the verdict lasted exactly one call: the decoder stops
+     * mid-message but keeps its position, so the next feed resumed where the
+     * rejected field left off and resynchronized on that field's *payload* —
+     * delivering the bytes of a field it had just refused as if they were new
+     * field headers, and eventually landing on a field boundary and reporting
+     * SOFAB_RET_OK for a message it had already rejected. A streaming caller that
+     * simply keeps feeding its socket saw exactly that.
+     *
+     * The rejection cannot un-deliver what the callback already received: fields
+     * decoded before the offending one are in the caller's destinations, and a
+     * streaming decoder cannot know a later field will be refused. INVALID
+     * therefore condemns the whole message — the caller must discard everything
+     * this stream wrote and call sofab_istream_init before decoding another.
+     */
+    ctx->invalid = 1;
+
+    return SOFAB_RET_E_INVALID_MSG;
 }
 
 extern void sofab_istream_invalidate (sofab_istream_t *ctx)
