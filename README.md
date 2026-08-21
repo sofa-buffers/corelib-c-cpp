@@ -271,7 +271,9 @@ Point got = Point::decode(wire.data(), wire.size());   // got.x == 3, got.y == 4
 The full wire format ships by default; the C core can be trimmed at compile time.
 Disabling unused features removes their code paths and shrinks the footprint —
 what each switch is worth in bytes is measured under
-[Footprint](#footprint).
+[Footprint](#footprint). It also **narrows what the build will accept on the
+wire**, which is a decision about interoperability, not just about size: read the
+callout under the table before enabling one.
 
 **Prefer the CMake option over the bare macro.** Every switch below except the
 one marked *macro only* is a CMake option that `src/CMakeLists.txt` applies
@@ -292,6 +294,36 @@ variable with `set()` and discard whatever the command line put there.
 | `SOFAB_DISABLE_INT64_SUPPORT` | CMake option | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | CMake option | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
 | `SOFAB_DISABLE_OBJECT_API` | CMake option | off | Exclude the descriptor-driven object API (`object.c`) and leave the bare stream corelib |
+
+> **A switch that removes a wire construct makes the decoder *reject* messages
+> that carry it.** `SOFAB_DISABLE_FIXLEN_SUPPORT`, `_ARRAY_`, `_SEQUENCE_`,
+> `_FP64_` and `_INT64_` take the construct out of the format this build speaks,
+> not just out of the API: a message carrying one decodes to
+> `SOFAB_RET_E_INVALID_MSG`, terminally (every later `sofab_istream_feed` on that
+> context returns it too, and no further callback fires — only
+> `sofab_istream_init` resets it).
+>
+> **That includes fields you never asked for.** The decoder is schema-agnostic: it
+> cannot tell "the field the caller wanted" from "an id nobody here knows", so an
+> array in an unknown id is refused just like an array in a field you read. A full
+> build *skips* both and carries on
+> ([MESSAGE_SPEC §7.3](https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md));
+> a reduced build cannot, because the code that steps over the construct is
+> exactly the code the switch removed. Keeping it — parsing purely in order to
+> skip — costs roughly 375&nbsp;B of ARMv6-m `.text` in the *Minimal* profile,
+> which is why this corelib takes the rejection instead.
+>
+> **So the switch is an interop bound, and it is yours to manage.** Such a build
+> only talks to peers that never emit the construct, in any field, ever —
+> including fields added by a later revision of the schema. Enable these where
+> both ends of the link are yours and the wire profile is fixed; do not enable
+> them on a receiver exposed to messages you do not control.
+>
+> Nothing is silently dropped: the message is rejected, never half-accepted. But
+> the rejection lands *mid-message*, so fields preceding the offending one have
+> already reached your callback. `SOFAB_RET_E_INVALID_MSG` condemns the whole
+> message — discard everything the stream wrote, do not use the partially filled
+> destinations.
 
 > **`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` is the one switch that changes the wire
 > output rather than removing a wire type.** A sequence field that turns out
@@ -624,7 +656,7 @@ The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
 those *Full* rows (it adds 276&nbsp;B on ARMv6-m and 512&nbsp;B on atmega8).
 A pure-C consumer that only encodes through `sofab_object_encode()` can take it
 back out with `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to
-3545&nbsp;B of `.text`, and `sofab_ostream_t` shrinks from 56&nbsp;B to
+3551&nbsp;B of `.text`, and `sofab_ostream_t` shrinks from 56&nbsp;B to
 20&nbsp;B per stream (the `SOFAB_LAZY_SEQ_DEPTH` pending run). Size is not all it
 costs: the same switch also drops 6&nbsp;Ir/op from a typical encode, measured in
 [Sequence framing](#sequence-framing-and-the-hold-back-window). The *Minimal* rows
@@ -637,8 +669,8 @@ below are unaffected either way: they disable sequences outright.
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
 | ARMv6-m | ~1.0KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~1.0KB | 0.0KB | 0.0KB |
-| RV32IMC | ~1.3KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~1.1KB | 0.0KB | 0.0KB |
+| RV32IMC | ~1.4KB | 0.0KB | 0.0KB |
 | atmega8 | ~2.7KB | 0.0KB | 0.0KB |
 
 Same minimal configuration, additionally without `object.c`
@@ -662,19 +694,19 @@ same [`tools/footprint.sh`](tools/footprint.sh):
 
 | Switch | `.text` | delta |
 | - | -: | -: |
-| *(full, the baseline)* | 3821&nbsp;B | — |
-| `SOFAB_DISABLE_OBJECT_API` | 2248&nbsp;B | **−1573&nbsp;B** |
-| `SOFAB_DISABLE_ARRAY_SUPPORT` | 2789&nbsp;B | **−1032&nbsp;B** |
-| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 2978&nbsp;B | −843&nbsp;B |
-| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3019&nbsp;B | −802&nbsp;B |
-| `SOFAB_DISABLE_INT64_SUPPORT` | 3513&nbsp;B | −308&nbsp;B |
-| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3545&nbsp;B | −276&nbsp;B |
-| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3749&nbsp;B | −72&nbsp;B |
-| `SOFAB_DISABLE_FP64_SUPPORT` | 3775&nbsp;B | −46&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3825&nbsp;B | +4&nbsp;B |
-| `SOFAB_ENABLE_SKIP_COUNTER` | 3839&nbsp;B | +18&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3841&nbsp;B | +20&nbsp;B |
-| `SOFAB_ENABLE_STRICT_UTF8` | 4067&nbsp;B | +246&nbsp;B |
+| *(full, the baseline)* | 3827&nbsp;B | — |
+| `SOFAB_DISABLE_OBJECT_API` | 2254&nbsp;B | **−1573&nbsp;B** |
+| `SOFAB_DISABLE_ARRAY_SUPPORT` | 2801&nbsp;B | **−1026&nbsp;B** |
+| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 2984&nbsp;B | −843&nbsp;B |
+| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3023&nbsp;B | −804&nbsp;B |
+| `SOFAB_DISABLE_INT64_SUPPORT` | 3519&nbsp;B | −308&nbsp;B |
+| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3551&nbsp;B | −276&nbsp;B |
+| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3755&nbsp;B | −72&nbsp;B |
+| `SOFAB_DISABLE_FP64_SUPPORT` | 3781&nbsp;B | −46&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3831&nbsp;B | +4&nbsp;B |
+| `SOFAB_ENABLE_SKIP_COUNTER` | 3845&nbsp;B | +18&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3847&nbsp;B | +20&nbsp;B |
+| `SOFAB_ENABLE_STRICT_UTF8` | 4073&nbsp;B | +246&nbsp;B |
 
 Three of these need a word:
 
