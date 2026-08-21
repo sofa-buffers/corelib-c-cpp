@@ -143,7 +143,9 @@ struct sofab_istream
     sofab_id_t id;                              /*!< Current field ID being processed */
     uint8_t target_opt;                         /*!< Field options (used for type checks and flags) */
     uint8_t varint_shift;                       /*!< Current shift offset for varint decoding */
-    uint8_t invalid;                            /*!< Sticky flag: a callback rejected the message */
+    uint8_t invalid;                            /*!< Sticky flag: the message was rejected — by the
+                                                 *!< decoder or by a callback. Makes SOFAB_RET_E_INVALID_MSG
+                                                 *!< terminal (CORELIB_PLAN §5.2). */
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     uint8_t depth;                              /*!< Sequences currently open, bound and skipped
                                                  *!< alike (0..SOFAB_MAX_DEPTH). The per-decoder
@@ -189,7 +191,32 @@ extern void sofab_istream_init (
  *    end-of-input and may feed more bytes to continue. Truncated input is
  *    reported here — it is neither accepted as complete nor rejected as invalid.
  *  - @ref SOFAB_RET_E_INVALID_MSG: the bytes are malformed regardless of what
- *    follows (varint too wide, length/count/id over the limit, bad type, ...).
+ *    follows (varint too wide, length/count/id over the limit, bad type, ...), or
+ *    they use a wire construct this build was compiled without (see below).
+ *
+ * **INVALID is terminal and sticky (normative).** CORELIB_PLAN §5.2: no
+ * continuation of bytes can make rejected input valid. Once this function returns
+ * @ref SOFAB_RET_E_INVALID_MSG it returns it for every subsequent call on the same
+ * context, no further field callback fires, and the only way forward is
+ * @ref sofab_istream_init. That is enforcement, not just documentation: the
+ * decoder stops mid-message but keeps its position, so resuming would
+ * resynchronize on the *payload* of the field it just refused and deliver those
+ * bytes as if they were new field headers.
+ *
+ * The rejection does @b not un-deliver what already arrived. Fields decoded before
+ * the offending one are already in the caller's destinations — a streaming decoder
+ * cannot know a later field will be refused. So @ref SOFAB_RET_E_INVALID_MSG
+ * condemns the whole @b message: discard everything this stream wrote, do not use
+ * the partially-filled destinations.
+ *
+ * **A build with features compiled out rejects what it cannot decode.** Defining
+ * @c SOFAB_DISABLE_FIXLEN_SUPPORT, @c SOFAB_DISABLE_ARRAY_SUPPORT,
+ * @c SOFAB_DISABLE_SEQUENCE_SUPPORT, @c SOFAB_DISABLE_FP64_SUPPORT or
+ * @c SOFAB_DISABLE_INT64_SUPPORT removes the wire construct itself, not merely the
+ * ability to store it: a message carrying one is @ref SOFAB_RET_E_INVALID_MSG, even
+ * if the field would otherwise have been skipped. Such a build therefore only
+ * interoperates with peers that never emit the removed constructs — see the
+ * configuration notes in sofab.h before enabling one.
  *
  * A zero-length feed is legal and reports the outcome so far; @p data may then be
  * NULL. That is how the all-default message arrives: MESSAGE_SPEC §2 omits a
@@ -217,12 +244,12 @@ extern sofab_ret_t sofab_istream_feed (
  * a silent skip would let a malformed message decode as valid, violating
  * MESSAGE_SPEC §7/§7.1 ("a declared bound binds every target").
  *
- * Calling this sets a sticky invalid flag on the stream: the enclosing
- * @ref sofab_istream_feed (and every subsequent one) returns
- * @ref SOFAB_RET_E_INVALID_MSG regardless of what else is decoded. The flag is
- * set synchronously inside the callback, so it takes effect even when the field's
- * payload fill is deferred across chunked feeds. It is cleared only by
- * @ref sofab_istream_init.
+ * Calling this sets the same sticky invalid flag the decoder sets when it rejects
+ * a message itself: the enclosing @ref sofab_istream_feed (and every subsequent
+ * one) returns @ref SOFAB_RET_E_INVALID_MSG regardless of what else is decoded,
+ * and no further field callback fires. The flag is set synchronously inside the
+ * callback, so it takes effect even when the field's payload fill is deferred
+ * across chunked feeds. It is cleared only by @ref sofab_istream_init.
  *
  * @param ctx  Pointer to the input stream context.
  */

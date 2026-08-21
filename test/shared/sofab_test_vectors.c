@@ -873,6 +873,65 @@ static void run_invalid_utf8(const sofab_json_t *root, sofab_test_vectors_result
 #endif /* SOFAB_STRICT_UTF8 && !SOFAB_DISABLE_FIXLEN_SUPPORT */
 }
 
+/* vectors this build must REJECT ********************************************
+ *
+ * A build with a wire construct compiled out (SOFAB_DISABLE_*_SUPPORT) does not
+ * merely lose the ability to store it — it rejects any message carrying it, and
+ * the rejection is terminal (see the warning in sofab.h and the contract on
+ * sofab_istream_feed). A vector whose `requires` tags are not satisfied is exactly
+ * such a message, so it is a negative case for this build, not an inapplicable
+ * one. Decode-only: the encoder-side API for the construct is compiled out too,
+ * which is why these never reach replay_op.
+ */
+static void reject_field_cb(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usr)
+{
+    (void)ctx; (void)id; (void)size; (void)count; (void)usr;
+    /* Bind nothing. Fields standing BEFORE the offending one are delivered
+     * normally — a streaming decoder cannot know a later field will be refused —
+     * so what is asserted here is the verdict, not what arrived before it. */
+}
+
+static int expect_rejected(const uint8_t *bytes, size_t nbytes, int one_byte,
+                           char *err, size_t errlen)
+{
+    sofab_istream_t is;
+    sofab_istream_init(&is, reject_field_cb, NULL);
+
+    sofab_ret_t r = SOFAB_RET_OK;
+    if (one_byte)
+    {
+        /* Fed one byte at a time the verdict may land on any byte; every byte
+         * before it is a well-formed prefix (OK/INCOMPLETE), never a premature
+         * rejection. */
+        for (size_t i = 0; i < nbytes; i++)
+        {
+            r = sofab_istream_feed(&is, &bytes[i], 1);
+            if (r == SOFAB_RET_E_INVALID_MSG) break;
+            if (r != SOFAB_RET_OK && r != SOFAB_RET_INCOMPLETE) break;
+        }
+    }
+    else
+    {
+        r = sofab_istream_feed(&is, bytes, nbytes);
+    }
+
+    if (r != SOFAB_RET_E_INVALID_MSG)
+    {
+        snprintf(err, errlen, "expected INVALID, got %d", (int)r);
+        return -1;
+    }
+
+    /* CORELIB_PLAN §5.2: the verdict is terminal — more bytes cannot lift it. */
+    const uint8_t more[] = { 0x00 };
+    if (sofab_istream_feed(&is, more, sizeof(more)) != SOFAB_RET_E_INVALID_MSG)
+    {
+        snprintf(err, errlen, "INVALID was not terminal");
+        return -1;
+    }
+
+    return 0;
+}
+
 /* top-level *****************************************************************/
 
 static char *read_file(const char *path, size_t *len)
@@ -925,15 +984,25 @@ int sofab_test_vectors_run_all(const char *path, sofab_test_vectors_result_t *ou
             continue;
         }
 
-        /* skip vectors needing a feature this build was compiled without */
+        char err[160];
+
+        /* A vector needing a capability this build lacks is a message this build
+         * must REJECT — assert that, rather than dropping the vector. */
         if (vec.req & ~caps)
         {
-            out->skipped++;
+            out->rejected++;
+
+            out->checks++;
+            if (expect_rejected(vec.bytes, vec.nbytes, 0, err, sizeof(err))) { out->failures++;
+                if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/reject: %s", vec.name, err); }
+
+            out->checks++;
+            if (expect_rejected(vec.bytes, vec.nbytes, 1, err, sizeof(err))) { out->failures++;
+                if (!out->first_error[0]) snprintf(out->first_error, sizeof(out->first_error), "%s/reject-chunked: %s", vec.name, err); }
+
             free_vector(&vec);
             continue;
         }
-
-        char err[160];
 
         /* encode (normal) */
         out->checks++;

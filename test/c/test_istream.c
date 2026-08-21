@@ -3331,6 +3331,82 @@ static void test_read_array_zero_count_accepts_null_destination (void)
     TEST_ASSERT_EQUAL(1, seen);
 }
 
+/* A decoder-raised INVALID is terminal, exactly like a callback-raised one.
+ *
+ * CORELIB_PLAN §5.2 puts INVALID in the "can more bytes change it? — no,
+ * terminal" row, but that was documentation only: the verdict lasted a single
+ * feed. The decoder stops mid-message and keeps its position, so the next feed
+ * resynchronized on the bytes *after* the rejected construct and decoded them as
+ * fresh fields — delivering values the message never framed, and eventually
+ * landing on a field boundary and reporting SOFAB_RET_OK for a message it had
+ * already rejected. A streaming caller feeding a socket sees exactly this.
+ *
+ * This matters most to a build with wire constructs compiled out
+ * (SOFAB_DISABLE_*_SUPPORT), where the rejection is the whole contract — but the
+ * defect is general, so it is pinned here on a malformation every build rejects:
+ * a sequence end with no open sequence. */
+static void _terminal_cb (
+    sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)ctx; (void)size; (void)count;
+    unsigned *seen = (unsigned *)usrptr;
+
+    seen[id < 8 ? id : 7]++;
+}
+
+static void test_msg_invalid_terminal_across_feeds (void)
+{
+    sofab_istream_t ctx;
+    unsigned seen[8] = {0};
+
+    /* id 1 = 42 | an unbalanced sequence end | id 2 = 7 */
+    const uint8_t buffer[] = {0x08, 0x2A, 0x07, 0x10, 0x07};
+
+    sofab_istream_init(&ctx, _terminal_cb, seen);
+
+    /* fed one byte at a time, the way a streaming caller does */
+    TEST_ASSERT_EQUAL(SOFAB_RET_INCOMPLETE,
+        sofab_istream_feed(&ctx, &buffer[0], 1));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        sofab_istream_feed(&ctx, &buffer[1], 1));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, &buffer[2], 1));
+
+    /* every byte after the verdict stays INVALID: never INCOMPLETE, never OK */
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, &buffer[3], 1));
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, &buffer[4], 1));
+
+    /* the field standing after the rejected construct was never delivered */
+    TEST_ASSERT_EQUAL_UINT(1, seen[1]);
+    TEST_ASSERT_EQUAL_UINT(0, seen[2]);
+}
+
+static void test_msg_invalid_terminal_short_circuits_valid_bytes (void)
+{
+    sofab_istream_t ctx;
+    unsigned seen[8] = {0};
+
+    const uint8_t bad[]  = {0x07};        /* sequence end, nothing open */
+    const uint8_t good[] = {0x08, 0x2A};  /* a perfectly well-formed field */
+
+    sofab_istream_init(&ctx, _terminal_cb, seen);
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, bad, sizeof(bad)));
+
+    /* a condemned stream decodes nothing further, however valid the bytes */
+    TEST_ASSERT_EQUAL(SOFAB_RET_E_INVALID_MSG,
+        sofab_istream_feed(&ctx, good, sizeof(good)));
+    TEST_ASSERT_EQUAL_UINT(0, seen[1]);
+
+    /* sofab_istream_init is the only way back */
+    sofab_istream_init(&ctx, _terminal_cb, seen);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        sofab_istream_feed(&ctx, good, sizeof(good)));
+    TEST_ASSERT_EQUAL_UINT(1, seen[1]);
+}
+
 #endif /* SEQUENCE && FIXLEN support */
 
 int test_istream_main (void)
@@ -3448,6 +3524,8 @@ int test_istream_main (void)
     RUN_TEST(test_invalidate_sticky_across_feeds);
     RUN_TEST(test_invalidate_precedence_over_incomplete);
     RUN_TEST(test_read_array_zero_count_accepts_null_destination);
+    RUN_TEST(test_msg_invalid_terminal_across_feeds);
+    RUN_TEST(test_msg_invalid_terminal_short_circuits_valid_bytes);
 #endif
 
     RUN_TEST(test_read_full_scale_example);
