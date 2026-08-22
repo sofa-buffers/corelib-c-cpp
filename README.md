@@ -19,14 +19,13 @@ The footprint-optimized SofaBuffers (*Sofab*) codec: a **heap-free C99 object
 API** plus a header-only **C++20 wrapper** (`sofab/sofab.hpp`) over the same C
 core. It packs structured fields into a caller-owned buffer and decodes them
 through a small, callback-driven streaming decoder — no allocator, no
-dependencies, no code generator required. The same wire format runs from
-bare-metal MCUs (C) up to IoT-class devices (the C++ wrapper). This repo is also
-the authoritative source of the shared conformance vectors in
-[`assets/test_vectors.json`](assets/test_vectors.json).
+dependencies, no code generator required. It runs from bare-metal MCUs (C) up to
+IoT-class devices (the C++ wrapper), and is the authoritative source of the shared
+conformance vectors in [`assets/test_vectors.json`](assets/test_vectors.json).
 
-For desktop/server C++ where throughput matters more than code size, see the
-sibling pure-C++20 port [`corelib-cpp`](https://github.com/sofa-buffers/corelib-cpp)
-and [Choosing between the two C/C++ corelibs](#choosing-between-the-two-cc-corelibs).
+For desktop/server C++ where throughput beats code size, see the sibling
+pure-C++20 port [`corelib-cpp`](https://github.com/sofa-buffers/corelib-cpp) and
+[Choosing between the two C/C++ corelibs](#choosing-between-the-two-cc-corelibs).
 
 ### Requirements
 
@@ -59,12 +58,9 @@ targets run under [QEMU](https://www.qemu.org/) user-mode emulation):
 | RL78 | LLVM for RL78 | bare-metal build |
 | AVR / ATmega | avr-gcc | bare-metal build, on demand |
 
-Every target builds all four configurations of the library — `full`,
-`full-strict`, `minimal` and `minimal-noobj` — and each reports separately.
-
-The badge above covers all of them: GitHub publishes one badge per workflow
-file, and since these are one pipeline they share one. The
-[CI run](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/ci.yml)
+Every target builds all four configurations — `full`, `full-strict`, `minimal`
+and `minimal-noobj` — and reports separately. The CI badge above covers all of
+them; the [CI run](https://github.com/sofa-buffers/corelib-c-cpp/actions/workflows/ci.yml)
 shows the per-target result.
 
 ### Packaging
@@ -112,12 +108,11 @@ manifest (`library.json`).
 
 ## Usage
 
-The codec has four use cases — serialize a message that fits in one buffer,
-serialize one too large for the buffer (streamed out in chunks), deserialize a
-whole message, and deserialize one arriving in chunks — plus the generated-code
-path that wraps them. The examples below use the **C core**; the header-only
-**C++ wrapper** mirrors each through `sofab::OStreamInline` / `sofab::IStreamObject`
-(the same `sofab::` surface as [`corelib-cpp`](https://github.com/sofa-buffers/corelib-cpp)).
+Four use cases — serialize a message that fits one buffer, serialize one too large
+for it, deserialize a whole message, deserialize one arriving in chunks — plus the
+generated-code path that wraps them. The examples use the **C core**; the
+header-only **C++ wrapper** mirrors each through `sofab::OStreamInline` /
+`sofab::IStreamObject`.
 
 ### Serialize
 
@@ -168,10 +163,9 @@ field to a destination with a `sofab_istream_read_*()` call. Unread fields are
 skipped automatically.
 
 A field is skipped just the same when the `read_*` bound for it does not match
-the type on the wire (MESSAGE_SPEC §7.3) — the decode continues and the
-destination keeps its previous value. That is what lets two peers built from
-different revisions of a schema keep talking, so it is not an error; if you want
-to know it happened, `sofab_istream_skipped()` counts it.
+the wire type (MESSAGE_SPEC §7.3): the decode continues and the destination keeps
+its previous value. That is not an error — it is what lets peers on different
+schema revisions keep talking. `sofab_istream_skipped()` counts it.
 
 ```c
 #include "sofab/istream.h"
@@ -226,18 +220,16 @@ silently accepted as complete nor rejected as invalid. In the C++ wrapper the sa
 three outcomes are surfaced by `IStream::feed`'s `Result`: `ok()` (complete),
 `incomplete()` (partial), and `code() == Error::InvalidMessage` (malformed).
 
-Sequences may nest at most `SOFAB_MAX_DEPTH` (255) levels deep; a message that
-exceeds this is rejected with `SOFAB_RET_E_INVALID_MSG`. The limit is enforced on
-the skip path — nested sequences the caller does not bind with
-`sofab_istream_read_sequence()` — where the depth counter is a `uint8_t`.
-Actively-decoded nesting is instead bounded by the number of caller-provided
-decoder handles.
+Sequences nest at most `SOFAB_MAX_DEPTH` (255) deep; deeper is
+`SOFAB_RET_E_INVALID_MSG`. The limit is enforced on the skip path, where the depth
+counter is a `uint8_t`; actively-decoded nesting is bounded instead by the number
+of caller-provided decoder handles.
 
 ### Code generator
 
 `sofabgen` is the schema compiler. For **C** it targets the descriptor-driven
-`object` API, emitting a plain struct plus `_encode` / `_decode` functions so one
-generic transcoder serves every message and keeps flash small:
+`object` API — a plain struct plus `_encode` / `_decode`, so one generic
+transcoder serves every message and flash stays small:
 
 ```c
 #include "message/point.h"   /* generated by: sofabgen --lang c */
@@ -269,20 +261,17 @@ Point got = Point::decode(wire.data(), wire.size());   // got.x == 3, got.y == 4
 ### Feature flags
 
 The full wire format ships by default; the C core can be trimmed at compile time.
-Disabling unused features removes their code paths and shrinks the footprint —
-what each switch is worth in bytes is measured under
-[Footprint](#footprint). It also **narrows what the build will accept on the
-wire**, which is a decision about interoperability, not just about size: read the
-callout under the table before enabling one.
+What each switch is worth in bytes is measured under [Footprint](#footprint). A
+switch also **narrows what the build accepts on the wire** — read the callout
+below the table before enabling one.
 
-**Prefer the CMake option over the bare macro.** Every switch below except the
-one marked *macro only* is a CMake option that `src/CMakeLists.txt` applies
-`PUBLIC`, so the library **and** every consumer of its headers are configured
-identically. Several of these macros appear in the public headers and two of them
-change a public struct's layout, so a library and a consumer that disagree is a
-silent ABI mismatch, not a warning. Passing the macro through `CMAKE_C_FLAGS`
-also breaks on the cross-toolchain files under `utils/`, which assign that
-variable with `set()` and discard whatever the command line put there.
+**Prefer the CMake option over the bare macro.** Every switch except the one
+marked *macro only* is a CMake option that `src/CMakeLists.txt` applies `PUBLIC`,
+so the library and every consumer of its headers are configured identically. Two
+of these macros change a public struct's layout, so a library and a consumer that
+disagree is a silent ABI mismatch, not a warning. Passing the macro through
+`CMAKE_C_FLAGS` also breaks on the cross-toolchain files under `utils/`, which
+`set()` that variable and discard the command line.
 
 | Switch | Set with | Default | Effect |
 | - | - | - | - |
@@ -298,41 +287,35 @@ variable with `set()` and discard whatever the command line put there.
 > **A switch that removes a wire construct makes the decoder *reject* messages
 > that carry it.** `SOFAB_DISABLE_FIXLEN_SUPPORT`, `_ARRAY_`, `_SEQUENCE_`,
 > `_FP64_` and `_INT64_` take the construct out of the format this build speaks,
-> not just out of the API: a message carrying one decodes to
-> `SOFAB_RET_E_INVALID_MSG`, terminally (every later `sofab_istream_feed` on that
-> context returns it too, and no further callback fires — only
-> `sofab_istream_init` resets it).
+> not just out of the API: such a message is `SOFAB_RET_E_INVALID_MSG`, terminally
+> — every later `sofab_istream_feed` returns it and no callback fires, until
+> `sofab_istream_init` resets the context.
 >
-> **That includes fields you never asked for.** The decoder is schema-agnostic: it
-> cannot tell "the field the caller wanted" from "an id nobody here knows", so an
-> array in an unknown id is refused just like an array in a field you read. A full
-> build *skips* both and carries on
-> ([MESSAGE_SPEC §7.3](https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md));
-> a reduced build cannot, because the code that steps over the construct is
-> exactly the code the switch removed. Keeping it — parsing purely in order to
-> skip — costs roughly 375&nbsp;B of ARMv6-m `.text` in the *Minimal* profile,
-> which is why this corelib takes the rejection instead.
+> **That includes fields you never asked for.** The decoder is schema-agnostic, so
+> an array in an unknown id is refused just like one in a field you read. A full
+> build skips both ([MESSAGE_SPEC §7.3]); a reduced build cannot, because the code
+> that steps over the construct is the code the switch removed. Keeping it —
+> parsing only in order to skip — costs about 375&nbsp;B of ARMv6-m `.text` in the
+> *Minimal* profile.
 >
-> **So the switch is an interop bound, and it is yours to manage.** Such a build
-> only talks to peers that never emit the construct, in any field, ever —
-> including fields added by a later revision of the schema. Enable these where
-> both ends of the link are yours and the wire profile is fixed; do not enable
-> them on a receiver exposed to messages you do not control.
+> **The switch is therefore an interop bound.** Such a build only talks to peers
+> that never emit the construct, in any field — including fields a later schema
+> revision adds. Enable it where both ends of the link are yours and the wire
+> profile is fixed, not on a receiver exposed to messages you do not control.
 >
-> Nothing is silently dropped: the message is rejected, never half-accepted. But
-> the rejection lands *mid-message*, so fields preceding the offending one have
-> already reached your callback. `SOFAB_RET_E_INVALID_MSG` condemns the whole
-> message — discard everything the stream wrote, do not use the partially filled
-> destinations.
+> Nothing is silently dropped, but the rejection lands *mid-message*: fields
+> before the offending one have already reached your callback.
+> `SOFAB_RET_E_INVALID_MSG` condemns the whole message — discard the partially
+> filled destinations.
 
-> **`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` is the one switch that changes the wire
-> output rather than removing a wire type.** A sequence field that turns out
-> all-default is framed empty instead of being omitted (MESSAGE_SPEC §2) — still
-> well-formed, still the same value, and accepted by every decoder, but no longer
-> canonical. It is also the switch that is *not* about the format at all: it drops
-> an encoder mechanism the descriptor-driven `sofab_object_encode()` never uses,
-> which is why it is a footprint switch for pure-C consumers and why the C++
-> wrapper rejects it with an `#error` rather than adapting to it.
+[MESSAGE_SPEC §7.3]: https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md
+
+> **`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` changes the wire output rather than removing
+> a wire type.** An all-default sequence field is framed empty instead of omitted
+> (MESSAGE_SPEC §2) — well-formed, same value, accepted by every decoder, but no
+> longer canonical. It drops an encoder mechanism `sofab_object_encode()` never
+> uses, so it is a footprint switch for pure-C consumers; the C++ wrapper rejects
+> it with an `#error`.
 
 Two switches **tune** rather than remove:
 
@@ -376,19 +359,14 @@ The C++ wrapper honors these switches: type-dispatch capabilities
 used, while the structural ones (`FIXLEN`/`SEQUENCE`/`LAZY_SEQ`) underpin most of
 the C++ surface and are rejected outright with a `#error`.
 
-> **`SOFAB_DISABLE_INT64_SUPPORT` — change only if you know what you are doing.**
-> It shrinks 64-bit varint math (smaller/faster on 32-bit MCUs) but has wire- and
-> API-level side effects:
-> - **Wire compatibility:** the format is width-agnostic, so messages whose values
->   all fit in 32 bits stay byte-identical and interoperable. A value beyond 32-bit
->   range from a 64-bit peer is **rejected** as malformed
->   (`SOFAB_RET_E_INVALID_MSG`) — never silently truncated.
-> - **ABI:** the value types appear in public signatures, so 32-bit and 64-bit
->   builds are **not** ABI-compatible — don't mix them.
-> - **Field ids:** `SOFAB_ID_MAX` shrinks to `UINT32_MAX >> 3`, since the field
->   header is a varint of `(id << 3) | type`.
-> - **Conformance:** the shipped test vectors include 64-bit values and won't
->   decode in this mode.
+> **`SOFAB_DISABLE_INT64_SUPPORT` has wire- and API-level side effects.** It
+> shrinks 64-bit varint math, smaller and faster on 32-bit MCUs, but:
+> - **Wire:** values that fit in 32 bits stay byte-identical; a wider value from a
+>   64-bit peer is **rejected** (`SOFAB_RET_E_INVALID_MSG`), never truncated.
+> - **ABI:** the value types are in public signatures — 32-bit and 64-bit builds
+>   are not ABI-compatible.
+> - **Field ids:** `SOFAB_ID_MAX` shrinks to `UINT32_MAX >> 3`.
+> - **Conformance:** the shipped vectors carry 64-bit values and will not decode.
 
 ### Sequence framing and the hold-back window
 
@@ -396,30 +374,26 @@ A nested structure is a **sequence**: a start marker, the child fields, an end
 marker. Whether that frame reaches the wire at all depends on the *position*
 ([MESSAGE_SPEC §2](https://github.com/sofa-buffers/documentation/blob/main/MESSAGE_SPEC.md)):
 
-- A sequence-typed **field** whose value equals its declared default is **omitted
-  entirely** — not framed empty. The ≠-default test is per field and a sequence is
-  no exception, so an all-default message encodes to **zero bytes**, and a
+- A sequence-typed **field** equal to its declared default is **omitted entirely**,
+  not framed empty. So an all-default message encodes to **zero bytes**, and a
   zero-byte input decodes to the all-default value.
 - A wrapper-array **element** is **always framed**, even when all-default: element
-  presence is what carries a dynamic array's length (§5.1). Dropping one would
-  change the array, not just its bytes.
-- An empty frame remains **valid input**. It is the non-canonical encoding of the
-  same value, and every decoder accepts it and normalizes it away — so encoders on
-  either side of this rule interoperate.
+  presence carries a dynamic array's length (§5.1).
+- An empty frame stays **valid input** — the non-canonical encoding of the same
+  value, which every decoder normalizes away.
 
-The two message layers in this repo reach that outcome differently:
+The two message layers here reach that outcome differently:
 
 - **C, `sofab_object_encode()`** — the descriptor knows the whole object, so it
-  tests each field against its default *before* opening anything. There is no
-  window and no bound involved; it is canonical at every nesting depth.
-- **C++ / generated code** — the predicate is spread across individual write
-  calls, so the *output stream* decides: `sofab_ostream_write_sequence_begin_lazy()`
+  tests each field against its default *before* opening anything: no window, no
+  bound, canonical at every depth.
+- **C++ / generated code** — the predicate is spread across individual writes, so
+  the output stream decides. `..._write_sequence_begin_lazy()`
   (`OStream::sequenceBeginLazy`) **holds the header back**; the first field written
-  into any enclosing sequence emits the whole held-back run; and
-  `..._sequence_end()` (`sequenceEnd`) drops a frame that never got content, while
-  `..._sequence_end_keep()` (`sequenceEndKeep`) forces one out for an element
-  position. Held-back ids are stream state, not buffer content, so this never
-  changes the bytes a small output buffer produces.
+  into any enclosing sequence emits the whole run; `..._sequence_end()` drops a
+  frame that never got content, `..._sequence_end_keep()` forces one out for an
+  element position. Held-back ids are stream state, not buffer content, so a small
+  output buffer still yields identical bytes.
 
 > **The bound: `SOFAB_LAZY_SEQ_DEPTH` (default 8).** This is a **heap-free**
 > corelib — it cannot grow the pending run on demand, so it bounds it, which
@@ -428,26 +402,23 @@ The two message layers in this repo reach that outcome differently:
 >
 > - **Up to 8 nested lazily-opened sequences, output is canonical** — an
 >   all-default sequence field is omitted.
-> - **Deeper than that, the run is committed and the sequence is framed eagerly.**
->   If it then turns out to be all-default, the two-byte empty frame stays on the
->   wire. That output is **well-formed and decodes to the same value** (it is the
->   non-canonical form above), so a bounded and an unbounded encoder interoperate;
->   what it is not is byte-identical to an unbounded encoder's output.
+> - **Deeper than that the run is committed and the sequence is framed eagerly.**
+>   An all-default one then leaves a two-byte empty frame on the wire —
+>   well-formed and the same value, so a bounded and an unbounded encoder
+>   interoperate; what it is not is byte-identical.
 > - Raise it with `-DSOFAB_LAZY_SEQ_DEPTH=N` if a schema nests sequence *fields*
->   deeper than 8 and byte-exact canonical output matters. Each level costs 4&nbsp;B
->   of RAM per output stream. Nesting itself is **not** limited by this — that is
->   `SOFAB_MAX_DEPTH` (255) and exceeding the hold-back window is never an error.
+>   deeper than 8 and byte-exact canonical output matters; each level costs
+>   4&nbsp;B of RAM per stream. Nesting itself is bounded by `SOFAB_MAX_DEPTH`
+>   (255), and exceeding the hold-back window is never an error.
 >
-> An implementation that *can* allocate (the other corelibs) must hold back to the
-> full `SOFAB_MAX_DEPTH` and is canonical at every depth. The C object API above
-> already is; only the raw-stream path carries the window.
+> Corelibs that can allocate hold back to the full `SOFAB_MAX_DEPTH` and are
+> canonical at every depth. The C object API above already is; only the raw-stream
+> path carries the window.
 
-**What the mechanism costs, and how to stop paying it.** The commit check lives in
-the one function every writer funnels through, so a default build pays it *per
-field* — including a pure-C consumer that encodes through `sofab_object_encode()`
-and never opens a lazy sequence at all. Measured with Callgrind (`bench_c` at
-`-O3`, `cmake --build build --target run_bench_callgrind`, against the same build
-configured with `-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON`):
+**What it costs.** The commit check sits in the one function every writer funnels
+through, so a default build pays it *per field* — including a pure-C consumer that
+never opens a lazy sequence. Callgrind, `bench_c` at `-O3`, against the same build
+with `-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON`:
 
 | Workload | default | `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | delta |
 | - | -: | -: | -: |
@@ -456,70 +427,56 @@ configured with `-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON`):
 | encode: u64 array (1000) | 125 999 Ir/op | 125 998 Ir/op | +1 Ir/op (+0.001 %) |
 | decode: typical message | 2 109 Ir/op | 2 109 Ir/op | none |
 
-The cost is per *field header*, so a message of many small fields feels it and a
-message of few wide ones does not; decoding is untouched. These figures replace
-an earlier reading of +56 Ir/op on `encode: typical message`, which predates
-`perf(footprint): collapse the repeated per-type dispatch in the object and
-stream paths` — the early-out is now most of what a stream with nothing pending
-executes. Together with the 276&nbsp;B of ARMv6-m `.text` and the 36&nbsp;B of
-per-stream RAM listed under [Footprint](#footprint), that is the whole price of
-the switch — and `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` takes all of it back for a
-build that only uses the descriptor-driven encoder.
+The cost is per *field header*, so a message of many small fields feels it and one
+of few wide ones does not; decoding is untouched. With the 276&nbsp;B of ARMv6-m
+`.text` and 36&nbsp;B of per-stream RAM under [Footprint](#footprint), that is the
+whole price, and `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` takes all of it back for a build
+that only uses the descriptor-driven encoder.
 
-Note that `bench_c` measures the *stream* path with the eager opener, so these
-deltas are the per-write commit check alone. The hold-back's own work — holding a
-header back and discarding it — is what the `encode: composite` row adds, since
-that message is the one with an omitted all-default field.
+`bench_c` measures the stream path with the eager opener, so these deltas are the
+per-write commit check alone; the hold-back's own work is what the `encode:
+composite` row adds, that being the message with an omitted all-default field.
 
 ## Memory handling
 
-Buffer ownership differs from a copy-on-read decoder, so it is worth being
-precise. The **C core never allocates** — every context, decoder and buffer is
-caller-provided. (The C++ wrapper is heap-free too with inline buffers /
+The **C core never allocates** — every context, decoder and buffer is
+caller-provided. The C++ wrapper is heap-free too with inline buffers /
 `FixedString` / `FixedBytes` / `InlineVector`; only `OStream(buflen)` and the
-`std::string` / `std::vector` read overloads use the heap.)
+`std::string` / `std::vector` read overloads use the heap.
 
-**Encode (ostream) — output buffer is caller-provided; the core never
-allocates.** `sofab_ostream_init()` takes a writable buffer the stream never
-allocates, copies, or frees — it just advances a cursor. `offset` reserves room
-at the front for a lower-layer header. When the buffer fills (or on
-`sofab_ostream_flush()`) an optional flush callback drains it; with no callback,
-a full buffer returns `SOFAB_RET_E_BUFFER_FULL` instead of overflowing.
+**Encode (ostream) — the buffer is caller-provided.** `sofab_ostream_init()` takes
+a writable buffer the stream never allocates, copies or frees; it advances a
+cursor. `offset` reserves room at the front for a lower-layer header. When the
+buffer fills (or on `sofab_ostream_flush()`) an optional flush callback drains it;
+with no callback a full buffer returns `SOFAB_RET_E_BUFFER_FULL`.
 
-**`SOFAB_MIN_OUTPUT_BUFFER` is `1`.** This is the smallest buffer the encoder
-accepts *for streaming*, and one byte is the floor the wire format was designed
-around: every write goes through a byte-at-a-time push, so a field header, a
-`fixlen_word`, a varint value or a float element may each straddle a flush. A
-buffer installed **with** a flush callback must satisfy
-`buflen - offset >= SOFAB_MIN_OUTPUT_BUFFER`; one installed **without** a
-callback has no minimum at all — it either holds the message or reports
-`SOFAB_RET_E_BUFFER_FULL`, so a caller sizing from a generated `MAX_SIZE` gets
-an exact fit and never a floor imposed on top of it.
+**`SOFAB_MIN_OUTPUT_BUFFER` is `1`.** The smallest buffer the encoder accepts
+*for streaming*: every write goes through a byte-at-a-time push, so a field
+header, a `fixlen_word`, a varint value or a float element may each straddle a
+flush. A buffer installed **with** a flush callback must satisfy
+`buflen - offset >= SOFAB_MIN_OUTPUT_BUFFER`; one installed **without** has no
+minimum at all — it either holds the message or reports
+`SOFAB_RET_E_BUFFER_FULL`, so a caller sizing from a generated `MAX_SIZE` gets an
+exact fit.
 
-**No pass-through.** [CORELIB_PLAN §5.1](https://github.com/sofa-buffers/documentation/blob/main/CORELIB_PLAN.md)
-lets a caller permit a `string`/`blob` run to reach the sink *directly*, without
-passing through the output buffer. This port does not implement it — the
-permission is explicitly optional ("a port **MAY** ignore the permission
-entirely and always copy … Ports for constrained targets are expected to ignore
-it") and the output is byte-identical either way. So a flush callback here is
-**only ever handed the output buffer it was installed with**, never foreign
-memory, and a sink that retains what it receives needs no special case for it.
+**No pass-through.** CORELIB_PLAN §5.1 lets a caller permit a `string`/`blob` run
+to reach the sink directly, bypassing the output buffer. This port does not
+implement it; the permission is explicitly optional and the output is
+byte-identical either way. A flush callback here is **only ever handed the output
+buffer it was installed with**, never foreign memory.
 
-**Decode (istream) — deferred-copy binding.** A `read_*()` / `read()` call
-copies nothing: it records only *where* the value goes (pointer, length, type).
-The bytes are written into that destination by later `feed()` calls. Two rules
-follow:
+**Decode (istream) — deferred-copy binding.** A `read_*()` / `read()` call copies
+nothing: it records only *where* the value goes. Later `feed()` calls write into
+that destination. Two rules follow:
 
-1. **Destinations must be address-stable and outlive decoding.** The pointer you
-   bind is filled on a *later* `feed()`, so it cannot point at storage that moves
-   or disappears first. Hence C++ `read(std::string&)` must be **pre-sized**;
-   `FixedString` / `FixedBytes` / `InlineVector` are safe because their inline
-   storage never moves.
-2. **Data is copied into your memory, not aliased.** This port is **not**
-   zero-copy: payload words are not guaranteed aligned on the wire, so decoded
-   values are copied into your typed storage — keeping decode alignment- and
-   endianness-safe and bounded to your buffers. Oversized or malformed fields are
-   rejected with `SOFAB_RET_E_INVALID_MSG`; unbound fields are skipped untouched.
+1. **Destinations must be address-stable and outlive decoding**, since the pointer
+   is filled on a later `feed()`. C++ `read(std::string&)` must therefore be
+   **pre-sized**; `FixedString` / `FixedBytes` / `InlineVector` are safe, their
+   inline storage never moving.
+2. **Data is copied into your memory, not aliased.** Payload words are not
+   guaranteed aligned on the wire, so values are copied into your typed storage —
+   alignment- and endianness-safe, bounded to your buffers. Oversized or malformed
+   fields are `SOFAB_RET_E_INVALID_MSG`; unbound fields are skipped untouched.
 
 A fed chunk is **borrowed only for the duration of `feed()`** and may be reused
 the moment it returns; what a bound destination has not received yet is carried
@@ -535,24 +492,25 @@ cmake --build build --parallel $(nproc)
 ctest --test-dir build --output-on-failure
 ```
 
-Tests come in two layers:
+Three suites run under CTest:
 
-- **Unit tests** (`test_c` / `test_cpp`) — hand-written C (Unity) and C++ (Catch2)
-  tests covering encoder, decoder and object API, including the three-valued decode
-  outcome (truncation → `SOFAB_RET_INCOMPLETE`) and error paths (over-wide varints,
-  unbalanced sequences, overflow → `SOFAB_RET_E_INVALID_MSG`). Run in the
-  full-feature ("max") build.
-- **Conformance-vector suite** (`test_vectors_c`) — a language-agnostic set of
-  vectors in [`assets/test_vectors.json`](assets/test_vectors.json), each pairing
-  a message with its exact serialized bytes (format in
-  [`assets/test_vectors_README.md`](assets/test_vectors_README.md); generator in
-  [`test/vectorgen`](test/vectorgen)). This repo is the authoritative source of
-  that file.
+- **`test_c` / `test_cpp`** — Unity and Catch2 unit tests over encoder, decoder and
+  object API, including the three-valued decode outcome and the error paths. Built
+  in the full-feature ("max") configuration only.
+- **`test_vectors_c`** — the shared conformance vectors in
+  [`assets/test_vectors.json`](assets/test_vectors.json), each pairing a message
+  with its exact serialized bytes (format in
+  [`assets/test_vectors_README.md`](assets/test_vectors_README.md), generator in
+  [`test/vectorgen`](test/vectorgen)). **This repo is the authoritative source of
+  that file** for the whole family.
+- **`test_readme_structure`** — reads this README and holds it to CORELIB_PLAN §9:
+  the section list and order, the badge block, the §9.5 examples, the §6.4/§9.6
+  facts, the §6.1.1 name set, and that every in-document link resolves.
 
-The vector suite also builds as a standalone, **feature-flag-tolerant** runner
+The vector suite also builds standalone and **feature-flag-tolerant**
 (`sofab_vectortest`): each vector declares its `requires`, so a `SOFAB_DISABLE_*`
-build skips the vectors it can't handle and reports `run` / `skipped` counts. CI
-runs it across a [feature-flag](#feature-flags) matrix. To run a reduced config:
+build skips what it cannot handle and reports `run` / `skipped` counts. CI runs it
+across a [feature-flag](#feature-flags) matrix:
 
 ```sh
 cmake -S . -B build -DSOFAB_ENABLE_CPP=OFF -DSOFAB_DISABLE_INT64_SUPPORT=ON
@@ -579,11 +537,11 @@ Build-shaping options; the wire-feature switches are listed under
 
 ## Benchmarks
 
-Three benchmark tools, the set
+The three tools
 [BENCH_SPEC](https://github.com/sofa-buffers/documentation/blob/main/BENCH_SPEC.md)
-requires of every `corelib-*`, built for both C and C++ (via `SOFAB_ENABLE_BENCH`,
-on by default). The corelib is compiled into each at `-O3`, independent of the
-size-optimized (`-Os`) library the rest of the project links.
+requires of every `corelib-*`, built for both C and C++ (`SOFAB_ENABLE_BENCH`, on
+by default). The corelib is compiled into each at `-O3`, independent of the `-Os`
+library the rest of the project links.
 
 | Tool | Measures | Use it for |
 | - | - | - |
@@ -603,32 +561,27 @@ cmake --build build --target run_bench_callgrind  # instructions/op under Callgr
 
 All three run BENCH_SPEC's shared datasets, so the numbers compare directly
 against every other port: a 1000-element `u64` array, the 7-field `typical`
-message (37 bytes), the 12-field `perf` message (170 bytes), an unbounded **1 MB
-blob** — one-shot, streamed through a 4096-byte buffer with a flush sink, and
-decoded in 4096-byte chunks — and the **composite** message (956 bytes), whose
-wrapper array, non-ASCII UTF-8, depth-3 nesting, omitted all-default field and
-two-byte field header reach paths the flat datasets never touch. The encoded
-sizes of the last two (1,000,005 and 956 bytes) are cross-port parity checks and
-`bench_c` refuses to print a table if the first one does not hold.
+message (37 B), the 12-field `perf` message (170 B), an unbounded **1 MB blob**
+(one-shot, streamed through a 4096-byte buffer with a flush sink, and decoded in
+4096-byte chunks) and the **composite** message (956 B), whose wrapper array,
+non-ASCII UTF-8, depth-3 nesting, omitted all-default field and two-byte field
+header reach paths the flat datasets never touch. The last two encoded sizes
+(1,000,005 and 956 B) are cross-port parity checks; `bench_c` refuses to print a
+table if the first does not hold.
 
-The `blob 1MB` rows are the only place the divisible-run path
-([CORELIB_PLAN §5.1](https://github.com/sofa-buffers/documentation/blob/main/CORELIB_PLAN.md))
-is exercised at all, and they are worth reading only in `Ir/op`: five of that
-message's bytes are metadata and a million are payload, so its MB/s figure is the
-machine's memory bandwidth rather than anything about the corelib. The optional
-`encode: blob 1MB passthrough` row is absent because this port does not implement
-pass-through (see [Memory handling](#memory-handling)).
+Read the `blob 1MB` rows only in `Ir/op`: five of that message's bytes are
+metadata and a million are payload, so its MB/s is the machine's memory bandwidth.
+They are also the only rows that exercise the divisible-run path at all. The
+optional `encode: blob 1MB passthrough` row is absent because this port implements
+no pass-through (see [Memory handling](#memory-handling)).
 
 ### Footprint
 
-Because the C core never allocates, its `.data`/`.bss` are `0.0KB` and the whole
-cost is `.text` (flash). Tables below are the size of the built static library
-(`size libsofabuffers.a`), always `-Os`, and are regenerated by
-[`tools/footprint.sh`](tools/footprint.sh) — which prints them paste-ready and
-tells you which cross toolchains to install. CI builds one job per architecture
-and configuration, each printing its own `size`; the `atmega8` row is the
-exception, since that workflow is on manual dispatch until its test image links
-again.
+Because the C core never allocates, `.data`/`.bss` are `0.0KB` and the whole cost
+is `.text` (flash). The tables are `size libsofabuffers.a` at `-Os`, regenerated by
+[`tools/footprint.sh`](tools/footprint.sh). CI builds one job per architecture and
+configuration; `atmega8` is the exception, its workflow being on manual dispatch
+until the test image links again.
 
 **Full configuration**
 
@@ -639,11 +592,9 @@ again.
 | RV32IMC | ~4.8KB | 0.0KB | 0.0KB |
 | atmega8 | ~8.0KB | 0.0KB | 0.0KB |
 
-**Full configuration, strict UTF-8 on** — same as above plus
-`SOFAB_ENABLE_STRICT_UTF8` (off by default). This is the only row where the
-validator (`utf8.c`) is compiled in; the delta over *Full configuration* above is
-its entire `.text`/`.rodata` cost (~0.2–0.5&nbsp;KB), which the default build does
-not pay:
+**Full configuration, strict UTF-8 on** — the only rows where the validator
+(`utf8.c`) is compiled in. The delta over *Full* above is its entire
+`.text`/`.rodata` cost (~0.2–0.5&nbsp;KB), which the default build does not pay:
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
@@ -653,14 +604,12 @@ not pay:
 | atmega8 | ~8.5KB | 0.0KB | 0.0KB |
 
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
-those *Full* rows (it adds 276&nbsp;B on ARMv6-m and 512&nbsp;B on atmega8).
-A pure-C consumer that only encodes through `sofab_object_encode()` can take it
-back out with `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to
-3551&nbsp;B of `.text`, and `sofab_ostream_t` shrinks from 56&nbsp;B to
-20&nbsp;B per stream (the `SOFAB_LAZY_SEQ_DEPTH` pending run). Size is not all it
-costs: the same switch also drops 6&nbsp;Ir/op from a typical encode, measured in
-[Sequence framing](#sequence-framing-and-the-hold-back-window). The *Minimal* rows
-below are unaffected either way: they disable sequences outright.
+those *Full* rows: 276&nbsp;B on ARMv6-m, 512&nbsp;B on atmega8. A pure-C consumer
+encoding only through `sofab_object_encode()` takes it back out with
+`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3551&nbsp;B, `sofab_ostream_t`
+shrinks from 56&nbsp;B to 20&nbsp;B per stream, and a typical encode drops
+6&nbsp;Ir/op. The *Minimal* rows below disable sequences outright and are
+unaffected.
 
 **Minimal configuration** — `SOFAB_DISABLE_FIXLEN_SUPPORT`,
 `SOFAB_DISABLE_ARRAY_SUPPORT`, `SOFAB_DISABLE_SEQUENCE_SUPPORT`,
@@ -708,53 +657,44 @@ same [`tools/footprint.sh`](tools/footprint.sh):
 | `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3847&nbsp;B | +20&nbsp;B |
 | `SOFAB_ENABLE_STRICT_UTF8` | 4073&nbsp;B | +246&nbsp;B |
 
-Three of these need a word:
+Three rows need a word:
 
 - **The deltas do not add up to the *Minimal* rows.** They overlap — dropping
-  arrays removes code that dropping fixlen would also have removed — so a switch
-  is worth *at most* its row here once another is already on. The four
-  configurations above are the measured combinations.
-- **`SOFAB_OBJECT_DESCR_PROFILE` barely moves the library, and `SMALL` makes it
-  slightly bigger.** That is the expected shape, not a defect: the profile sizes
-  the descriptor members in **your** tables, which is where the saving lands
-  (`uint8_t` instead of `uint16_t` per field, in your `.rodata`), while narrower
-  members cost the library a few widening instructions. Choose it for the
-  descriptors, not for the corelib.
-- **`SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` buys 72&nbsp;B** and gives up a decode
-  safety check. It is in the *Minimal* profile because that profile targets
-  trusted, schema-bounded links; it is a poor trade on anything that parses
-  untrusted input.
+  arrays removes code dropping fixlen would also have removed — so a switch is
+  worth *at most* its row here once another is on. The four configurations above
+  are the measured combinations.
+- **`SOFAB_OBJECT_DESCR_PROFILE` barely moves the library and `SMALL` makes it
+  slightly bigger.** The profile sizes the descriptor members in **your** tables,
+  which is where the saving lands; narrower members cost the library a few
+  widening instructions. Choose it for the descriptors, not the corelib.
+- **`SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` buys 72&nbsp;B** by giving up a decode
+  safety check. It is in *Minimal* because that profile targets trusted,
+  schema-bounded links; it is a poor trade on untrusted input.
 
 ### Choosing between the two C/C++ corelibs
 
 SofaBuffers ships two same-format C++ codecs for opposite ends of the spectrum.
-This repo (`corelib-c-cpp`) is the **footprint / embedded** choice;
-[`corelib-cpp`](https://github.com/sofa-buffers/corelib-cpp) is the **throughput**
-choice.
 
-- **`corelib-c-cpp` (this repo)** — a heap-free C99 object API plus a header-only
-  C++20 wrapper over it. For small embedded devices where C is essential and every
-  byte counts, and IoT-class C++ devices that forbid exceptions and
+- **`corelib-c-cpp` (this repo)** — the **footprint / embedded** choice: a
+  heap-free C99 object API plus a header-only C++20 wrapper. For MCUs where C is
+  essential and every byte counts, and IoT-class C++ that forbids exceptions and
   `std::iostream`. Decoding is deferred-copy into caller-owned, address-stable
   storage.
-- **`corelib-cpp`** — a from-scratch pure-C++20 implementation exposing the *same*
-  `sofab::` surface, tuned for raw throughput on desktop/server. It parses in
-  place over the caller's contiguous buffer and pulls each value straight into its
-  destination, so no destination has to stay alive across chunks. It copies the
-  payload out like this port does: it has **no** borrowing destination, and
-  `read(std::string_view&)` deliberately does not exist there.
+- **[`corelib-cpp`](https://github.com/sofa-buffers/corelib-cpp)** — the
+  **throughput** choice: pure C++20 exposing the same `sofab::` surface, parsing
+  in place over the caller's buffer, so no destination has to survive a chunk.
+  Neither port has a borrowing destination.
 
-Pick this repo for bare-metal C, MCU-class C++, or a shared C/C++ wire format;
-pick `corelib-cpp` on a hosted C++20 target that wants maximum speed.
+Pick this repo for bare-metal C, MCU-class C++ or a shared C/C++ wire format;
+pick `corelib-cpp` on a hosted target that wants maximum speed.
 
 #### What the speed difference actually is
 
 Instruction counts from the shared Callgrind tooling — deterministic and
-machine-independent, so they compare across machines. All three are built at
-`-O3`; **lower is better**. The two columns for this repo were re-measured
-together here on the current tree, and the `corelib-cpp` column is the current
-reading published in [its own README](https://github.com/sofa-buffers/corelib-cpp#instruction-counts-callgrind)
-— reproduce either with `bash bench/run_callgrind.sh` in that repo.
+machine-independent, all three built at `-O3`; **lower is better**. This repo's
+two columns were re-measured together on the current tree; the `corelib-cpp`
+column is the reading published in
+[its own README](https://github.com/sofa-buffers/corelib-cpp#instruction-counts-callgrind).
 
 | Workload | C (this) | C++ wrapper (this) | `corelib-cpp` |
 | - | -: | -: | -: |
@@ -769,26 +709,20 @@ reading published in [its own README](https://github.com/sofa-buffers/corelib-cp
 | decode: composite | 32 168 | 36 533 | **22 417** |
 | decode: composite skip-all | 25 411 | 25 411 | **7 671** |
 
-`corelib-cpp` runs **1.4× to 10× fewer instructions**, widest where a payload is
-moved in bulk: it establishes a full varint window once and then moves whole
-64-bit words, and its one-shot `blob` write is a `memcpy` at one instruction per
-byte, where this core pushes every payload byte through the same bounds-checked
-per-byte path (about ten instructions per byte encoding, twenty-five decoding)
-and keeps per-field bookkeeping for its deferred-copy contract. That contract is
-the point of this repo — it is what lets decoding target caller-owned,
-address-stable storage with no heap and a fixed footprint — so the gap is the
-deliberate trade, not a defect.
+`corelib-cpp` runs **1.4× to 10× fewer instructions**, widest where a payload
+moves in bulk: it establishes a varint window once and then moves whole 64-bit
+words, and its one-shot `blob` write is a `memcpy` at one instruction per byte,
+where this core pushes every payload byte through the same bounds-checked path
+(~10 instructions per byte encoding, ~25 decoding) and keeps per-field bookkeeping
+for its deferred-copy contract. That contract is the point of this repo, so the
+gap is the deliberate trade.
 
 **One row goes the other way.** On `encode: blob 1MB streaming` this port needs
-**1.3× fewer** instructions than `corelib-cpp` (10.0 M against 13.0 M), and it is
-the same property seen from the other side: `corelib-cpp` takes its `memcpy`
-branch only while the run fits the output buffer and falls back to a
-byte-at-a-time loop when it does not — a megabyte through 4096 bytes is entirely
-the fallback, at 13 instructions per byte. This core has no fast path to fall out
-of, so streaming costs it almost exactly what the one-shot write cost (+0.05 %),
-while `corelib-cpp` pays 13× its own one-shot figure. A port optimised for the
-buffer that holds the whole message is not automatically the faster one when the
-buffer deliberately cannot.
+**1.3× fewer** instructions (10.0 M against 13.0 M). `corelib-cpp` takes its
+`memcpy` branch only while the run fits the output buffer and falls back to a
+byte loop when it does not — a megabyte through 4096 bytes is entirely the
+fallback. This core has no fast path to fall out of, so streaming costs it what
+the one-shot write cost (+0.05 %).
 
 Approximate head-to-head figures from the benchmark arena (best-of-5, comparable
 only within a language):
