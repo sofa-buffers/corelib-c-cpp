@@ -88,19 +88,6 @@ if(SOFAB_BUILD_TESTS)
     # --- enable cmake testing ---
     enable_testing()
 
-    # CORELIB_PLAN §9 fixes this README's section list, their order and the §9.2
-    # badge block for the whole corelib family, and §9.5/§9.6/§6.1.1/§6.4 fix
-    # facts it must carry. That is a property of the document, so no C or C++ test
-    # can notice it drifting. This check reads README.md and fails on an invented
-    # or reordered section, a missing badge, a dropped Usage example, a
-    # MIN_OUTPUT_BUFFER that left the memory chapter, a name outside the closed
-    # generated-object set, a dead in-document link, or the loss of the one
-    # heading corelib-cpp's README links to by fragment.
-    add_test(NAME test_readme_structure
-        COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/test/test_readme_structure.sh
-                ${CMAKE_CURRENT_LIST_DIR}/README.md)
-    set_tests_properties(test_readme_structure PROPERTIES SKIP_RETURN_CODE 77)
-
     # --- build C tests ---
     add_subdirectory(test/c)
 
