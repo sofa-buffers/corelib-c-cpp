@@ -41,3 +41,16 @@ target_link_libraries(sofabpptest
 
 # --- ctest registration ---
 add_test(NAME test_cpp COMMAND sofabpptest)
+
+# The README's generator example, compiled and run. The stand-in lives here as a
+# real translation unit; the test also checks that README.md still shows calls it
+# implements, so a documented example cannot drift from one that compiles. Kept
+# out of sofabpptest because it brings no Catch2 and must build wherever the C++
+# wrapper does.
+add_executable(test_readme_example test_readme_example.cpp)
+target_compile_options(test_readme_example PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(test_readme_example PRIVATE
+    SOFAB_README_PATH="${PROJECT_SOURCE_DIR}/README.md"
+    SOFAB_SELF_PATH="${CMAKE_CURRENT_LIST_DIR}/test_readme_example.cpp")
+target_link_libraries(test_readme_example sofabuffers)
+add_test(NAME test_readme_example COMMAND test_readme_example)
