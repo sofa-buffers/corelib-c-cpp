@@ -34,6 +34,18 @@
  *     floor — in the minimal configuration that silently discarded most of the
  *     suite, which is precisely the set of messages the build's contract is about.
  *
+ * The file's third top-level block, "sequence_growth", is deliberately NOT run
+ * here. Those cases assert that a wrapper array's container GROWS to highest
+ * present id + 1 as elements arrive (CORELIB_PLAN §7.2 item 8); this library is
+ * statically bounded and never grows, so the block's `requires: ["dynamic_arrays"]`
+ * excludes it — as it excludes C and Rust `no_std`. That is a skip, not the
+ * reduced-build rejection above: the messages are ordinary well-formed wrapper
+ * arrays this build decodes perfectly, and only the growth property is out of
+ * reach. Before adding a run_sequence_growth() here, work out what fixed-capacity
+ * containers should do with each case; the expectations in the file come from
+ * ARCHITECTURE §9.5 and CORELIB_PLAN §7.2, not from this library's behaviour.
+ * See assets/test_vectors_README.md.
+ *
  * The engine is plain C (linked into both the C/Unity and C++/Catch2 test
  * binaries). Both languages call sofab_test_vectors_run_all().
  *
