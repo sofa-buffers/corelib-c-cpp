@@ -104,3 +104,48 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
     target_link_libraries(sofab_vectortest sofabuffers)
     add_test(NAME test_vectors_c COMMAND sofab_vectortest)
 endif()
+
+# ----------------------------------------
+# Constrained-ceiling suite (§6.2 / issue #150)
+# ----------------------------------------
+# SOFAB_FIXLEN_MAX / SOFAB_ARRAY_MAX drop to 65,535 where size_t is 16 bits, and
+# the checks that read them live inside the library — so the lowered ceiling
+# cannot be exercised by linking against `sofabuffers`, which was compiled with
+# the wide one. This target therefore recompiles the library sources with the
+# ceilings pinned to the constrained values, which is what lets a 64-bit host run
+# the 16-bit profile's decode and encode behaviour. Nothing else in the build is
+# affected: the shipped library keeps its own ceilings.
+#
+# The sources are listed here rather than reused from src/CMakeLists.txt because
+# that file builds a *target*, not a source list. It is the same three files the
+# stream codec is made of (object.c is not linked — this suite drives the stream
+# API directly); if a fourth ever joins them and this list is not updated, the
+# link fails loudly rather than silently testing less.
+#
+# Hosted-only (it has to run) and full-configuration-only (it writes blobs and
+# arrays, which a reduced profile removes).
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic"
+   AND NOT SOFAB_DISABLE_FIXLEN_SUPPORT
+   AND NOT SOFAB_DISABLE_ARRAY_SUPPORT)
+    add_executable(sofabtest_limits
+        test_limits.c
+        ${CMAKE_SOURCE_DIR}/src/istream.c
+        ${CMAKE_SOURCE_DIR}/src/ostream.c
+        ${CMAKE_SOURCE_DIR}/src/utf8.c
+    )
+    target_compile_options(sofabtest_limits
+        PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-error=cpp
+    )
+    target_include_directories(sofabtest_limits
+        PRIVATE ${CMAKE_SOURCE_DIR}/src/include)
+    # Inherit whatever feature configuration the library was configured with, so
+    # this suite tracks the surrounding build (notably SOFAB_ENABLE_STRICT_UTF8 in
+    # the full-strict configuration) and differs from it in the ceilings alone.
+    target_compile_definitions(sofabtest_limits PRIVATE
+        $<TARGET_PROPERTY:sofabuffers,INTERFACE_COMPILE_DEFINITIONS>
+        SOFAB_FIXLEN_MAX=65535
+        SOFAB_ARRAY_MAX=65535
+    )
+    target_link_libraries(sofabtest_limits unity)
+    add_test(NAME test_limits_c COMMAND sofabtest_limits)
+endif()

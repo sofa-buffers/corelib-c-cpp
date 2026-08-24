@@ -225,6 +225,26 @@ Sequences nest at most `SOFAB_MAX_DEPTH` (255) deep; deeper is
 counter is a `uint8_t`; actively-decoded nesting is bounded instead by the number
 of caller-provided decoder handles.
 
+A `fixlen` field's declared length and an array's element count are bounded by
+`SOFAB_FIXLEN_MAX` / `SOFAB_ARRAY_MAX`; a message declaring more is rejected with
+`SOFAB_RET_E_INVALID_MSG`, and so is a `sofab_ostream_write_*` call that asks for
+more (`SOFAB_RET_E_ARGUMENT`). The wire format puts both ceilings at
+2,147,483,647 and lets a constrained profile lower them to 65,535. **This port
+takes that allowance where — and only where — `size_t` is too narrow to hold the
+wider one:**
+
+| target | `SOFAB_FIXLEN_MAX` / `SOFAB_ARRAY_MAX` |
+| - | - |
+| `size_t` 32-bit or wider (ARM, RISC-V, x86, …) | 2,147,483,647 |
+| `size_t` 16-bit (AVR / ATmega) | 65,535 |
+
+Both are derived from `SIZE_MAX` rather than listed per target, because the
+decoder narrows the declared length and count into a `size_t`: a ceiling above
+`SIZE_MAX` would admit a value the target cannot represent and truncate it
+instead of rejecting it. Override either with `-DSOFAB_FIXLEN_MAX=…` if a profile
+wants the constrained ceiling on a wide target; a value that does not fit in
+`size_t` fails the build.
+
 ### Code generator
 
 `sofabgen` is the schema compiler. For **C** it targets the descriptor-driven
@@ -590,7 +610,7 @@ until the test image links again.
 | ARMv6-m | ~3.7KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~3.8KB | 0.0KB | 0.0KB |
 | RV32IMC | ~4.8KB | 0.0KB | 0.0KB |
-| atmega8 | ~8.0KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.1KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — the only rows where the validator
 (`utf8.c`) is compiled in. The delta over *Full* above is its entire
@@ -601,7 +621,7 @@ until the test image links again.
 | ARMv6-m | ~4.0KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~4.0KB | 0.0KB | 0.0KB |
 | RV32IMC | ~5.1KB | 0.0KB | 0.0KB |
-| atmega8 | ~8.5KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.6KB | 0.0KB | 0.0KB |
 
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
 those *Full* rows: 276&nbsp;B on ARMv6-m, 512&nbsp;B on atmega8. A pure-C consumer
