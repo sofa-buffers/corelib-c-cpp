@@ -13,6 +13,14 @@ can load this file and, for every vector, either:
 That's all most consumers need — just read the JSON. It is machine-generated; to
 rebuild it, see the generator in [`../test/vectorgen`](../test/vectorgen).
 
+The file is **not only vectors.** Two further top-level blocks sit beside them —
+[`invalid_utf8`](#negative-vectors--invalid_utf8), whose cases are keyed by a
+byte string a valid encoder cannot produce, and
+[`sequence_growth`](#growth-cases--sequence_growth), whose cases are keyed by a
+delivery sequence of element ids rather than by bytes at all. A port runs every
+block its `requires` gating does not exclude. Both are backward-compatible: a
+consumer that reads only `vectors` ignores them.
+
 ## File format
 
 ```jsonc
@@ -108,6 +116,9 @@ builds it across the feature matrix.
 > compile features out) inherently supports every capability a vector can ask
 > for, so it should **ignore `requires` and run all vectors**. The tags exist
 > solely so a feature-reduced build can skip what it cannot represent.
+> The one tag this does **not** cover is `dynamic_arrays`, which appears only on
+> the [`sequence_growth`](#growth-cases--sequence_growth) block and describes how
+> a port *allocates* rather than what it can parse — see there.
 
 ### Optional `skip_ids`
 
@@ -167,6 +178,122 @@ leg that runs these negative vectors; targets that ship strict ON by default get
 it for free. `string_hex` / `serialized_hex` are lowercase hex, like
 `serialized.hex`; the payload is placed at field id `0` with the `string` (fixlen
 UTF-8) wire subtype.
+
+### Growth cases — `sequence_growth`
+
+A third top-level block, beside `vectors` and `invalid_utf8`. It carries the
+**sequence-array growth cases** every growing port must run
+([CORELIB_PLAN §7.2 item 8](https://github.com/sofa-buffers/documentation/blob/main/CORELIB_PLAN.md)).
+
+**A growth case is a delivery sequence of element ids, not a byte string** —
+which is why it cannot be a vector. A wrapper (sequence) array carries no element
+count on the wire: its length is *highest present id + 1* (MESSAGE_SPEC §5.1), so
+the size is known only once the array ends and the container **grows** as
+elements arrive. It is the one allocation shape where growth is conformant
+([generator ARCHITECTURE §9.5](https://github.com/sofa-buffers/generator/blob/main/docs/ARCHITECTURE.md)
+shape B); everything with a count or length ahead of its payload — integer arrays
+§4.7, fixlen arrays §4.8, `string`/`blob` — checks that word and allocates exactly
+it, once. The positive suite is structurally blind to this: two ports that grow
+differently emit **identical bytes** and reach **identical outcomes**, so no
+`serialized.hex` can tell them apart. The port therefore **builds the message
+itself** from `deliver` and asserts `expect`.
+
+```jsonc
+{
+  "name": "growth_index_at_cap_minus_one",
+  "group": "growth/index",
+  "description": "...",
+  "requires": ["sequence", "fixlen", "dynamic_arrays"],
+  "field_id": 0,                    // the wrapper-array field's id in the top-level scope
+  "element_type": "string",         // "string" | "struct"
+  "deliver": [                      // elements delivered, in the given order
+    { "id": 0,           "value": "a" },
+    { "id_from_cap": -1, "value": "b" }
+  ],
+  "expect": {
+    "outcome": "complete",          // "complete" | "limit_exceeded"
+    "length_from_cap": 0            // the resulting container length
+  }
+}
+```
+
+**Indices are cap-relative.** The receiver cap `max_dyn_array_count` is per-target
+**configuration** — CORELIB_PLAN §6.2.1 and ARCHITECTURE §9.5 deliberately fix no
+family-wide number, because an element count that is trivial on a server is brutal
+in C. So a case never names an absolute boundary: `id_from_cap` and
+`length_from_cap` are **offsets added to the cap**, and each port substitutes its
+own configured value when it runs the block (`-1` → `cap - 1`, `0` → `cap`).
+`id` and `length` are absolute. Every case assumes a cap of **at least 4**; a port
+configured below that raises it for the block's run.
+
+| key | where | meaning |
+|---|---|---|
+| `field_id` | case | the wrapper array field's id in the top-level scope |
+| `element_type` | case | `string` — the element is a leaf; `struct` — the element is a framed sub-sequence carrying one `unsigned` field at id `0`, whose value is the case's `value` |
+| `deliver[].id` / `.id_from_cap` | element | the element index, absolute or cap-relative (exactly one of the two) |
+| `deliver[].value` | element | the element's value; a JSON string for `string`, a JSON integer for `struct` |
+| `expect.outcome` | case | `complete`, or `limit_exceeded` for the receiver-cap policy rejection (CORELIB_PLAN §6.3) |
+| `expect.length` / `.length_from_cap` | case | the resulting container length, absolute or cap-relative (`complete` only) |
+| `expect.default_ids` | case | ids that must hold the **element default** (`complete` only) |
+| `expect.terminal` | case | the rejection is terminal — further input cannot lift it (`limit_exceeded` only) |
+| `expect.max_length` | case | the container must **not** have been extended past this (`limit_exceeded` only) |
+
+Assert the **container length** and the **outcome**, and nothing else — no
+allocator instrumentation. That is what makes the cases portable across eleven
+languages (CORELIB_PLAN §7.2 item 8).
+
+An empty `deliver` means the wrapper is framed **empty** — the explicit-empty
+form of MESSAGE_SPEC §5.1, with no element at all and therefore length `0`.
+
+**Both element types are covered on the boundary cases.** A `string` element
+reaches the container through the collector's leaf path, a `struct` element
+through its sequence path, and a port can get one right and the other wrong. The
+expectations are identical for both, deliberately: the bound is the element
+**index**, never the element kind.
+
+#### Gating — `requires: ["dynamic_arrays"]`
+
+`dynamic_arrays` is a **profile** capability, not a `SOFAB_DISABLE_*` build
+switch: a port declares it when its wrapper-array containers **grow at decode
+time**. **Statically bounded profiles** — C, C++ `corelib: c-cpp`, Rust `no_std` —
+are capacity-bound by construction, never grow, and so do not declare it and do
+not run this block (ARCHITECTURE §9.5; CORELIB_PLAN §7.2 item 8: such a port
+"states that instead").
+
+> This is the one exception to the "ignore `requires` and run everything" rule
+> above. That rule is about *wire constructs* a reduced build cannot represent —
+> a port supporting the full wire format supports them all. `dynamic_arrays` says
+> something else: not what the port can parse, but **how it allocates**. A
+> statically bounded port parses every one of these messages perfectly and still
+> cannot exhibit growth, so it must honour this tag even though it honours no
+> other.
+
+An unsatisfied `dynamic_arrays` means **skip**, never *reject*. A build that
+compiled a wire construct out rejects any message carrying it, so an unsatisfied
+`fixlen`/`array`/`sequence`/`fp64`/`int64` tag on a *vector* turns that vector
+into a negative case. Nothing of the sort applies here: a growth case's message
+is an ordinary, well-formed wrapper array that a statically bounded port decodes
+perfectly. Only the *growth* it is asserting is out of reach. Do not wire these
+cases into a rejection path.
+
+**`corelib-c-cpp` authors these cases and does not execute them.** It generates
+this file and is statically bounded, so it is on the excluded side of its own
+gating. **The expected values therefore come from ARCHITECTURE §9.5 and
+CORELIB_PLAN §7.2 item 8 — not from what that library does.** If you run the
+block against `corelib-c-cpp` and see failures, the gating was bypassed; do not
+"fix" the file to match the one implementation that structurally cannot run it.
+
+#### Growth geometry is not asserted here
+
+A conformant decoder grows **to at least `id + 1`**, not exactly `id + 1`, so a
+sparse array does not cost O(n²) copies (ARCHITECTURE §9.5 shape B). That is the
+one property in this block a length-and-outcome assertion cannot reach — it needs
+the language's own allocation-counting facility. Test it where the language
+offers one; where it does not, **say so in the port's README** rather than
+reporting the case as passed (CORELIB_PLAN §7.2 item 8).
+
+`sequence_growth` is **backward-compatible**: a consumer that only reads
+`vectors` ignores it and still passes every positive vector.
 
 ### Decode scenarios the harness runs per vector
 

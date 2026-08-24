@@ -1153,6 +1153,181 @@ static void emit_invalid_utf8(FILE *o)
     }
 }
 
+/* the sequence-array growth cases ******************************************/
+
+/*
+ * CORELIB_PLAN §7.2 item 8 / ARCHITECTURE §9.5 shape B.
+ *
+ * A wrapper (sequence) array carries no element count on the wire: its length is
+ * *highest present id + 1* (MESSAGE_SPEC §5.1), so the size is known only when
+ * the array ends and the container GROWS as elements arrive. It is the one
+ * allocation shape where growth is conformant — everything with a count or a
+ * length ahead of its payload (§4.7 integer arrays, §4.8 fixlen arrays,
+ * `string`/`blob`) checks that word and allocates exactly it, once.
+ *
+ * These cases cannot be vectors. A vector is keyed by a byte string, and two
+ * ports that grow differently emit IDENTICAL bytes and reach IDENTICAL outcomes
+ * — the positive suite is structurally blind to growth. A growth case is keyed
+ * by a DELIVERY SEQUENCE OF ELEMENT IDS instead, and the port builds the message
+ * from it. So, like `invalid_utf8`, this block is a hand-authored seed table and
+ * not a replay of the encoder: there is no encoder run that produces a growth
+ * expectation.
+ *
+ * Indices are CAP-RELATIVE on purpose. The receiver cap `max_dyn_array_count` is
+ * per-target configuration — ARCHITECTURE §9.5 and CORELIB_PLAN §6.2.1
+ * deliberately fix no family-wide number — so a case says `id_from_cap: -1` and
+ * each port substitutes its own configured value. A hardcoded number would be
+ * wrong for every target that chose another one. `id`/`length` are absolute;
+ * `id_from_cap`/`length_from_cap` are added to the cap. Every case assumes a cap
+ * of at least 4.
+ *
+ * THE EXPECTATIONS BELOW COME FROM ARCHITECTURE §9.5 AND CORELIB_PLAN §7.2 ITEM
+ * 8 — NOT from what this library does. `corelib-c-cpp` is statically bounded and
+ * never grows: it authors these cases and does not execute them (the block's
+ * `requires: ["dynamic_arrays"]` gating excludes it, as it excludes C and Rust
+ * `no_std`). Do not "fix" a case to match the one implementation that
+ * structurally cannot run it. See assets/test_vectors_README.md.
+ */
+static void emit_sequence_growth(FILE *o)
+{
+    /* One delivered element. `rel` makes `id` an offset added to the cap. */
+    struct el { int rel; int32_t id; const char *sval; long ival; };
+
+    static const struct {
+        const char *name;
+        const char *group;
+        const char *desc;
+        const char *requires;   /* verbatim JSON array */
+        const char *elem;       /* element_type: "string" | "struct" */
+        struct el   deliver[4];
+        size_t      ndeliver;
+        const char *outcome;    /* "complete" | "limit_exceeded" */
+        int         len_rel;    /* 1 -> length_from_cap, 0 -> length */
+        int32_t     len;        /* the resulting container length (complete) */
+        int32_t     max_length; /* not extended past this (limit_exceeded) */
+        int32_t     default_ids[2];
+        size_t      ndefault;
+    } seeds[] = {
+        { "growth_index_at_cap_minus_one", "growth/index",
+          "Two string elements, at id 0 and at the last legal index (cap-1). The array is cap long "
+          "although two elements arrived: a sparse array allocates by its highest id, not by how many "
+          "elements were delivered. The at-cap-1 index is accepted (ARCHITECTURE S9.5).",
+          "[\"sequence\", \"fixlen\", \"dynamic_arrays\"]", "string",
+          { {0, 0, "a", 0}, {1, -1, "b", 0} }, 2,
+          "complete", 1, 0, 0, {0, 0}, 0 },
+
+        { "growth_index_at_cap", "growth/index",
+          "A string element at id 0, then one at the cap itself. max_dyn_array_count binds the element "
+          "INDEX for a wrapper array (there is no count header to bind), so id >= cap is LimitExceeded "
+          "-- checked BEFORE the container grows, so nothing is allocated for it. A policy rejection, "
+          "not INVALID: the bytes are well-formed and decode under a looser cap (CORELIB_PLAN S6.2.1).",
+          "[\"sequence\", \"fixlen\", \"dynamic_arrays\"]", "string",
+          { {0, 0, "a", 0}, {1, 0, "b", 0} }, 2,
+          "limit_exceeded", 0, 0, 1, {0, 0}, 0 },
+
+        { "growth_gap_filled", "growth/gap",
+          "String elements at ids 0, 2 and 3 -- id 1 is an interior element equal to its default and so "
+          "MUST NOT be written (MESSAGE_SPEC S5.1). The gap is well-formed: the array is 4 long, id 1 "
+          "holds the element default, and the gap neither shortens nor shifts the array.",
+          "[\"sequence\", \"fixlen\", \"dynamic_arrays\"]", "string",
+          { {0, 0, "a", 0}, {0, 2, "c", 0}, {0, 3, "d", 0} }, 3,
+          "complete", 0, 4, 0, {1, 0}, 1 },
+
+        { "growth_no_partial_extension", "growth/reject",
+          "A string element at id 0, then one at the cap (rejected), then one at id 1. The rejection is "
+          "terminal (CORELIB_PLAN S6.3), and the container must not be left extended toward the rejected "
+          "index: the check runs before the grow, so the length never passes what legitimately arrived.",
+          "[\"sequence\", \"fixlen\", \"dynamic_arrays\"]", "string",
+          { {0, 0, "a", 0}, {1, 0, "x", 0}, {0, 1, "b", 0} }, 3,
+          "limit_exceeded", 0, 0, 1, {0, 0}, 0 },
+
+        { "growth_empty_array", "growth/length",
+          "A wrapper array framed empty -- the explicit-empty form, with no element at all. There is no "
+          "highest present id, so the length is 0 and the container never grows (MESSAGE_SPEC S5.1). The "
+          "zero end of the range the cap bounds at the other.",
+          "[\"sequence\", \"dynamic_arrays\"]", "string",
+          { {0, 0, NULL, 0} }, 0,
+          "complete", 0, 0, 0, {0, 0}, 0 },
+
+        { "growth_single_at_cap_minus_one", "growth/index",
+          "One string element, at cap-1, with nothing before it. The array is still cap long: the length "
+          "is highest present id + 1 whatever the delivery order or count, so a single element at the "
+          "boundary is the whole allocation on its own.",
+          "[\"sequence\", \"fixlen\", \"dynamic_arrays\"]", "string",
+          { {1, -1, "a", 0} }, 1,
+          "complete", 1, 0, 0, {0, 0}, 0 },
+
+        { "growth_index_at_cap_minus_one_struct", "growth/index",
+          "growth_index_at_cap_minus_one with STRUCT elements: each element is a framed sub-sequence "
+          "carrying one unsigned field at id 0, not a leaf. A framed element reaches the container "
+          "through the collector's sequence path rather than its leaf path, so the boundary is asserted "
+          "on both. The verdict is the same -- the bound is the index, never the element kind.",
+          "[\"sequence\", \"dynamic_arrays\"]", "struct",
+          { {0, 0, NULL, 1}, {1, -1, NULL, 2} }, 2,
+          "complete", 1, 0, 0, {0, 0}, 0 },
+
+        { "growth_index_at_cap_struct", "growth/index",
+          "growth_index_at_cap with STRUCT elements: an over-cap index is LimitExceeded on the framed "
+          "element path too, before the frame is applied and before the container grows.",
+          "[\"sequence\", \"dynamic_arrays\"]", "struct",
+          { {0, 0, NULL, 1}, {1, 0, NULL, 2} }, 2,
+          "limit_exceeded", 0, 0, 1, {0, 0}, 0 },
+    };
+
+    int first = 1;
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); ++i)
+    {
+        if (!first) fputs(",\n", o);
+        first = 0;
+
+        fprintf(o, "    {\n");
+        fprintf(o, "      \"name\": ");        json_string(o, seeds[i].name);  fputs(",\n", o);
+        fprintf(o, "      \"group\": ");       json_string(o, seeds[i].group); fputs(",\n", o);
+        fprintf(o, "      \"description\": "); json_string(o, seeds[i].desc);  fputs(",\n", o);
+        fprintf(o, "      \"requires\": %s,\n", seeds[i].requires);
+        fprintf(o, "      \"field_id\": 0,\n");
+        fprintf(o, "      \"element_type\": ");json_string(o, seeds[i].elem);  fputs(",\n", o);
+
+        fprintf(o, "      \"deliver\": [");
+        for (size_t k = 0; k < seeds[i].ndeliver; ++k)
+        {
+            const struct el *e = &seeds[i].deliver[k];
+            fprintf(o, "%s\n        { ", k ? "," : "");
+            if (e->rel) fprintf(o, "\"id_from_cap\": %d, ", (int)e->id);
+            else        fprintf(o, "\"id\": %d, ", (int)e->id);
+            fputs("\"value\": ", o);
+            if (e->sval) json_string(o, e->sval);
+            else         fprintf(o, "%ld", e->ival);
+            fputs(" }", o);
+        }
+        fputs(seeds[i].ndeliver ? "\n      ],\n" : "],\n", o);
+
+        fprintf(o, "      \"expect\": {\n");
+        fprintf(o, "        \"outcome\": ");   json_string(o, seeds[i].outcome);
+        if (strcmp(seeds[i].outcome, "complete") == 0)
+        {
+            fputs(",\n", o);
+            if (seeds[i].len_rel) fprintf(o, "        \"length_from_cap\": %d", (int)seeds[i].len);
+            else                  fprintf(o, "        \"length\": %d", (int)seeds[i].len);
+            if (seeds[i].ndefault)
+            {
+                fputs(",\n        \"default_ids\": [", o);
+                for (size_t k = 0; k < seeds[i].ndefault; ++k)
+                    fprintf(o, "%s%d", k ? ", " : "", (int)seeds[i].default_ids[k]);
+                fputs("]", o);
+            }
+            fputs("\n", o);
+        }
+        else
+        {
+            fprintf(o, ",\n        \"terminal\": true,\n");
+            fprintf(o, "        \"max_length\": %d\n", (int)seeds[i].max_length);
+        }
+        fprintf(o, "      }\n");
+        fprintf(o, "    }");
+    }
+}
+
 int main(void)
 {
     FILE *o = stdout;
@@ -1175,7 +1350,19 @@ int main(void)
     fprintf(o, "    \"invalid_utf8\": \"NEGATIVE vectors: a `string` field (id 0) whose bytes are not valid UTF-8. "
                "A strict (SOFAB_STRICT_UTF8) build MUST decode serialized_hex to the INVALID outcome and refuse to "
                "encode string_hex with the invalid-argument error. Backward-compatible: consumers that only read "
-               "'vectors' ignore this key. See test_vectors_README.md.\"\n");
+               "'vectors' ignore this key. See test_vectors_README.md.\",\n");
+    fprintf(o, "    \"sequence_growth\": \"GROWTH cases (CORELIB_PLAN S7.2 item 8): a wrapper array's length is "
+               "highest present id + 1 (MESSAGE_SPEC S5.1), so its container grows as elements arrive -- the one "
+               "allocation shape where growth is conformant (ARCHITECTURE S9.5). A case is keyed by a DELIVERY "
+               "SEQUENCE OF ELEMENT IDS, not by bytes, because two ports that grow differently emit identical bytes: "
+               "the port builds the message from 'deliver' and asserts 'expect'. Indices are CAP-RELATIVE -- "
+               "'id_from_cap'/'length_from_cap' are offsets added to the port's own configured max_dyn_array_count, "
+               "which is per-target and never a family-wide number; every case assumes a cap of at least 4. Gated by "
+               "requires 'dynamic_arrays': statically bounded profiles (C, C++ corelib: c-cpp, Rust no_std) never "
+               "grow and do not run this block. Expectations come from ARCHITECTURE S9.5 and CORELIB_PLAN S7.2 item "
+               "8, NOT from the generating implementation, which authors these cases without executing them. "
+               "Backward-compatible: consumers that only read 'vectors' ignore this key. See "
+               "test_vectors_README.md.\"\n");
     fprintf(o, "  },\n");
     fprintf(o, "  \"vectors\": [\n");
 
@@ -1190,6 +1377,16 @@ int main(void)
     fprintf(o, "  \"invalid_utf8\": [\n");
 
     emit_invalid_utf8(o);
+
+    fprintf(o, "\n  ],\n");
+
+    /* Sequence-array growth cases: keyed by a delivery sequence of element ids
+     * rather than by bytes, so they cannot be vectors (CORELIB_PLAN §7.2 item
+     * 8). Another dedicated top-level array, for the same backward-compatibility
+     * reason as "invalid_utf8". */
+    fprintf(o, "  \"sequence_growth\": [\n");
+
+    emit_sequence_growth(o);
 
     fprintf(o, "\n  ]\n");
     fprintf(o, "}\n");
