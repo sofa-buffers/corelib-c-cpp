@@ -15,6 +15,24 @@
 
 /* constants ******************************************************************/
 
+/* Both format ceilings are narrowed to size_t below — the declared fixlen length
+ * at _DECODER_STATE_FIXLEN_LEN, the element count at _DECODER_STATE_ARRAY_COUNT.
+ * A ceiling wider than size_t would let a value through the bound check and then
+ * truncate it modulo SIZE_MAX+1, so the field would decode short (or, at an exact
+ * multiple, empty) and the decoder would resynchronise mid-payload instead of
+ * reporting INVALID. That is a silent wrong-value/desync outcome, not a
+ * detectable one, so it is caught here at compile time rather than trusted to a
+ * runtime test on a target CI may not execute.
+ *
+ * C99 has no _Static_assert, and -Wpedantic rejects it as an extension, so this
+ * is the negative-array-size idiom. Both sides are widened to uintmax_t: without
+ * the cast the comparison is signed-vs-unsigned and -Wsign-compare (via -Wextra
+ * -Werror) rejects the file. */
+typedef char _sofab_assert_fixlen_max_fits_size_t[
+    ((uintmax_t)SOFAB_FIXLEN_MAX <= (uintmax_t)SIZE_MAX) ? 1 : -1];
+typedef char _sofab_assert_array_max_fits_size_t[
+    ((uintmax_t)SOFAB_ARRAY_MAX <= (uintmax_t)SIZE_MAX) ? 1 : -1];
+
 /* macros *********************************************************************/
 #define _OPT_FIELDTYPE(type)    ((type) & 0x07)
 #define _OPT_FIXLENTYPE(type)   (((type) >> 3) & 0x07)

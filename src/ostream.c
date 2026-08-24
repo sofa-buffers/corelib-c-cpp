@@ -440,6 +440,24 @@ extern sofab_ret_t sofab_ostream_write_fixlen (
     assert(ctx != NULL);
     assert(datalen == 0 || data != NULL);
 
+#if SOFAB_FIXLEN_MAX < INT32_MAX
+    /* The format ceiling binds the encoder too (CORELIB_PLAN §6.2 states it over
+     * the wire format, not over one direction of it). Without this the declared
+     * length would be written from the full int32_t while the payload copy
+     * narrows to size_t — a header announcing N bytes followed by N mod
+     * (SIZE_MAX+1) of them, which is a corrupt stream produced from a
+     * well-formed call rather than a rejected one.
+     *
+     * Compiled out where the parameter type already enforces the ceiling: with
+     * SOFAB_FIXLEN_MAX == INT32_MAX no int32_t can exceed it, and the comparison
+     * would be both dead .text and a -Wtype-limits error. It is live only on a
+     * profile that took the §6.2 allowance to lower the ceiling. */
+    if ((uintmax_t)datalen > (uintmax_t)SOFAB_FIXLEN_MAX)
+    {
+        return SOFAB_RET_E_ARGUMENT;
+    }
+#endif /* SOFAB_FIXLEN_MAX < INT32_MAX */
+
 #if SOFAB_STRICT_UTF8
     // A `string` value MUST be valid UTF-8 (MESSAGE_SPEC §8); refuse a non-UTF-8
     // one with the invalid-argument error before any bytes are emitted. This is
@@ -509,6 +527,15 @@ static sofab_ret_t _write_varint_array (
     int32_t element_count, int32_t element_size, int is_signed)
 {
     sofab_ret_t ret;
+
+#if SOFAB_ARRAY_MAX < INT32_MAX
+    /* The encode-side half of the §6.2 count ceiling; see the matching check in
+     * sofab_ostream_write_fixlen for why it exists and why it is #if-gated. */
+    if ((uintmax_t)element_count > (uintmax_t)SOFAB_ARRAY_MAX)
+    {
+        return SOFAB_RET_E_ARGUMENT;
+    }
+#endif /* SOFAB_ARRAY_MAX < INT32_MAX */
 
     if ((ret = _write_id_varint(ctx, id,
             is_signed ? SOFAB_TYPE_VARINTARRAY_SIGNED
@@ -608,6 +635,14 @@ extern sofab_ret_t sofab_ostream_write_array_of_fixlen (
 
     // only FP32 and FP64 are supported for fixlen arrays
     assert(type <= SOFAB_FIXLENTYPE_FP64);
+
+#if SOFAB_ARRAY_MAX < INT32_MAX
+    /* Same §6.2 count ceiling as _write_varint_array; see there. */
+    if ((uintmax_t)element_count > (uintmax_t)SOFAB_ARRAY_MAX)
+    {
+        return SOFAB_RET_E_ARGUMENT;
+    }
+#endif /* SOFAB_ARRAY_MAX < INT32_MAX */
 
     if ((ret = _write_id_varint(ctx, id, SOFAB_TYPE_FIXLENARRAY,
             (sofab_unsigned_t)element_count)) != SOFAB_RET_OK)

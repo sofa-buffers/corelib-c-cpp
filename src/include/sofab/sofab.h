@@ -124,19 +124,58 @@ typedef int32_t sofab_signed_t;
 #define SOFAB_ID_MAX (UINT32_MAX >> 3)
 #endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
 
+/*! @name Format-wide ceilings (CORELIB_PLAN §6.2)
+ *
+ * A declared length or element count above its ceiling is `INVALID` (§5.2.2),
+ * judged where the bytes that declare it are read (§5.2.3) — at the
+ * @c fixlen_word and at the @c element_count respectively.
+ *
+ * §6.2 puts both ceilings at 2,147,483,647 and grants constrained profiles the
+ * allowance to lower them to 65,535. **This port takes that allowance exactly
+ * where the target forces it, and derives the value from @c SIZE_MAX rather
+ * than restating it per target.** The decoder narrows the declared length and
+ * count to @c size_t (istream.c), so a ceiling above @c SIZE_MAX would admit a
+ * value the target cannot represent and the narrowing would silently truncate
+ * it — turning an over-long field into a short or empty one and desynchronising
+ * the stream instead of rejecting it. Deriving from @c SIZE_MAX makes that
+ * unrepresentable: the ceiling is, by construction, never wider than what it is
+ * narrowed into. istream.c static-asserts exactly that.
+ *
+ * **The profile choice §6.2 requires be documented:** 2,147,483,647 on every
+ * target whose @c size_t is 32-bit or wider, and 65,535 — the value §6.2
+ * sanctions — where @c size_t is 16 bits (AVR).
+ *
+ * Both are overridable (@c -DSOFAB_FIXLEN_MAX=... ) so a wide host can build
+ * with the constrained ceiling; that is how the lowered ceiling is exercised
+ * without a 16-bit target (test/c/test_limits.c). An override still has to fit
+ * in @c size_t — the static assertions hold it to that.
+ *
+ * @note The predecessor of this code tested `SIZE_MAX == INT16_MAX`. A 16-bit
+ *       @c size_t has @c SIZE_MAX == @c UINT16_MAX (65535), never the *signed*
+ *       32767, so that branch was unreachable on every target and no profile
+ *       ever got the constrained ceiling.
+ * @{
+ */
+
 /*! @brief Maximum fixed-length field size in bytes */
-#if SIZE_MAX == INT16_MAX
-# define SOFAB_FIXLEN_MAX (INT16_MAX)
-#else
-# define SOFAB_FIXLEN_MAX (INT32_MAX)
+#if !defined(SOFAB_FIXLEN_MAX)
+# if SIZE_MAX < INT32_MAX
+#  define SOFAB_FIXLEN_MAX (SIZE_MAX)
+# else
+#  define SOFAB_FIXLEN_MAX (INT32_MAX)
+# endif
 #endif
 
 /*! @brief Maximum number of elements in an array */
-#if SIZE_MAX == INT16_MAX
-# define SOFAB_ARRAY_MAX (INT16_MAX)
-#else
-# define SOFAB_ARRAY_MAX (INT32_MAX)
+#if !defined(SOFAB_ARRAY_MAX)
+# if SIZE_MAX < INT32_MAX
+#  define SOFAB_ARRAY_MAX (SIZE_MAX)
+# else
+#  define SOFAB_ARRAY_MAX (INT32_MAX)
+# endif
 #endif
+
+/*! @} */
 
 /*! @brief Maximum sequence nesting depth.
  *
