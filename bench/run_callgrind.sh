@@ -33,9 +33,10 @@ trap 'rm -rf "$OUT"' EXIT
 # In BENCH_SPEC row order. The blob rows are where the instruction count earns
 # its keep: the one-shot-to-streaming delta is the divisible-run cost
 # (CORELIB_PLAN §5.1) with the host's memory subsystem and scheduler taken out
-# of it, which under MB/s drowns in memory bandwidth. The optional
-# `blob 1MB passthrough` row is absent because this port does not implement
-# pass-through -- a port that does not omits the row rather than faking it.
+# of it, which under MB/s drowns in memory bandwidth. There is no
+# `blob 1MB passthrough` row: §5.1.6 withdrew pass-through outright -- "An
+# encoder MUST NOT hand any memory other than the installed output buffer to the
+# sink" -- so no port has such a path to measure.
 WORKLOADS=(
     encode_u64_array
     encode_typical
