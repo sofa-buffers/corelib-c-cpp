@@ -1504,3 +1504,53 @@ TEST_CASE("OStream: a NUL-terminated const char* is unchanged by that")
     REQUIRE(ostream.bytesUsed() == sizeof(expected));
     REQUIRE(std::memcmp(ostream.data(), expected, sizeof(expected)) == 0);
 }
+
+/* CORELIB_PLAN §6.1.1 closes the generated-object name set and puts MAX_SIZE in
+ * it. The OutputMessage concept required `_maxSize`, which is past casing and,
+ * being a hard requirement, fixed that name for every generated type built
+ * against this corelib. Both spellings are accepted now so the generator can
+ * switch over without a flag day; these two cases pin that, and the first is the
+ * one that must still pass once `_maxSize` is dropped.
+ */
+namespace
+{
+struct MaxSizeMessage final : sofab::OStreamMessage
+{
+    static const std::size_t MAX_SIZE = 16;
+    uint32_t v = 7;
+    sofab::OStream::Result serialize(sofab::OStreamImpl &os) const noexcept override
+    {
+        return os.write(1, v);
+    }
+};
+
+struct LegacyMaxSizeMessage final : sofab::OStreamMessage
+{
+    static const std::size_t _maxSize = 16;
+    uint32_t v = 7;
+    sofab::OStream::Result serialize(sofab::OStreamImpl &os) const noexcept override
+    {
+        return os.write(1, v);
+    }
+};
+} // namespace
+
+TEST_CASE("OutputMessage: a message declaring MAX_SIZE is accepted and sizes the buffer")
+{
+    static_assert(sofab::OutputMessage<MaxSizeMessage>);
+    static_assert(sofab::max_size_v<MaxSizeMessage> == 16);
+
+    sofab::OStreamObject<MaxSizeMessage> os;
+    REQUIRE(os.serialize().ok());
+    REQUIRE(os.bytesUsed() == 2);   // header (1<<3)|0, value 7
+}
+
+TEST_CASE("OutputMessage: the deprecated _maxSize spelling still compiles")
+{
+    static_assert(sofab::OutputMessage<LegacyMaxSizeMessage>);
+    static_assert(sofab::max_size_v<LegacyMaxSizeMessage> == 16);
+
+    sofab::OStreamObject<LegacyMaxSizeMessage> os;
+    REQUIRE(os.serialize().ok());
+    REQUIRE(os.bytesUsed() == 2);
+}

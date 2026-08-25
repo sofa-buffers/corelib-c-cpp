@@ -1718,6 +1718,85 @@ static void _framing_flush_cb (
     sofab_ostream_buffer_set(ctx, acc->buf, FRAMING_PKTLEN, FRAMING_HDRROOM);
 }
 
+/* CORELIB_PLAN §7.2 item 4: "Encode across a taking sink -- a callback that
+ * installs a *different* buffer on every call, scrubbing the one it was handed
+ * before returning; assert the output still equals the one-shot output."
+ *
+ * §5.1.5 fixes the contract: a callback that returns *after* installing a
+ * replacement means the sink TOOK the buffer, so the encoder must write into the
+ * replacement and must not touch the storage it gave away. The existing
+ * buffer-set case re-installs the SAME buffer, which cannot tell the two apart:
+ * an encoder that ignored the installation entirely and kept writing where it
+ * was still passes it. Handing back a different buffer, and poisoning the old
+ * one, is what makes the difference observable -- an encoder that kept the old
+ * pointer reads back the fill pattern.
+ */
+#define TAKING_NBUF   6
+#define TAKING_BUFLEN 8
+
+typedef struct {
+    uint8_t  bufs[TAKING_NBUF][TAKING_BUFLEN];
+    size_t   next;                  /* which buffer to hand over next */
+    uint8_t  out[256];
+    size_t   out_len;
+    int      overflow;
+} taking_acc_t;
+
+static void _taking_sink (sofab_ostream_t *ctx, const uint8_t *data, size_t len, void *usrptr)
+{
+    taking_acc_t *acc = (taking_acc_t *)usrptr;
+
+    if (acc->out_len + len > sizeof(acc->out) || acc->next >= TAKING_NBUF)
+    {
+        acc->overflow = 1;
+        return;
+    }
+
+    /* Copy the bytes out, exactly as a transport that queues them would. */
+    memcpy(acc->out + acc->out_len, data, len);
+    acc->out_len += len;
+
+    /* Now TAKE the buffer: poison it, and hand the encoder a different one. An
+     * encoder that keeps writing into the old storage will emit 0xEE. */
+    memset((void *)(uintptr_t)data, 0xEE, len);
+
+    sofab_ostream_buffer_set(ctx, acc->bufs[acc->next], TAKING_BUFLEN, 0);
+    acc->next++;
+}
+
+static void test_flush_callback_taking_sink_installs_a_different_buffer (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t oneshot[128];
+    size_t oneshot_len;
+    taking_acc_t acc;
+    static const uint8_t payload[24] = {
+        0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B,
+        0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57};
+
+    /* Reference: one buffer, no flush. */
+    sofab_ostream_init(&ctx, oneshot, sizeof(oneshot), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "one-shot blob");
+    oneshot_len = sofab_ostream_bytes_used(&ctx);
+
+    /* The same message across a sink that takes every buffer it is handed. */
+    memset(&acc, 0, sizeof(acc));
+    sofab_ostream_init(&ctx, acc.bufs[0], TAKING_BUFLEN, 0, _taking_sink, &acc);
+    acc.next = 1;
+
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_blob(&ctx, 2, payload, sizeof(payload)), "taking-sink blob");
+    sofab_ostream_flush(&ctx);
+
+    TEST_ASSERT_FALSE_MESSAGE(acc.overflow, "the sink ran out of buffers");
+    TEST_ASSERT_TRUE_MESSAGE(acc.next > 2, "the buffer was never actually swapped");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(oneshot_len, acc.out_len,
+                                     "taking-sink output length != one-shot");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(oneshot, acc.out, oneshot_len,
+                                          "taking-sink output != one-shot output");
+}
+
 /*
  * CORELIB_PLAN §5.1: "The start offset belongs to the installation, not to the
  * buffer. Each buffer-set call begins a new installation and its cursor starts
@@ -1969,6 +2048,7 @@ int test_ostream_main (void)
     RUN_TEST(test_buffer_set);
     RUN_TEST(test_buffer_flush);
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    RUN_TEST(test_flush_callback_taking_sink_installs_a_different_buffer);
     RUN_TEST(test_flush_callback_buffer_set_keeps_its_offset);
     RUN_TEST(test_bare_callback_return_resumes_at_zero);
     RUN_TEST(test_min_output_buffer_matches_one_shot);

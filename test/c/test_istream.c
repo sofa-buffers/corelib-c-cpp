@@ -3160,6 +3160,179 @@ static void test_fp32_nan_payloads_round_trip_bit_for_bit (void)
 }
 #endif /* !SOFAB_DISABLE_FIXLEN_SUPPORT && !SOFAB_DISABLE_ARRAY_SUPPORT */
 
+/* ---------------------------------------------------------------------------
+ * CORELIB_PLAN §7.2 items 5, 5b and 6 -- the cases that exist to catch a split
+ * between two decision points. Every one of them already behaves correctly here;
+ * what was missing is anything that would notice if it stopped.
+ * ------------------------------------------------------------------------- */
+
+/* A handler that binds nothing, so every field is skipped and the verdict is the
+ * decoder's own. */
+static void _skip_everything (sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    (void)ctx; (void)id; (void)size; (void)count; (void)usrptr;
+}
+
+/* Feed a byte string in one go and return the verdict. */
+static sofab_ret_t _verdict (const uint8_t *wire, size_t n)
+{
+    sofab_istream_t ctx;
+    sofab_istream_init(&ctx, _skip_everything, NULL);
+    return sofab_istream_feed(&ctx, wire, n);
+}
+
+/* item 5: the id ceiling binds a SEQUENCE-END header like every other.
+ *
+ * §6.2: "ID_MAX binds every header without exception -- the value-bearing types,
+ * sequence start, and the sequence-end marker alike. That a sequence end's id is
+ * discarded (§4.9) does not exempt it." §7.2 item 5 asks for this case by name,
+ * "because an implementation that validates the id only in the branches that
+ * *use* it passes the value-bearing case and misses this one" -- and this suite's
+ * only oversized-id case was value-bearing. */
+static void test_msg_invalid_seqend_id_overflow (void)
+{
+    /* sequence start id 0, then a sequence end whose id is ID_MAX + 1 */
+    const uint8_t wire[] = {0x06, 0x87, 0x80, 0x80, 0x80, 0x40};
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_INVALID_MSG, _verdict(wire, sizeof(wire)),
+                              "an over-ID_MAX sequence-end id must be INVALID");
+}
+
+/* item 5b (tolerance): the same header at exactly ID_MAX is accepted. The pair
+ * matters -- a port that rejected one byte too early would pass the case above. */
+static void test_msg_valid_seqend_id_at_id_max (void)
+{
+    const uint8_t wire[] = {0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F};
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, _verdict(wire, sizeof(wire)),
+                              "a sequence-end id AT ID_MAX must be accepted");
+}
+
+/* item 5b: a sequence end whose id is non-zero but in range closes the innermost
+ * sequence like any other. §4.9: "A decoder MUST discard the id: the marker
+ * closes the innermost open sequence whatever the id says." */
+static void test_msg_valid_seqend_nonzero_id (void)
+{
+    const uint8_t wire[] = {0x06, 0x1F};   /* end marker carrying id 3 */
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, _verdict(wire, sizeof(wire)),
+                              "a sequence end with id != 0 must be accepted");
+}
+
+/* item 5b: a NON-MINIMAL encoding of the sequence-end header. §4.1.2 makes a
+ * non-minimal varint tolerated, not INVALID -- this is the mirror of item 5, and
+ * §7.2 calls it "the one a majority-vote conformance check cannot catch, since
+ * implementations may be uniformly too strict". */
+static void test_msg_valid_seqend_nonminimal (void)
+{
+    const uint8_t wire[] = {0x06, 0x87, 0x00};   /* 0x07 written in two bytes */
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, _verdict(wire, sizeof(wire)),
+                              "a non-minimal sequence-end header must be accepted");
+}
+
+/* item 5b: a non-minimal FIXLEN_WORD. The suite had a non-minimal field header
+ * and nothing else, and §7.2 names all three positions. */
+static void test_msg_valid_nonminimal_fixlen_word (void)
+{
+    /* id 0 fixlen; fixlen_word (2 << 3) | string written as 92 00; payload "hi" */
+    const uint8_t wire[] = {0x02, 0x92, 0x00, 0x68, 0x69};
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, _verdict(wire, sizeof(wire)),
+                              "a non-minimal fixlen_word must be accepted");
+}
+
+/* item 5b: a non-minimal ELEMENT COUNT, the third position §7.2 names. */
+static void test_msg_valid_nonminimal_element_count (void)
+{
+    /* id 0, unsigned array; count 2 written as 82 00; elements 1, 2 */
+    const uint8_t wire[] = {0x03, 0x82, 0x00, 0x01, 0x02};
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, _verdict(wire, sizeof(wire)),
+                              "a non-minimal element count must be accepted");
+}
+
+/* item 6: a fixlen_word cut after its FIRST byte, where that byte already
+ * carries a RESERVED subtype.
+ *
+ * §4.1.1: a varint "has no value until the byte with a clear continuation flag
+ * arrives", and a decoder "MUST NOT let such a part influence an outcome, even
+ * when those bits are already arithmetically fixed". The subtype lives in the low
+ * three bits and is settled by that first byte, so a decoder that peeked would
+ * answer INVALID (reserved subtype) where the answer is INCOMPLETE.
+ *
+ * §7.2 item 6 asks for exactly this and says why: "Nothing else in this list
+ * exercises the no-partial-evaluation rule -- the dangling 0x80 carries no
+ * settled sub-field to peek at." */
+static void test_msg_incomplete_fixlen_word_cut_on_reserved_subtype (void)
+{
+    for (uint8_t sub = 0x84; sub <= 0x87; sub++)
+    {
+        const uint8_t wire[] = {0x02, sub};   /* id 0 fixlen; word truncated */
+        char msg[64];
+        snprintf(msg, sizeof(msg), "0x%02X: settled reserved subtype must not decide", sub);
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_INCOMPLETE, _verdict(wire, sizeof(wire)), msg);
+    }
+}
+
+/* §7.2 item 4 / §6.0: a fed chunk is borrowed only for the duration of feed().
+ *
+ * "Overwrite every chunk after feed returns -- scrub it with a fill byte, or free
+ * it -- and assert the decoded message is unchanged. This makes the chunk
+ * lifetime of §6.0 a checked property rather than a stated one; nothing else in
+ * this list would notice a decoder that kept a slice into a fed chunk."
+ *
+ * Fed one byte at a time, so the string payload spans chunks and any retained
+ * pointer is to a buffer that is scrubbed before the value is read back. */
+typedef struct { char s[8]; } test_chunk_life_t;
+
+static void _chunk_life_callback (sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    test_chunk_life_t *t = (test_chunk_life_t *)usrptr;
+    (void)size; (void)count;
+    if (id == 1) sofab_istream_read_string(ctx, t->s, sizeof(t->s));
+}
+
+static void test_chunk_is_borrowed_only_for_the_feed_call (void)
+{
+    /* id 1 fixlen string "abcde" */
+    const uint8_t wire[] = {0x0A, 0x2A, 'a', 'b', 'c', 'd', 'e'};
+
+    test_chunk_life_t t;
+    memset(&t, 0, sizeof(t));
+
+    sofab_istream_t ctx;
+    sofab_istream_init(&ctx, _chunk_life_callback, &t);
+
+    sofab_ret_t ret = SOFAB_RET_OK;
+    for (size_t i = 0; i < sizeof(wire); i++)
+    {
+        uint8_t chunk = wire[i];          /* a one-byte buffer, per feed */
+        ret = sofab_istream_feed(&ctx, &chunk, 1);
+        chunk = 0xEE;                     /* scrubbed the moment feed returns */
+        (void)chunk;
+    }
+
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, ret, "byte-at-a-time feed did not complete");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("abcde", t.s, "the decoded value followed a scrubbed chunk");
+}
+
+/* §7.2 item 4, the one-shot half: "Overwrite the one-shot buffer too -- run
+ * decode(buffer), scrub the whole buffer, and assert the decoded message is
+ * unchanged. The one-shot path has no view exemption (§6.7.1), and this is the
+ * test that proves it; a port that borrows from the buffer it was handed passes
+ * every other item on this list." */
+static void test_oneshot_buffer_is_borrowed_only_for_the_call (void)
+{
+    uint8_t wire[] = {0x0A, 0x2A, 'a', 'b', 'c', 'd', 'e'};   /* id 1 = "abcde" */
+
+    test_chunk_life_t t;
+    memset(&t, 0, sizeof(t));
+
+    sofab_istream_t ctx;
+    sofab_istream_init(&ctx, _chunk_life_callback, &t);
+
+    sofab_ret_t ret = sofab_istream_feed(&ctx, wire, sizeof(wire));
+    memset(wire, 0xEE, sizeof(wire));   /* scrubbed the moment feed returns */
+
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, ret, "one-shot feed did not complete");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("abcde", t.s, "the decoded value followed a scrubbed buffer");
+}
+
 static void test_read_full_scale_example (void)
 {
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
@@ -3632,6 +3805,20 @@ int test_istream_main (void)
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
     RUN_TEST(test_fp32_nan_payloads_round_trip_bit_for_bit);
+#endif
+
+    RUN_TEST(test_msg_invalid_seqend_id_overflow);
+    RUN_TEST(test_msg_valid_seqend_id_at_id_max);
+    RUN_TEST(test_msg_valid_seqend_nonzero_id);
+    RUN_TEST(test_msg_valid_seqend_nonminimal);
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    RUN_TEST(test_msg_valid_nonminimal_fixlen_word);
+    RUN_TEST(test_msg_incomplete_fixlen_word_cut_on_reserved_subtype);
+    RUN_TEST(test_chunk_is_borrowed_only_for_the_feed_call);
+    RUN_TEST(test_oneshot_buffer_is_borrowed_only_for_the_call);
+#endif
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    RUN_TEST(test_msg_valid_nonminimal_element_count);
 #endif
 
     RUN_TEST(test_read_full_scale_example);
