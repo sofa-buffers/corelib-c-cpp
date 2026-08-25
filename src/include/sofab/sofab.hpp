@@ -1107,13 +1107,18 @@ namespace sofab
                  * it is — the entry point for a genuinely NUL-terminated
                  * const char*, which reaches this branch already converted. */
                 std::string_view sv{value};
-                if ((uintmax_t)sv.size() > (uintmax_t)INT32_MAX
-                    || (uintmax_t)sv.size() > (uintmax_t)SOFAB_FIXLEN_MAX)
+                if (sv.size() > static_cast<size_t>(INT32_MAX))
                 {
-                    /* Longer than the wire can frame: a caller mistake, so
-                     * §6.3's InvalidArgument rather than a malformed-message
-                     * code. Checked here because datalen below is an int32_t
-                     * and the cast would otherwise wrap. */
+                    /* Longer than the int32_t the C entry point takes, so the
+                     * cast below would wrap and hand it a negative length. A
+                     * caller mistake, hence §6.3's InvalidArgument.
+                     *
+                     * Only this bound is checked here. SOFAB_FIXLEN_MAX is the
+                     * C core's and it enforces it (ostream.c), on exactly the
+                     * profile where it can bind -- one lowered per §6.2. Where
+                     * it is not lowered it equals INT32_MAX and this IS that
+                     * comparison; repeating it would be a second implementation
+                     * of one bound. */
                     ret = SOFAB_RET_E_ARGUMENT;
                 }
                 else
@@ -1682,14 +1687,31 @@ namespace sofab
      * @c std::vector — whose @c capacity() is a per-object, runtime quantity and
      * so cannot be called on the type.
      *
-     * It is the destination ceiling §6.3's **third** tier is measured against
-     * (@ref IStreamImpl::readString) and nothing more. A heap-free container is
-     * usually generated for a schema `count` / `maxlen` and its capacity is then
-     * numerically that bound — but the codec cannot know that, and does not treat
-     * it as one: a value the storage cannot hold is @ref Error::InvalidArgument,
-     * not @ref Error::InvalidMessage. A handler that wants the schema reading
-     * compares the announced count itself and calls @ref IStreamImpl::invalidate,
-     * where the schema is known (MESSAGE_SPEC §7).
+     * @par Two readings, and which one applies is decided by the caller
+     * A heap-free container is usually generated for a schema `count` /
+     * `maxlen`, so its capacity is numerically that bound. Whether it is *read*
+     * as that bound depends on whether the caller was told the bound some other
+     * way, and the two callers in this header differ:
+     *
+     *  - **the reads** — @ref IStreamImpl::readString, @ref IStreamImpl::readBlob
+     *    and @ref IStreamImpl::readArray are told no bound at all: they bind a
+     *    destination and nothing else. All they can see is how much storage the
+     *    caller offered, so that is what the capacity means to them — §6.3's
+     *    **third** tier, and a value it cannot hold is
+     *    @ref Error::InvalidArgument, never @ref Error::InvalidMessage;
+     *  - **the fixed-storage collectors** — @ref FixedMessageSeq and the fixed
+     *    string/blob sequences take no `cap` at all, by design: their
+     *    @c static_assert says the container's capacity *is* the schema bound
+     *    they were generated for, because there is no other channel to state it
+     *    on. For them it is §6.3's **first** tier, and an element past it is
+     *    @ref Error::InvalidMessage (MESSAGE_SPEC §7.1).
+     *
+     * Both are correct, and the difference is not about the number — it is about
+     * what the caller knows. A collector generated *for* a bound carries it in
+     * the only place it has; a read that was handed a destination and nothing
+     * else cannot invent one. On a read path the schema reading is the
+     * handler's: compare the announced count and call
+     * @ref IStreamImpl::invalidate (MESSAGE_SPEC §7.1).
      *
      * @tparam C  Container type.
      */
