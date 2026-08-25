@@ -218,7 +218,9 @@ The feed outcome is **three-valued**, with no separate finalize step:
 Truncated input is therefore reported as `SOFAB_RET_INCOMPLETE` — it is neither
 silently accepted as complete nor rejected as invalid. In the C++ wrapper the same
 three outcomes are surfaced by `IStream::feed`'s `Result`: `ok()` (complete),
-`incomplete()` (partial), and `code() == Error::InvalidMessage` (malformed).
+`incomplete()` (partial), and `invalid()` (malformed). It has a fourth,
+`limitExceeded()`, for a receiver ceiling crossed on a schema-unbounded field —
+see [Memory handling](#memory-handling).
 
 Sequences nest at most `SOFAB_MAX_DEPTH` (255) deep; deeper is
 `SOFAB_RET_E_INVALID_MSG`. The limit is enforced on the skip path, where the depth
@@ -502,6 +504,41 @@ A fed chunk is **borrowed only for the duration of `feed()`** and may be reused
 the moment it returns; what a bound destination has not received yet is carried
 in the stream context, not in library-owned heap memory — there is none.
 
+**The C API has no unbounded field, so it carries no receiver caps.** Every C
+read is handed a destination that already exists together with its size:
+`sofab_istream_read_string(ctx, var, varlen)`, `..._read_blob(ctx, var, varlen)`
+and `..._read_array(ctx, var, element_count, element_size, opt)`. The object API
+is the same model expressed as descriptors — `SOFAB_OBJECT_FIELD_ARRAY` derives
+its element count from `sizeof(field) / sizeof(field[0])` and a blob or string
+field its length from `sizeof(field)`. There is therefore no shape in which a
+field arrives at the C decoder without a bound, and a wire length or count above
+that bound is `SOFAB_RET_E_INVALID_MSG`. `SOFAB_RET_E_LIMIT_EXCEEDED` is declared
+in `sofab.h` because `sofab_ret_t` is the shared C/C++ code table, and **no C API
+function returns it**.
+
+**The C++ wrapper does have unbounded fields, so it carries the caps.** A
+`std::string`, `std::vector` or growable wrapper-array destination has no
+capacity of its own, so a field whose schema declares no `maxlen` / `count` would
+otherwise be sized by the wire alone. `sofab::Limits` states the three ceilings —
+`max_dyn_array_count`, `max_dyn_string_len`, `max_dyn_blob_len` — and every input
+stream is constructed with one: `sofab::IStreamObject<T> in{limits};`,
+`sofab::IStreamInline in{limits, callback};`. `sofab::Limits` has no default
+constructor and no "unlimited" value, and this library ships no numbers of its
+own: they are the deployment's, stated by generated code. The ceilings are
+checked at the length or count header, before the destination is sized, and for a
+wrapper array on the element index, before the container is extended.
+
+A refused field ends the decode, and which of three answers `feed()` returns says
+what was wrong:
+
+| what was exceeded | code |
+| - | - |
+| a `maxlen` / `count` the schema declares | `sofab::Error::InvalidMessage` |
+| a `sofab::Limits` ceiling, on a field the schema leaves unbounded | `sofab::Error::LimitExceeded` |
+| neither — the destination handed over is too short | `sofab::Error::InvalidArgument` |
+
+All three are terminal. A field the handler skips is never capped.
+
 ## Build & test
 
 Build with CMake and a C99 / C++20 toolchain:
@@ -723,11 +760,11 @@ column is the reading published in
 | encode: blob 1MB one-shot | 10 000 162 | 10 000 191 | **1 000 026** |
 | encode: blob 1MB streaming | **10 004 819** | 10 009 790 | 13 009 127 |
 | encode: composite | 16 164 | 16 501 | **11 514** |
-| decode: u64 array (1000) | 300 432 | 300 433 | **43 839** |
-| decode: typical message | 2 109 | 2 108 | **1 275** |
-| decode: blob 1MB | 25 011 323 | 25 011 327 | **3 654 639** |
-| decode: composite | 32 168 | 36 533 | **22 417** |
-| decode: composite skip-all | 25 411 | 25 411 | **7 671** |
+| decode: u64 array (1000) | 300 432 | 300 456 | **43 839** |
+| decode: typical message | 2 109 | 2 131 | **1 275** |
+| decode: blob 1MB | 25 011 323 | 25 011 350 | **3 654 639** |
+| decode: composite | 32 168 | 36 556 | **22 417** |
+| decode: composite skip-all | 25 411 | 25 434 | **7 671** |
 
 `corelib-cpp` runs **1.4× to 10× fewer instructions**, widest where a payload
 moves in bulk: it establishes a varint window once and then moves whole 64-bit
