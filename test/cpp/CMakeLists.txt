@@ -27,6 +27,7 @@ add_executable(sofabpptest
     test_ostream.cpp
     test_istream.cpp
     test_seq.cpp
+    test_receiver_limits.cpp
 )
 
 target_compile_options(sofabpptest

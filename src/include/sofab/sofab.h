@@ -60,6 +60,24 @@ typedef enum
                                  //!< sofab_istream_feed returns it, every subsequent feed on that
                                  //!< context returns it too and no further callback fires
                                  //!< (CORELIB_PLAN §5.2) — only sofab_istream_init resets it.
+    SOFAB_RET_E_LIMIT_EXCEEDED,  //!< A configured receiver-side limit (CORELIB_PLAN §6.2.1) was
+                                 //!< exceeded on a schema-**unbounded** field. The message is
+                                 //!< well-formed — the same bytes decode under a looser limit — so
+                                 //!< it is neither SOFAB_RET_E_INVALID_MSG nor the INVALID outcome,
+                                 //!< but a terminal, receiver-local *policy* rejection (§6.3).
+                                 //!<
+                                 //!< **No C API function returns this code.** A receiver limit
+                                 //!< bounds a field the schema leaves unbounded, and this C API has
+                                 //!< no such field: every read is handed a destination that already
+                                 //!< exists, so its capacity is the bound (see @c sofab_object_field_t
+                                 //!< and sofab_istream_read_string / _read_blob / _read_array, all of
+                                 //!< which take the destination's own size). The code is declared
+                                 //!< here because @c sofab_ret_t is the C half of §6.3's shared code
+                                 //!< table: the C++ wrapper, whose string/blob/array destinations may
+                                 //!< be growable and therefore *can* be schema-unbounded, enforces the
+                                 //!< limits and reports them as @c sofab::Error::LimitExceeded, which
+                                 //!< is this enumerator. Declaring it once here is what keeps the two
+                                 //!< enums a single numbering.
 } sofab_ret_t;
 
 /*! @brief SofaBuffers 3bit field data types */

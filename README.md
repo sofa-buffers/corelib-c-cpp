@@ -218,7 +218,9 @@ The feed outcome is **three-valued**, with no separate finalize step:
 Truncated input is therefore reported as `SOFAB_RET_INCOMPLETE` — it is neither
 silently accepted as complete nor rejected as invalid. In the C++ wrapper the same
 three outcomes are surfaced by `IStream::feed`'s `Result`: `ok()` (complete),
-`incomplete()` (partial), and `code() == Error::InvalidMessage` (malformed).
+`incomplete()` (partial), and `invalid()` (malformed). It has a fourth,
+`limitExceeded()`, for a receiver ceiling crossed on a schema-unbounded field —
+see [Memory handling](#memory-handling).
 
 Sequences nest at most `SOFAB_MAX_DEPTH` (255) deep; deeper is
 `SOFAB_RET_E_INVALID_MSG`. The limit is enforced on the skip path, where the depth
@@ -496,11 +498,91 @@ that destination. Two rules follow:
 2. **Data is copied into your memory, not aliased.** Payload words are not
    guaranteed aligned on the wire, so values are copied into your typed storage —
    alignment- and endianness-safe, bounded to your buffers. Oversized or malformed
-   fields are `SOFAB_RET_E_INVALID_MSG`; unbound fields are skipped untouched.
+   fields are `SOFAB_RET_E_INVALID_MSG` — in the C++ wrapper an oversized field
+   has three possible answers, one per ceiling it broke, in the table below;
+   unbound fields are skipped untouched.
 
 A fed chunk is **borrowed only for the duration of `feed()`** and may be reused
 the moment it returns; what a bound destination has not received yet is carried
 in the stream context, not in library-owned heap memory — there is none.
+
+**The C API has no unbounded field, so it carries no receiver caps.** Every C
+read is handed a destination that already exists together with its size:
+`sofab_istream_read_string(ctx, var, varlen)`, `..._read_blob(ctx, var, varlen)`
+and `..._read_array(ctx, var, element_count, element_size, opt)`. The object API
+is the same model expressed as descriptors — `SOFAB_OBJECT_FIELD_ARRAY` derives
+its element count from `sizeof(field) / sizeof(field[0])` and a blob or string
+field its length from `sizeof(field)`. There is therefore no shape in which a
+field arrives at the C decoder without a bound, and a wire length or count above
+that bound is `SOFAB_RET_E_INVALID_MSG`. `SOFAB_RET_E_LIMIT_EXCEEDED` is declared
+in `sofab.h` because `sofab_ret_t` is the shared C/C++ code table, and **no C API
+function returns it**.
+
+**The C++ wrapper does have unbounded fields, and both bounds for them are
+yours.** A `std::string`, `std::vector` or growable wrapper-array destination has
+no capacity of its own, so a field whose schema declares no `maxlen` / `count`
+would otherwise be sized by the wire alone. Neither number is this library's to
+hold: CORELIB_PLAN §6.2.1 gives the receiver caps to generated code — "the
+visitor decides. The codec never invents a limit of its own and never clamps to
+one" — and MESSAGE_SPEC §7 gives it the schema bounds, because "the corelib
+cannot know the schema". What this library contributes is the **report and the
+category**: the `size` / `count` your handler already receives, and a verdict it
+can set.
+
+So both bounds are applied in your handler, at the field callback, before you
+bind a destination:
+
+```cpp
+void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
+{
+    if (id != 1) return;
+
+    // §7.3 FIRST: a field whose wire type contradicts the read is skipped like an
+    // unknown id, and must never be measured against a ceiling on the way past.
+    if (is.wire() != sofab::Wire::Fixlen || is.fixType() != sofab::Fix::String) return;
+
+    // then the schema bound, if the schema declares one ...
+    // if (size > SCHEMA_MAXLEN) { is.invalidate(); return; }
+
+    // ... or the receiver cap, only where it does not
+    if (size > SOFAB_MAX_DYN_STRING_LEN) { is.exceedLimit(); return; }
+
+    is.readString(name, size);
+}
+```
+
+The ordering is the part that is easy to get wrong: check the wire type before
+any ceiling. A `if (size > CAP) is.exceedLimit();` placed above the type test
+rejects a field the decoder was going to step over, which §6.2.1 forbids in as
+many words.
+
+The one place the library applies a bound for you is a **growable wrapper array**:
+it announces no count and delivers no callback at the element index, so there is
+no point at which your handler could check. Its collector is the static helper
+layer (§6.6.1) rather than the codec — the generated layer owns it, and no codec
+path calls it — so the numbers still come from you, set on the collector, and it
+enforces them on the index before the container is extended:
+
+```cpp
+seq.cap = -1;                                 // the schema declares no count
+seq.dynCap = SOFAB_MAX_DYN_ARRAY_COUNT;       // so this bounds the element index
+seq.dynElemMax = SOFAB_MAX_DYN_STRING_LEN;    // and this the element length
+```
+
+A refused field ends the decode, and which of three answers `feed()` returns says
+what was wrong:
+
+| what was exceeded | code | who applies it |
+| - | - | - |
+| a `maxlen` / `count` the schema declares | `sofab::Error::InvalidMessage` | your handler, via `invalidate()` |
+| a receiver cap, on a field the schema leaves unbounded | `sofab::Error::LimitExceeded` | your handler, via `exceedLimit()` |
+| neither — the destination handed over is too short | `sofab::Error::InvalidArgument` | **the library** (§6.6.3) |
+
+The third row is the only bound this library judges, and it is not a limit: it is
+the size of the storage you handed over, which the codec must refuse rather than
+grow into or truncate to.
+
+All three are terminal. A field the handler skips is never capped.
 
 ## Build & test
 
@@ -723,11 +805,11 @@ column is the reading published in
 | encode: blob 1MB one-shot | 10 000 162 | 10 000 191 | **1 000 026** |
 | encode: blob 1MB streaming | **10 004 819** | 10 009 790 | 13 009 127 |
 | encode: composite | 16 164 | 16 501 | **11 514** |
-| decode: u64 array (1000) | 300 432 | 300 433 | **43 839** |
-| decode: typical message | 2 109 | 2 108 | **1 275** |
-| decode: blob 1MB | 25 011 323 | 25 011 327 | **3 654 639** |
-| decode: composite | 32 168 | 36 533 | **22 417** |
-| decode: composite skip-all | 25 411 | 25 411 | **7 671** |
+| decode: u64 array (1000) | 300 432 | 300 438 | **43 839** |
+| decode: typical message | 2 109 | 2 113 | **1 275** |
+| decode: blob 1MB | 25 011 323 | 25 011 331 | **3 654 639** |
+| decode: composite | 32 168 | 36 538 | **22 417** |
+| decode: composite skip-all | 25 411 | 25 416 | **7 671** |
 
 `corelib-cpp` runs **1.4× to 10× fewer instructions**, widest where a payload
 moves in bulk: it establishes a varint window once and then moves whole 64-bit

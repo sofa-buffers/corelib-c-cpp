@@ -36,15 +36,21 @@
  *
  * The file's third top-level block, "sequence_growth", is deliberately NOT run
  * here. Those cases assert that a wrapper array's container GROWS to highest
- * present id + 1 as elements arrive (CORELIB_PLAN §7.2 item 8); this library is
- * statically bounded and never grows, so the block's `requires: ["dynamic_arrays"]`
- * excludes it — as it excludes C and Rust `no_std`. That is a skip, not the
- * reduced-build rejection above: the messages are ordinary well-formed wrapper
- * arrays this build decodes perfectly, and only the growth property is out of
- * reach. Before adding a run_sequence_growth() here, work out what fixed-capacity
- * containers should do with each case; the expectations in the file come from
- * ARCHITECTURE §9.5 and CORELIB_PLAN §7.2, not from this library's behaviour.
- * See assets/test_vectors_README.md.
+ * present id + 1 as elements arrive (CORELIB_PLAN §7.2 item 8); this engine is
+ * plain C, and the C API is statically bounded and never grows, so the block's
+ * `requires: ["dynamic_arrays"]` excludes it — as it excludes Rust `no_std`. That
+ * is a skip, not the reduced-build rejection above: the messages are ordinary
+ * well-formed wrapper arrays this build decodes perfectly, and only the growth
+ * property is out of reach. Before adding a run_sequence_growth() here, work out
+ * what fixed-capacity containers should do with each case; the expectations in
+ * the file come from ARCHITECTURE §9.5 and CORELIB_PLAN §7.2, not from this
+ * library's behaviour. See assets/test_vectors_README.md.
+ *
+ * The C++ wrapper's growable profile (sofab::StringSeq / sofab::MessageSeq over
+ * std::vector) DOES grow and does carry the max_dyn_array_count the block's
+ * boundary cases are stated against — see test/cpp/test_receiver_limits.cpp,
+ * which asserts that boundary directly. Running the JSON block through it needs a
+ * C++ runner this shared C engine is not; that is the open half.
  *
  * The engine is plain C (linked into both the C/Unity and C++/Catch2 test
  * binaries). Both languages call sofab_test_vectors_run_all().
