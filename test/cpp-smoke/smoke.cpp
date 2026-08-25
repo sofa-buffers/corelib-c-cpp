@@ -23,6 +23,13 @@
 #include <string>
 #include <vector>
 
+/* CORELIB_PLAN §6.2.1 admits no unset state and no unlimited mode, so every
+ * input stream states its three receiver ceilings. These are deliberately
+ * generous: the cases below are about the wire, not about policy. The tests
+ * that ARE about policy state their own, tight, limits. */
+static constexpr sofab::Limits kLimits{1024, 4096, 4096};
+
+
 static int g_failures = 0;
 
 // Catch2 is intentionally not linked here (it would pull a network dependency
@@ -121,7 +128,7 @@ int main()
     const auto used = ostream.bytesUsed();
     CHECK(used > 0);
 
-    sofab::IStreamObject<SmokeParent> istream;
+    sofab::IStreamObject<SmokeParent> istream{kLimits};
     auto result = istream.feed(ostream.data(), used);
 
     CHECK(result.code() == sofab::Error::None);

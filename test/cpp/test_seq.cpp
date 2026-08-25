@@ -18,6 +18,13 @@
 #include <cstdint>
 #include <vector>
 
+/* CORELIB_PLAN §6.2.1 admits no unset state and no unlimited mode, so every
+ * input stream states its three receiver ceilings. These are deliberately
+ * generous: the cases below are about the wire, not about policy. The tests
+ * that ARE about policy state their own, tight, limits. */
+static constexpr sofab::Limits kLimits{1024, 4096, 4096};
+
+
 /* helpers ********************************************************************/
 
 namespace
@@ -136,7 +143,7 @@ TEST_CASE("MessageSeq: an omitted interior element fills a gap, it does not shif
 
     SECTION("growable storage")
     {
-        sofab::IStreamObject<DynPoints> in;
+        sofab::IStreamObject<DynPoints> in{kLimits};
         (*in).seq.cap = 3;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE(in->out.size() == 3);
@@ -150,7 +157,7 @@ TEST_CASE("MessageSeq: an omitted interior element fills a gap, it does not shif
         // Same array; here the container's own capacity is the bound, so nothing
         // has to be declared.
         sofab::IStreamObject<Holder<sofab::FixedMessageSeq<sofab::InlineVector<Point, 3>>,
-                                    sofab::InlineVector<Point, 3>>> in;
+                                    sofab::InlineVector<Point, 3>>> in{kLimits};
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE(in->out.size() == 3);
         REQUIRE(in->out[0] == pt(1, 2));
@@ -173,7 +180,7 @@ TEST_CASE("MessageSeq: a repeated element id continues that element, it does not
     os.sequenceEnd();
     os.sequenceEnd();
 
-    sofab::IStreamObject<DynPoints> in;
+    sofab::IStreamObject<DynPoints> in{kLimits};
     (*in).seq.cap = 4;
     REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
     REQUIRE(in->out.size() == 1);
@@ -189,7 +196,7 @@ TEST_CASE("MessageSeq: the length is the highest present id + 1, never the count
     writePoint(os, 0, 7, 8);
     os.sequenceEnd();
 
-    sofab::IStreamObject<DynPoints> in;
+    sofab::IStreamObject<DynPoints> in{kLimits};
     (*in).seq.cap = 3;
     REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
     REQUIRE(in->out.size() == 1);
@@ -202,7 +209,7 @@ TEST_CASE("MessageSeq: an empty wrapper array decodes to an empty container")
     os.sequenceBeginLazy(1);
     os.sequenceEndKeep();   // present but empty
 
-    sofab::IStreamObject<DynPoints> in;
+    sofab::IStreamObject<DynPoints> in{kLimits};
     (*in).seq.cap = 3;
     REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
     REQUIRE(in->out.empty());
@@ -222,7 +229,7 @@ TEST_CASE("MessageSeq: a second occurrence of the field replaces the array")
     writePoint(os, 0, 9, 9);
     os.sequenceEnd();
 
-    sofab::IStreamObject<DynPoints> in;
+    sofab::IStreamObject<DynPoints> in{kLimits};
     (*in).seq.cap = 4;
     REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
     REQUIRE(in->out.size() == 1);
@@ -244,7 +251,7 @@ TEST_CASE("MessageSeq: the last index below the count is placed, the count itsel
     SECTION("growable: cap - 1 is the last index that fits")
     {
         const auto bytes = wire(1);
-        sofab::IStreamObject<DynPoints> in;
+        sofab::IStreamObject<DynPoints> in{kLimits};
         (*in).seq.cap = 2;
         REQUIRE(in.feed(bytes.data(), bytes.size()).ok());
         REQUIRE(in->out.size() == 2);
@@ -254,7 +261,7 @@ TEST_CASE("MessageSeq: the last index below the count is placed, the count itsel
     SECTION("growable: cap itself is a schema-bound violation")
     {
         const auto bytes = wire(2);
-        sofab::IStreamObject<DynPoints> in;
+        sofab::IStreamObject<DynPoints> in{kLimits};
         (*in).seq.cap = 2;
         REQUIRE(in.feed(bytes.data(), bytes.size()).code() == sofab::Error::InvalidMessage);
         REQUIRE(in->out.empty());
@@ -265,7 +272,7 @@ TEST_CASE("MessageSeq: the last index below the count is placed, the count itsel
     SECTION("inline: capacity - 1 is the last index that fits")
     {
         const auto bytes = wire(1);
-        sofab::IStreamObject<InlinePoints> in;
+        sofab::IStreamObject<InlinePoints> in{kLimits};
         REQUIRE(in.feed(bytes.data(), bytes.size()).ok());
         REQUIRE(in->out.size() == 2);
         REQUIRE(in->out[1] == pt(4, 5));
@@ -276,7 +283,7 @@ TEST_CASE("MessageSeq: the last index below the count is placed, the count itsel
         // Also the issue #126 guard: InlineVector::emplace_back reuses its last
         // slot once full, so an unguarded fill loop would never reach this id.
         const auto bytes = wire(2);
-        sofab::IStreamObject<InlinePoints> in;
+        sofab::IStreamObject<InlinePoints> in{kLimits};
         REQUIRE(in.feed(bytes.data(), bytes.size()).code() == sofab::Error::InvalidMessage);
         REQUIRE(in->out.empty());
     }
@@ -296,7 +303,7 @@ TEST_CASE("MessageSeq: an index near 2^31 is rejected without allocating")
 
     SECTION("growable")
     {
-        sofab::IStreamObject<DynPoints> in;
+        sofab::IStreamObject<DynPoints> in{kLimits};
         (*in).seq.cap = 4;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
         REQUIRE(in->out.capacity() == 0);
@@ -304,7 +311,7 @@ TEST_CASE("MessageSeq: an index near 2^31 is rejected without allocating")
 
     SECTION("inline")
     {
-        sofab::IStreamObject<InlinePoints> in;
+        sofab::IStreamObject<InlinePoints> in{kLimits};
         REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
         REQUIRE(in->out.empty());
     }
@@ -322,7 +329,7 @@ TEST_CASE("MessageSeq: an element whose wire type contradicts the declared one i
         os.write(1, uint32_t{9});   // a varint where a struct element is declared
         os.sequenceEnd();
 
-        sofab::IStreamObject<DynPoints> in;
+        sofab::IStreamObject<DynPoints> in{kLimits};
         (*in).seq.cap = 4;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE(in->out.size() == 1);        // no phantom element at index 1
@@ -338,7 +345,7 @@ TEST_CASE("MessageSeq: an element whose wire type contradicts the declared one i
         os.write(9, uint32_t{9});
         os.sequenceEnd();
 
-        sofab::IStreamObject<DynPoints> in;
+        sofab::IStreamObject<DynPoints> in{kLimits};
         (*in).seq.cap = 2;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE(in->out.empty());
@@ -352,7 +359,7 @@ TEST_CASE("MessageSeq: an element whose wire type contradicts the declared one i
         os.write(0, row);
         os.sequenceEnd();
 
-        sofab::IStreamObject<DynFp32Rows> in;
+        sofab::IStreamObject<DynFp32Rows> in{kLimits};
         (*in).seq.cap = 2;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE(in->out.empty());
@@ -374,7 +381,7 @@ TEST_CASE("MessageSeq: a native-scalar row is placed by id and sized by the wire
 
     SECTION("growable rows")
     {
-        sofab::IStreamObject<DynRows> in;
+        sofab::IStreamObject<DynRows> in{kLimits};
         (*in).seq.cap = 3;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE(in->out.size() == 3);
@@ -387,7 +394,7 @@ TEST_CASE("MessageSeq: a native-scalar row is placed by id and sized by the wire
     {
         // Index 2 is at the outer container's capacity of 2. The element before
         // it was already placed, which is what an INVALID message leaves behind.
-        sofab::IStreamObject<InlineRows> in;
+        sofab::IStreamObject<InlineRows> in{kLimits};
         REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
         REQUIRE(in->out.size() == 1);
     }
@@ -404,7 +411,7 @@ TEST_CASE("MessageSeq: a row longer than the row's own capacity is INVALID")
     os.write(0, row);
     os.sequenceEnd();
 
-    sofab::IStreamObject<InlineRows> in;
+    sofab::IStreamObject<InlineRows> in{kLimits};
     REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
 }
 
@@ -419,7 +426,7 @@ TEST_CASE("MessageSeq: rows within the capacity round-trip through inline storag
     os.write(1, r1);
     os.sequenceEnd();
 
-    sofab::IStreamObject<InlineRows> in;
+    sofab::IStreamObject<InlineRows> in{kLimits};
     REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
     REQUIRE(in->out.size() == 2);
     REQUIRE(in->out[0].size() == 3);

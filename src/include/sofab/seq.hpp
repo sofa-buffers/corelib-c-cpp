@@ -40,32 +40,6 @@
 namespace sofab
 {
     /*!
-     * @brief Compile-time capacity a heap-free container publishes, or -1.
-     *
-     * @ref InlineVector, @ref FixedString and @ref FixedBytes all declare
-     * @c capacity() @c static @c constexpr, which is what tells them apart from
-     * @c std::vector — whose @c capacity() is a per-object, runtime quantity and
-     * so cannot be called on the type. For the heap-free containers that
-     * capacity @b is the schema `count` (or `maxlen`) they were generated for, so
-     * it is the bound a collector may apply without being told one.
-     *
-     * @tparam C  Container type.
-     */
-    template <typename C>
-    inline constexpr long fixed_capacity_v =
-        [] () constexpr -> long
-        {
-            if constexpr (requires { { C::capacity() } -> std::convertible_to<std::size_t>; })
-            {
-                return static_cast<long>(C::capacity());
-            }
-            else
-            {
-                return -1;
-            }
-        }();
-
-    /*!
      * @brief Wire type an element of type @p Elem arrives with, or -1 for none.
      *
      * MESSAGE_SPEC §7.3 bounds an element by the wire type its @b declared type
@@ -296,11 +270,13 @@ namespace sofab
             }
             /* §5.1/§7, decided from the id alone and before the container grows --
              * which is what keeps an announced index near 2^31 from becoming an
-             * allocation. An array that declares no `count` is bounded by nothing
-             * but the wire, exactly as @ref StringSeq is. */
-            if (cap >= 0 && static_cast<size_t>(id) >= static_cast<size_t>(cap))
+             * allocation. A wrapper array's length is highest present id + 1
+             * (MESSAGE_SPEC §5.1), so that is what the bound is applied to. Where
+             * the schema declares no `count` the stream's Limits do
+             * (max_dyn_array_count, §6.2.1) -- there is no capacity here to refuse
+             * with, exactly as in @ref StringSeq. */
+            if (is.refuse(static_cast<size_t>(id) + 1, cap, is.limits().max_dyn_array_count))
             {
-                is.invalidate();
                 return;
             }
             while (out->size() <= static_cast<size_t>(id)) (void)out->emplace_back();
@@ -311,6 +287,9 @@ namespace sofab
             }
             else
             {
+                /* A growable row publishes no capacity and the outer collector is
+                 * not told the inner array's `count`, so readArray falls to the
+                 * receiver cap for it -- which is the one bound left. */
                 is.readArray(elem, count, fixed_capacity_v<Elem>);
             }
         }

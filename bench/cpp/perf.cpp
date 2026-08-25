@@ -85,6 +85,12 @@ public:
 class IStreamRaw : public sofab::IStreamImpl
 {
 public:
+    /* Drives the C-style callback directly over schema-bounded fields, so no
+     * receiver cap can bind (§6.2.1) -- but a stream still states all three,
+     * because §6.2.1 has no unset state. */
+    IStreamRaw() noexcept
+        : sofab::IStreamImpl{sofab::Limits{SOFAB_ARRAY_MAX, SOFAB_FIXLEN_MAX, SOFAB_FIXLEN_MAX}} { }
+
     void init(sofab_istream_field_cb_t cb, void *usr) noexcept
     {
         sofab_istream_init(&ctx_, cb, usr);

@@ -18,6 +18,13 @@
 #include <limits>
 #include <algorithm>
 
+/* CORELIB_PLAN §6.2.1 admits no unset state and no unlimited mode, so every
+ * input stream states its three receiver ceilings. These are deliberately
+ * generous: the cases below are about the wire, not about policy. The tests
+ * that ARE about policy state their own, tight, limits. */
+static constexpr sofab::Limits kLimits{1024, 4096, 4096};
+
+
 //
 
 #if 0
@@ -317,6 +324,7 @@ TEST_CASE("IStream: inline feed buffer")
     uint8_t value = 0x55;
 
     sofab::IStreamInline istream{
+        kLimits,
         [&](sofab::id id, size_t size, size_t count) noexcept
         {
             (void)size;
@@ -340,6 +348,7 @@ TEST_CASE("IStream: inline feed buffer stream")
     std::string value;
 
     sofab::IStreamInline istream{
+        kLimits,
         [&](sofab::id id, size_t size, size_t count) noexcept
         {
             (void)count;
@@ -378,7 +387,7 @@ TEST_CASE("IStream: inline feed buffer stream")
 
 TEST_CASE("IStream: object feed buffer")
 {
-    sofab::IStreamObject<SimpleObject2> istream;
+    sofab::IStreamObject<SimpleObject2> istream{kLimits};
 
     const uint8_t buffer[] = {0x08, 0x2a, 0x12, 0x20, 0x56, 0x0e, 0x49, 0x40};
 
@@ -415,7 +424,7 @@ TEST_CASE("IStream: round-trip all scalar types into object")
 
     const auto used = ostream.bytesUsed();
 
-    sofab::IStreamObject<FullObject> istream;
+    sofab::IStreamObject<FullObject> istream{kLimits};
     auto result = istream.feed(ostream.data(), used);
 
     REQUIRE(result.code() == sofab::Error::None);
@@ -467,7 +476,7 @@ TEST_CASE("IStream: round-trip arrays of every type into object")
 
     const auto used = ostream.bytesUsed();
 
-    sofab::IStreamObject<FullObject> istream;
+    sofab::IStreamObject<FullObject> istream{kLimits};
     auto result = istream.feed(ostream.data(), used);
 
     REQUIRE(result.code() == sofab::Error::None);
@@ -495,7 +504,7 @@ TEST_CASE("IStream: round-trip repeated fields into dynamic vector")
 
     const auto used = ostream.bytesUsed();
 
-    sofab::IStreamObject<DynArrayOfUnsigned> istream;
+    sofab::IStreamObject<DynArrayOfUnsigned> istream{kLimits};
     auto result = istream.feed(ostream.data(), used);
 
     REQUIRE(result.code() == sofab::Error::None);
@@ -537,7 +546,7 @@ TEST_CASE("IStream: round-trip blob and variable-length-element arrays")
 
     SECTION("decode in one shot")
     {
-        sofab::IStreamObject<BlobAndVarArrays> istream;
+        sofab::IStreamObject<BlobAndVarArrays> istream{kLimits};
         auto result = istream.feed(ostream.data(), used);
 
         REQUIRE(result.code() == sofab::Error::None);
@@ -550,7 +559,7 @@ TEST_CASE("IStream: round-trip blob and variable-length-element arrays")
     {
         // Forces the deferred decoder to suspend/resume mid-element, so the bound
         // targets must survive across many feed() calls.
-        sofab::IStreamObject<BlobAndVarArrays> istream;
+        sofab::IStreamObject<BlobAndVarArrays> istream{kLimits};
 
         for (size_t i = 0; i < used; i++)
         {
@@ -584,6 +593,7 @@ TEST_CASE("IStream: fields without a matching read are skipped")
     int calls = 0;
 
     sofab::IStreamInline istream{
+        kLimits,
         [&](sofab::id id, size_t, size_t) noexcept
         {
             calls++;
@@ -617,6 +627,7 @@ TEST_CASE("IStream: §7.3 wire-type mismatch skips the field via wire() guard")
     sofab::Wire seen{};
 
     sofab::IStreamInline istream{
+        kLimits,
         [&](sofab::id id, size_t, size_t) noexcept
         {
             calls++;
@@ -671,6 +682,7 @@ TEST_CASE("IStream: fixType() reports the delivered fixlen subtype")
     sofab::Fix  fix5{},  fix6{};
 
     sofab::IStreamInline istream{
+        kLimits,
         [&](sofab::id id, size_t, size_t) noexcept
         {
             if (id == 5) { wire5 = istream.wire(); fix5 = istream.fixType(); }
@@ -696,6 +708,7 @@ TEST_CASE("IStream: malformed input is rejected")
 
         int calls = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id, size_t, size_t) noexcept { calls++; }
         };
 
@@ -714,6 +727,7 @@ TEST_CASE("IStream: malformed input is rejected")
 
         uint64_t value = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id id, size_t, size_t) noexcept
             {
                 if (id == 0)
@@ -740,6 +754,7 @@ TEST_CASE("IStream: invalidate() from a field callback rejects the message")
 
     int calls = 0;
     sofab::IStreamInline istream{
+        kLimits,
         [&](sofab::id id, size_t, size_t) noexcept
         {
             calls++;
@@ -762,6 +777,7 @@ TEST_CASE("IStream: invalidate() from a field callback rejects the message")
 TEST_CASE("IStream: invalidate() is sticky across feeds")
 {
     sofab::IStreamInline istream{
+        kLimits,
         [&](sofab::id id, size_t, size_t) noexcept
         {
             if (id == 0)
@@ -793,6 +809,7 @@ TEST_CASE("IStream: truncated input is incomplete, not complete or invalid")
 
         int calls = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id, size_t, size_t) noexcept { calls++; }
         };
 
@@ -814,6 +831,7 @@ TEST_CASE("IStream: truncated input is incomplete, not complete or invalid")
 
         std::string value;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id id, size_t size, size_t) noexcept
             {
                 if (id == 0) { value.resize(size); istream.read(value); }
@@ -835,6 +853,7 @@ TEST_CASE("IStream: truncated input is incomplete, not complete or invalid")
 
         uint64_t value = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id id, size_t, size_t) noexcept
             {
                 if (id == 0) { istream.read(value); }
@@ -866,6 +885,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
 
         int calls = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id, size_t, size_t) noexcept { calls++; }
         };
 
@@ -884,6 +904,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
             0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
 
         sofab::IStreamInline istream{
+            kLimits,
             [](sofab::id, size_t, size_t) noexcept {}
         };
 
@@ -905,6 +926,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
             0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
 
         sofab::IStreamInline istream{
+            kLimits,
             [](sofab::id, size_t, size_t) noexcept {}
         };
 
@@ -924,6 +946,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
 
         uint64_t value = 0x55;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id id, size_t, size_t) noexcept
             {
                 if (id == 0) { istream.read(value); }
@@ -945,6 +968,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
 
         uint64_t value = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id id, size_t, size_t) noexcept
             {
                 if (id == 0) { istream.read(value); }
@@ -966,6 +990,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
 
         uint64_t value = 0x55;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id id, size_t, size_t) noexcept
             {
                 if (id == 0) { istream.read(value); }
@@ -985,6 +1010,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
 
         int calls = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id, size_t, size_t) noexcept { calls++; }
         };
 
@@ -1003,6 +1029,7 @@ TEST_CASE("IStream: an already-overlong varint is invalid on the tenth byte")
 
         int calls = 0;
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id, size_t, size_t) noexcept { calls++; }
         };
 
@@ -1036,7 +1063,7 @@ TEST_CASE("IStream: round-trip nested message into object")
 
     SECTION("decode in one shot")
     {
-        sofab::IStreamObject<NestedParent> istream;
+        sofab::IStreamObject<NestedParent> istream{kLimits};
         auto result = istream.feed(ostream.data(), used);
 
         REQUIRE(result.code() == sofab::Error::None);
@@ -1050,7 +1077,7 @@ TEST_CASE("IStream: round-trip nested message into object")
 
     SECTION("decode one byte at a time")
     {
-        sofab::IStreamObject<NestedParent> istream;
+        sofab::IStreamObject<NestedParent> istream{kLimits};
 
         for (size_t i = 0; i < used; i++)
         {
@@ -1076,6 +1103,7 @@ TEST_CASE("IStream: round-trip nested message into object")
         int seqCalls = 0;
 
         sofab::IStreamInline istream{
+            kLimits,
             [&](sofab::id id, size_t, size_t) noexcept
             {
                 if (id == 1)      istream.read(header);
@@ -1235,7 +1263,7 @@ TEST_CASE("IStream: round-trip string into FixedString matches std::string")
 
     SECTION("decode in one shot")
     {
-        sofab::IStreamObject<FixedStringObject> istream;
+        sofab::IStreamObject<FixedStringObject> istream{kLimits};
         auto result = istream.feed(ostream.data(), used);
 
         REQUIRE(result.code() == sofab::Error::None);
@@ -1246,7 +1274,7 @@ TEST_CASE("IStream: round-trip string into FixedString matches std::string")
 
     SECTION("decode one byte at a time (address-stable target)")
     {
-        sofab::IStreamObject<FixedStringObject> istream;
+        sofab::IStreamObject<FixedStringObject> istream{kLimits};
         for (size_t i = 0; i < used; i++)
         {
             auto result = istream.feed(ostream.data() + i, 1);
@@ -1265,7 +1293,7 @@ TEST_CASE("IStream: round-trip string into FixedString matches std::string")
         sofab::OStream os2{64};
         os2.write(2, std::string_view{""});
 
-        sofab::IStreamObject<FixedStringObject> istream;
+        sofab::IStreamObject<FixedStringObject> istream{kLimits};
         auto result = istream.feed(os2.data(), os2.bytesUsed());
         REQUIRE(result.code() == sofab::Error::None);
         REQUIRE(istream->name.empty());
@@ -1281,7 +1309,7 @@ TEST_CASE("IStream: round-trip string into FixedString matches std::string")
         sofab::OStream os2{256};
         os2.write(2, std::string_view{big});
 
-        sofab::IStreamObject<FixedStringObject> istream;
+        sofab::IStreamObject<FixedStringObject> istream{kLimits};
         auto result = istream.feed(os2.data(), os2.bytesUsed());
         REQUIRE(result.code() == sofab::Error::InvalidMessage);
     }
@@ -1459,7 +1487,7 @@ TEST_CASE("readArray: an InlineVector destination is sized to the wire count")
 
     // 0x03 = id 0, unsigned array; count 2; elements 1, 2.
     const uint8_t wire[] = {0x03, 0x02, 0x01, 0x02};
-    sofab::IStreamObject<M> in;
+    sofab::IStreamObject<M> in{kLimits};
     REQUIRE(in.feed(wire, sizeof(wire)).ok());
     REQUIRE((*in).a.size() == 2);
     REQUIRE((*in).a[0] == 1);
@@ -1533,14 +1561,14 @@ TEST_CASE("IStream: blob + string sequence round-trip into fixed inline containe
 
     SECTION("decode in one shot")
     {
-        sofab::IStreamObject<FixedContainersObject> istream;
+        sofab::IStreamObject<FixedContainersObject> istream{kLimits};
         REQUIRE(istream.feed(ostream.data(), used).code() == sofab::Error::None);
         check(*istream);
     }
 
     SECTION("decode one byte at a time (address-stable inline targets)")
     {
-        sofab::IStreamObject<FixedContainersObject> istream;
+        sofab::IStreamObject<FixedContainersObject> istream{kLimits};
         for (size_t i = 0; i < used; i++)
         {
             auto result = istream.feed(ostream.data() + i, 1);
@@ -1563,7 +1591,7 @@ TEST_CASE("IStream: blob + string sequence round-trip into fixed inline containe
         sofab::OStream os2{256};
         os2.write(1, big.data(), static_cast<int32_t>(big.size()));
 
-        sofab::IStreamObject<FixedContainersObject> istream;
+        sofab::IStreamObject<FixedContainersObject> istream{kLimits};
         auto result = istream.feed(os2.data(), os2.bytesUsed());
         REQUIRE(result.code() == sofab::Error::InvalidMessage);
     }
@@ -1620,7 +1648,7 @@ TEST_CASE("IStream: the type-checking reads round-trip their fields")
     os.write(1, std::string_view{"bb"});
     os.sequenceEnd();
 
-    sofab::IStreamObject<TypeCheckedObject> istream;
+    sofab::IStreamObject<TypeCheckedObject> istream{kLimits};
     REQUIRE(istream.feed(os.data(), os.bytesUsed()).ok());
 
     REQUIRE(istream->scalar == 7);
@@ -1646,7 +1674,7 @@ TEST_CASE("IStream: a field whose wire type contradicts the read is skipped inta
     os.write(2, std::string_view{"not a blob"});    // string  -> readBlob
     os.write(3, uint32_t{9});                       // varint  -> readSequence
 
-    sofab::IStreamObject<TypeCheckedObject> istream;
+    sofab::IStreamObject<TypeCheckedObject> istream{kLimits};
     istream->name.set_len(0);
     istream->tags.push_back(sofab::FixedString<8>{});
 
@@ -1669,7 +1697,7 @@ TEST_CASE("IStream: a skipped field does not disturb the fields around it")
     os.write(2, std::vector<uint8_t>{7, 7}.data(), 2);
     os.write(0, uint32_t{3});
 
-    sofab::IStreamObject<TypeCheckedObject> istream;
+    sofab::IStreamObject<TypeCheckedObject> istream{kLimits};
     REQUIRE(istream.feed(os.data(), os.bytesUsed()).ok());
 
     REQUIRE(istream->name.size() == 0);
