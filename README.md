@@ -498,7 +498,9 @@ that destination. Two rules follow:
 2. **Data is copied into your memory, not aliased.** Payload words are not
    guaranteed aligned on the wire, so values are copied into your typed storage —
    alignment- and endianness-safe, bounded to your buffers. Oversized or malformed
-   fields are `SOFAB_RET_E_INVALID_MSG`; unbound fields are skipped untouched.
+   fields are `SOFAB_RET_E_INVALID_MSG` — in the C++ wrapper an oversized field
+   has three possible answers, one per bound it broke, in the table below; unbound
+   fields are skipped untouched.
 
 A fed chunk is **borrowed only for the duration of `feed()`** and may be reused
 the moment it returns; what a bound destination has not received yet is carried
