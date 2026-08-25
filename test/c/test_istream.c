@@ -6,6 +6,7 @@
  */
 
 #include "sofab/istream.h"
+#include "sofab/ostream.h"
 
 #include "unity.h"
 
@@ -3058,6 +3059,107 @@ static void _full_scale_example(sofab_istream_t *ctx, sofab_id_t id, size_t size
 }
 #endif
 
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+/* CORELIB_PLAN §6.5, "Testing (normative)": a signaling, a quiet and a negative
+ * fp32 NaN must each round-trip BIT-FOR-BIT, at a scalar and at an array
+ * position, across decode -> re-encode.
+ *
+ * isnan() cannot see the difference this test exists for. IEEE-754 tells a
+ * quiet NaN from a signaling one by the top mantissa bit, and widening an fp32
+ * through a double sets that bit — so a port that quieted an sNaN, or that
+ * normalised any NaN payload, would still satisfy every isnan() assertion in
+ * this repository while changing the bytes on the wire. The comparison is
+ * therefore on the bit pattern, never on the value: NaN != NaN, so == proves
+ * nothing here either way.
+ *
+ * §6.5's table has nothing for a native-fp32 target like this one to *do* — the
+ * payload never passes through a wider float. The test obligation is stated
+ * unconditionally all the same, and it is what keeps that true.
+ */
+#define FP32_SNAN   UINT32_C(0x7F800001)   /* signaling: quiet bit clear, payload non-zero */
+#define FP32_QNAN   UINT32_C(0x7FC00001)   /* quiet */
+#define FP32_NQNAN  UINT32_C(0xFFC00001)   /* negative quiet */
+
+typedef struct {
+    float scalar;
+    float array[3];
+    int   scalar_calls;
+    int   array_calls;
+} test_nan_bits_t;
+
+static uint32_t _fp32_bits (float f)
+{
+    uint32_t bits;
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
+
+static void _nan_bits_callback (sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
+{
+    test_nan_bits_t *test = (test_nan_bits_t *)usrptr;
+    (void)size;
+    (void)count;
+
+    if (id == 1)
+    {
+        test->scalar_calls++;
+        sofab_istream_read_fp32(ctx, &test->scalar);
+    }
+    else if (id == 2)
+    {
+        test->array_calls++;
+        sofab_istream_read_array_of_fp32(ctx, test->array, sizeof(test->array) / sizeof(test->array[0]));
+    }
+}
+
+static void test_fp32_nan_payloads_round_trip_bit_for_bit (void)
+{
+    /* Hand-built so the input does not depend on the encoder under test:
+     *   id 1, FIXLEN, fixlen_word (4 << 3) | fp32, sNaN
+     *   id 2, FIXLENARRAY, count 3, fixlen_word (4 << 3) | fp32, then the three
+     * All payloads little-endian (§4.6). */
+    const uint8_t wire[] = {
+        0x0A, 0x20, 0x01, 0x00, 0x80, 0x7F,                   /* scalar sNaN   */
+        0x15, 0x03, 0x20, 0x01, 0x00, 0x80, 0x7F,             /* array[0] sNaN */
+                          0x01, 0x00, 0xC0, 0x7F,             /* array[1] qNaN */
+                          0x01, 0x00, 0xC0, 0xFF,             /* array[2] -qNaN*/
+    };
+
+    test_nan_bits_t test;
+    memset(&test, 0, sizeof(test));
+
+    sofab_istream_t ctx;
+    sofab_istream_init(&ctx, _nan_bits_callback, &test);
+
+    sofab_ret_t ret = sofab_istream_feed(&ctx, wire, sizeof(wire));
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, ret, "feed did not accept the NaN message");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, test.scalar_calls, "scalar field not delivered exactly once");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, test.array_calls, "array field not delivered exactly once");
+
+    /* Decode kept every payload verbatim -- the quiet bit included. */
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(FP32_SNAN,  _fp32_bits(test.scalar),   "scalar sNaN payload changed on decode");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(FP32_SNAN,  _fp32_bits(test.array[0]), "array sNaN payload changed on decode");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(FP32_QNAN,  _fp32_bits(test.array[1]), "array qNaN payload changed on decode");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(FP32_NQNAN, _fp32_bits(test.array[2]), "array -qNaN payload changed on decode");
+
+    /* And re-encode reproduces the exact bytes that were fed. */
+    uint8_t out[sizeof(wire)];
+    sofab_ostream_t os;
+    sofab_ostream_init(&os, out, sizeof(out), 0, NULL, NULL);
+
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_ostream_write_fp32(&os, 1, test.scalar),
+                              "re-encode of the scalar failed");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+                              sofab_ostream_write_array_of_fp32(&os, 2, test.array,
+                                                                sizeof(test.array) / sizeof(test.array[0])),
+                              "re-encode of the array failed");
+
+    size_t used = sofab_ostream_bytes_used(&os);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(wire), used, "re-encoded length differs");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(wire, out, sizeof(wire), "re-encoded bytes differ from the input");
+}
+#endif /* !SOFAB_DISABLE_FIXLEN_SUPPORT && !SOFAB_DISABLE_ARRAY_SUPPORT */
+
 static void test_read_full_scale_example (void)
 {
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
@@ -3526,6 +3628,10 @@ int test_istream_main (void)
     RUN_TEST(test_read_array_zero_count_accepts_null_destination);
     RUN_TEST(test_msg_invalid_terminal_across_feeds);
     RUN_TEST(test_msg_invalid_terminal_short_circuits_valid_bytes);
+#endif
+
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    RUN_TEST(test_fp32_nan_payloads_round_trip_bit_for_bit);
 #endif
 
     RUN_TEST(test_read_full_scale_example);
