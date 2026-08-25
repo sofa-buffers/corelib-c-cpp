@@ -96,7 +96,7 @@ manifest (`library.json`).
 
 | Goal | How |
 |------|-----|
-| No allocator | All state lives in caller-provided buffers and structs; nothing is heap-allocated. |
+| No allocator | The codec allocates nothing: every context, decoder and buffer is caller-provided. The C core has no heap at all; in C++ the heap appears only where you choose a growable destination. |
 | No dependencies | No third-party libraries, so it drops into any toolchain. |
 | Streaming **out** | `sofab_ostream` writes into a small caller buffer, invoking a flush callback when it fills — a message can exceed available RAM. |
 | Streaming **in** | `sofab_istream` is a callback-driven decoder fed arbitrary byte chunks; large payloads arrive in pieces. |
@@ -481,11 +481,10 @@ minimum at all — it either holds the message or reports
 `SOFAB_RET_E_BUFFER_FULL`, so a caller sizing from a generated `MAX_SIZE` gets an
 exact fit.
 
-**No pass-through.** CORELIB_PLAN §5.1 lets a caller permit a `string`/`blob` run
-to reach the sink directly, bypassing the output buffer. This port does not
-implement it; the permission is explicitly optional and the output is
-byte-identical either way. A flush callback here is **only ever handed the output
-buffer it was installed with**, never foreign memory.
+**No pass-through.** A flush callback is **only ever handed the output buffer it
+was installed with**, never foreign memory — on every flush of every message. A
+`string` or `blob` payload is copied through that buffer like anything else,
+however large it is.
 
 **Decode (istream) — deferred-copy binding.** A `read_*()` / `read()` call copies
 nothing: it records only *where* the value goes. Later `feed()` calls write into
@@ -673,9 +672,10 @@ table if the first does not hold.
 
 Read the `blob 1MB` rows only in `Ir/op`: five of that message's bytes are
 metadata and a million are payload, so its MB/s is the machine's memory bandwidth.
-They are also the only rows that exercise the divisible-run path at all. The
-optional `encode: blob 1MB passthrough` row is absent because this port implements
-no pass-through (see [Memory handling](#memory-handling)).
+They are also the only rows that exercise the divisible-run path at all. There is
+no `encode: blob 1MB passthrough` row, in this port or any other: pass-through was
+withdrawn, and a payload run is always copied through the installed output buffer
+(see [Memory handling](#memory-handling)).
 
 ### Footprint
 
