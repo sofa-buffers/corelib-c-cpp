@@ -499,8 +499,8 @@ that destination. Two rules follow:
    guaranteed aligned on the wire, so values are copied into your typed storage —
    alignment- and endianness-safe, bounded to your buffers. Oversized or malformed
    fields are `SOFAB_RET_E_INVALID_MSG` — in the C++ wrapper an oversized field
-   has three possible answers, one per bound it broke, in the table below; unbound
-   fields are skipped untouched.
+   has three possible answers, one per ceiling it broke, in the table below;
+   unbound fields are skipped untouched.
 
 A fed chunk is **borrowed only for the duration of `feed()`** and may be reused
 the moment it returns; what a bound destination has not received yet is carried
@@ -518,26 +518,50 @@ that bound is `SOFAB_RET_E_INVALID_MSG`. `SOFAB_RET_E_LIMIT_EXCEEDED` is declare
 in `sofab.h` because `sofab_ret_t` is the shared C/C++ code table, and **no C API
 function returns it**.
 
-**The C++ wrapper does have unbounded fields, so it carries the caps.** A
+**The C++ wrapper does have unbounded fields, and the cap for them is yours.** A
 `std::string`, `std::vector` or growable wrapper-array destination has no
 capacity of its own, so a field whose schema declares no `maxlen` / `count` would
-otherwise be sized by the wire alone. `sofab::Limits` states the three ceilings —
-`max_dyn_array_count`, `max_dyn_string_len`, `max_dyn_blob_len` — and every input
-stream is constructed with one: `sofab::IStreamObject<T> in{limits};`,
-`sofab::IStreamInline in{limits, callback};`. `sofab::Limits` has no default
-constructor and no "unlimited" value, and this library ships no numbers of its
-own: they are the deployment's, stated by generated code. The ceilings are
-checked at the length or count header, before the destination is sized, and for a
-wrapper array on the element index, before the container is extended.
+otherwise be sized by the wire alone. The ceiling for it is a per-deployment
+judgement — an element count trivial on a server is brutal in an MCU — so this
+library holds no such number, invents none, and stores none. You hand it over per
+read, which is what generated code emits:
+
+```cpp
+void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
+{
+    //                      schema maxlen (-1 = none) ─┐   ┌─ your ceiling for that case
+    if (id == 1) is.readString(name, size, -1, SOFAB_MAX_DYN_STRING_LEN);
+}
+```
+
+The cap is consulted only where the schema declares nothing — it must never be
+applied to a field the schema already bounds — and only after the field's wire
+type has been checked, so a field that is about to be skipped is never measured
+against it (§7.3). That ordering is why the ceiling is passed into the read
+rather than checked in front of it: a `if (size > CAP) is.exceedLimit();` ahead
+of the call would reject a field the decoder was going to step over. Where a
+handler genuinely enforces a ceiling the read cannot see, `exceedLimit()` is
+public for it.
+
+The one place the library applies a cap for you is a **growable wrapper array**:
+it announces no count and delivers no callback at the element index, so there is
+no point at which your handler could check. Hand the number to the collector and
+it enforces it on the index, before the container is extended:
+
+```cpp
+seq.cap = -1;                                 // the schema declares no count
+seq.dynCap = SOFAB_MAX_DYN_ARRAY_COUNT;       // so this bounds the element index
+seq.dynElemMax = SOFAB_MAX_DYN_STRING_LEN;    // and this the element length
+```
 
 A refused field ends the decode, and which of three answers `feed()` returns says
 what was wrong:
 
-| what was exceeded | code |
-| - | - |
-| a `maxlen` / `count` the schema declares | `sofab::Error::InvalidMessage` |
-| a `sofab::Limits` ceiling, on a field the schema leaves unbounded | `sofab::Error::LimitExceeded` |
-| neither — the destination handed over is too short | `sofab::Error::InvalidArgument` |
+| what was exceeded | code | who applies it |
+| - | - | - |
+| a `maxlen` / `count` the schema declares | `sofab::Error::InvalidMessage` | the library, from the bound you pass |
+| a receiver cap, on a field the schema leaves unbounded | `sofab::Error::LimitExceeded` | the library, from the ceiling you pass |
+| neither — the destination handed over is too short | `sofab::Error::InvalidArgument` | the library |
 
 All three are terminal. A field the handler skips is never capped.
 

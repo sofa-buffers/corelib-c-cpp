@@ -17,13 +17,6 @@
 #include <string>
 #include <vector>
 
-/* CORELIB_PLAN §6.2.1 admits no unset state and no unlimited mode, so every
- * input stream states its three receiver ceilings. These are deliberately
- * generous: the cases below are about the wire, not about policy. The tests
- * that ARE about policy state their own, tight, limits. */
-static constexpr sofab::Limits kLimits{1024, 4096, 4096};
-
-
 // What `sofabgen --lang cpp` emits, reduced to the surface §6.1.1 closes.
 struct Point : sofab::Message
 {
@@ -54,7 +47,7 @@ struct Point : sofab::Message
 
     static Point decode(const uint8_t *data, size_t len)
     {
-        sofab::IStreamObject<Point> in{kLimits};
+        sofab::IStreamObject<Point> in;
         in.feed(data, len);
         return *in;
     }
@@ -90,7 +83,7 @@ static void theExampleRunsAndRoundTrips()
     check(streamed == wire, "a one-byte window produces the one-shot bytes");
 
     // Fed one byte at a time, the same bytes decode to the same value.
-    sofab::IStreamObject<Point> in{kLimits};
+    sofab::IStreamObject<Point> in;
     auto r = in.feed(wire.data(), 1);
     for (size_t i = 1; i < wire.size(); ++i) r = in.feed(wire.data() + i, 1);
     check(r.ok(), "byte-at-a-time feed reports a complete message");

@@ -22,6 +22,25 @@
  * that does not fit. They are told apart by *which ceiling stopped it*: the
  * configured cap, or the storage.
  *
+ * @par Who holds the cap
+ * Not this corelib. §6.2.1 gives the numbers to generated code — "an element
+ * count trivial on a server is brutal in C" — and leaves the codec "the report
+ * and the category […] the visitor decides". So the messages below hand their cap
+ * over per call, which is what the generator emits:
+ *
+ *     is.readString(name, _size, -1, SOFAB_MAX_DYN_STRING_LEN);
+ *
+ * Passing it beats checking it before the call, and the difference is not style:
+ * `readString` applies §7.3 first, so a field whose wire type contradicts the
+ * read is skipped before any ceiling is consulted. A caller-side `if (_size >
+ * CAP) exceedLimit();` sits in front of that check and caps a field that was
+ * about to be skipped — which §6.2.1 forbids in as many words. The last two cases
+ * in this file pin exactly that.
+ *
+ * A growable wrapper array is the same rule at one remove: it announces no count
+ * and delivers no callback at the element index, so the number is set on the
+ * collector (`seq.dynCap`) and applied there, still never invented.
+ *
  * SPDX-License-Identifier: MIT
  */
 
@@ -31,19 +50,18 @@
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace
 {
 
 /* The receiver's policy for these cases: deliberately tight, so a cap breach is
- * a few bytes of test data rather than a megabyte. §6.2.1 has no unset state, so
- * every stream states all three. */
-constexpr sofab::Limits kTight{/*array*/ 4, /*string*/ 8, /*blob*/ 8};
-
-/* A cap far above anything these messages carry, for the cases that must show a
- * limit NOT binding. */
-constexpr sofab::Limits kLoose{1024, 1024, 1024};
+ * a few bytes of test data rather than a megabyte. These stand in for the
+ * SOFAB_MAX_DYN_* defines generated code carries. */
+constexpr long kDynArrayCount = 4;
+constexpr long kDynStringLen  = 8;
+constexpr long kDynBlobLen    = 8;
 
 /*! Encode one `string` field at id 1 carrying @p n bytes of 'a'. */
 std::vector<uint8_t> stringField(size_t n)
@@ -75,8 +93,11 @@ std::vector<uint8_t> arrayField(size_t n)
 }
 
 /*!
- * A message with one `string` field at id 1, whose declared `maxlen` and whose
- * destination shape are both chosen by the test.
+ * A message with one `string` field at id 1, whose declared `maxlen`, whose
+ * configured cap and whose destination shape are all chosen by the test.
+ *
+ * `deserialize` is written the way the generator emits it: one read call, with
+ * the schema bound and the receiver cap both handed over as arguments.
  *
  * @tparam Dst  `std::string` (growable) or `sofab::FixedString<N>` (heap-free).
  */
@@ -84,11 +105,12 @@ template <typename Dst>
 struct StringMessage final : sofab::IStreamMessage
 {
     long maxlen = -1;   //!< what the SCHEMA declares; -1 = it declares nothing
+    long dynCap = -1;   //!< what the DEPLOYMENT configures; -1 = none supplied
     Dst value{};
 
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
     {
-        if (id == 1) is.readString(value, size, maxlen);
+        if (id == 1) is.readString(value, size, maxlen, dynCap);
     }
 };
 
@@ -97,11 +119,12 @@ template <typename Dst>
 struct BlobMessage final : sofab::IStreamMessage
 {
     long maxlen = -1;
+    long dynCap = -1;
     Dst value{};
 
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
     {
-        if (id == 1) is.readBlob(value, size, maxlen);
+        if (id == 1) is.readBlob(value, size, maxlen, dynCap);
     }
 };
 
@@ -110,11 +133,12 @@ template <typename Dst>
 struct ArrayMessage final : sofab::IStreamMessage
 {
     long cap = -1;      //!< the schema's `count`; -1 = it declares none
+    long dynCap = -1;
     Dst value{};
 
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t, size_t count) noexcept override
     {
-        if (id == 1) is.readArray(value, count, cap);
+        if (id == 1) is.readArray(value, count, cap, dynCap);
     }
 };
 
@@ -147,9 +171,10 @@ TEST_CASE("limits: an unbounded string past the cap is LimitExceeded, not INVALI
 {
     const auto wire = stringField(9);   // cap is 8
 
-    sofab::IStreamObject<StringMessage<std::string>> in{kTight};
+    sofab::IStreamObject<StringMessage<std::string>> in;
     // the schema declares no maxlen -- which is what arms the receiver cap
     (*in).maxlen = -1;
+    (*in).dynCap = kDynStringLen;
 
     auto r = in.feed(wire.data(), wire.size());
 
@@ -172,7 +197,8 @@ TEST_CASE("limits: the same bytes decode under a looser cap")
     // §6.2.1 says that is "not an interop failure and not a conformance defect".
     const auto wire = stringField(9);
 
-    sofab::IStreamObject<StringMessage<std::string>> loose{kLoose};
+    sofab::IStreamObject<StringMessage<std::string>> loose;
+    (*loose).dynCap = 1024;
     auto r = loose.feed(wire.data(), wire.size());
 
     REQUIRE(r.ok());
@@ -183,8 +209,9 @@ TEST_CASE("limits: an unbounded blob past the cap is LimitExceeded")
 {
     const auto wire = blobField(9);     // blob cap is 8
 
-    sofab::IStreamObject<BlobMessage<std::vector<uint8_t>>> in{kTight};
+    sofab::IStreamObject<BlobMessage<std::vector<uint8_t>>> in;
     (*in).maxlen = -1;
+    (*in).dynCap = kDynBlobLen;
 
     REQUIRE(in.feed(wire.data(), wire.size()).code() == sofab::Error::LimitExceeded);
     REQUIRE((*in).value.empty());
@@ -196,14 +223,15 @@ TEST_CASE("limits: string and blob are separate caps")
     // one: a deployment may well take a megabyte of opaque bytes and no such
     // quantity of text. A port that shares one number passes every case above
     // and fails this one.
-    constexpr sofab::Limits split{/*array*/ 4, /*string*/ 4, /*blob*/ 64};
     const auto text = stringField(8);
     const auto bytes = blobField(8);
 
-    sofab::IStreamObject<StringMessage<std::string>> s{split};
+    sofab::IStreamObject<StringMessage<std::string>> s;
+    (*s).dynCap = 4;
     REQUIRE(s.feed(text.data(), text.size()).code() == sofab::Error::LimitExceeded);
 
-    sofab::IStreamObject<BlobMessage<std::vector<uint8_t>>> b{split};
+    sofab::IStreamObject<BlobMessage<std::vector<uint8_t>>> b;
+    (*b).dynCap = 64;
     REQUIRE(b.feed(bytes.data(), bytes.size()).ok());
     REQUIRE((*b).value.size() == 8);
 }
@@ -212,8 +240,9 @@ TEST_CASE("limits: an unbounded array past the cap is LimitExceeded")
 {
     const auto wire = arrayField(5);    // array cap is 4
 
-    sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> in{kTight};
+    sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> in;
     (*in).cap = -1;
+    (*in).dynCap = kDynArrayCount;
 
     auto r = in.feed(wire.data(), wire.size());
     REQUIRE(r.code() == sofab::Error::LimitExceeded);
@@ -233,7 +262,8 @@ TEST_CASE("limits: the cap is enforced at the length header, before the allocati
     // fixlen_word = (100000000 << 3) | 2, i.e. a 100 MB string.
     const uint8_t header[] = {0x0A, 0x82, 0x90, 0xBC, 0xFD, 0x02};
 
-    sofab::IStreamObject<StringMessage<std::string>> in{kTight};
+    sofab::IStreamObject<StringMessage<std::string>> in;
+    (*in).dynCap = kDynStringLen;
     auto r = in.feed(header, sizeof(header));
 
     REQUIRE(r.code() == sofab::Error::LimitExceeded);
@@ -250,7 +280,8 @@ TEST_CASE("limits: a limit rejection is terminal")
     // into the core's plain InvalidMessage.
     const auto wire = stringField(9);
 
-    sofab::IStreamObject<StringMessage<std::string>> in{kTight};
+    sofab::IStreamObject<StringMessage<std::string>> in;
+    (*in).dynCap = kDynStringLen;
     REQUIRE(in.feed(wire.data(), wire.size()).code() == sofab::Error::LimitExceeded);
 
     const uint8_t more[] = {0x00, 0x01};
@@ -275,8 +306,9 @@ TEST_CASE("limits: a schema-bounded field is judged by its schema bound, not by 
         // rejects a message it must accept.
         const auto wire = stringField(32);
 
-        sofab::IStreamObject<StringMessage<std::string>> in{kTight};
+        sofab::IStreamObject<StringMessage<std::string>> in;
         (*in).maxlen = 64;
+        (*in).dynCap = kDynStringLen;
 
         REQUIRE(in.feed(wire.data(), wire.size()).ok());
         REQUIRE((*in).value == std::string(32, 'a'));
@@ -289,8 +321,9 @@ TEST_CASE("limits: a schema-bounded field is judged by its schema bound, not by 
         // to raise. The schema decides, and it says these bytes are invalid.
         const auto wire = stringField(9);
 
-        sofab::IStreamObject<StringMessage<std::string>> in{kTight};
+        sofab::IStreamObject<StringMessage<std::string>> in;
         (*in).maxlen = 4;
+        (*in).dynCap = kDynStringLen;
 
         auto r = in.feed(wire.data(), wire.size());
         REQUIRE(r.code() == sofab::Error::InvalidMessage);
@@ -302,13 +335,15 @@ TEST_CASE("limits: a schema-bounded field is judged by its schema bound, not by 
     {
         const auto wire = arrayField(8);    // array cap is 4
 
-        sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> ok{kTight};
+        sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> ok;
         (*ok).cap = 16;                     // the schema bounds it: the cap is inert
+        (*ok).dynCap = kDynArrayCount;
         REQUIRE(ok.feed(wire.data(), wire.size()).ok());
         REQUIRE((*ok).value.size() == 8);
 
-        sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> bad{kTight};
+        sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> bad;
         (*bad).cap = 2;                     // and its violation is INVALID
+        (*bad).dynCap = kDynArrayCount;
         REQUIRE(bad.feed(wire.data(), wire.size()).code() == sofab::Error::InvalidMessage);
     }
 }
@@ -326,8 +361,9 @@ TEST_CASE("limits: an unbounded field the destination cannot hold is InvalidArgu
     // crossed; InvalidMessage would call a well-formed message malformed.
     const auto wire = stringField(6);       // cap is 8: the field clears it
 
-    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> in{kTight};
+    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> in;
     (*in).maxlen = -1;
+    (*in).dynCap = kDynStringLen;
 
     auto r = in.feed(wire.data(), wire.size());
 
@@ -344,11 +380,13 @@ TEST_CASE("limits: tier 2 and tier 3 are told apart by WHICH ceiling stopped it"
     // The same destination and the same schema (none) -- only the length moves.
     // Below the cap it is the storage that refuses; above it, the policy. A port
     // that reports one code for both fails exactly here.
-    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> small{kTight};
+    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> small;
+    (*small).dynCap = kDynStringLen;
     const auto six = stringField(6);        // 4 < 6 <= 8
     REQUIRE(small.feed(six.data(), six.size()).code() == sofab::Error::InvalidArgument);
 
-    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> big{kTight};
+    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> big;
+    (*big).dynCap = kDynStringLen;
     const auto nine = stringField(9);       // 8 < 9
     REQUIRE(big.feed(nine.data(), nine.size()).code() == sofab::Error::LimitExceeded);
 }
@@ -359,7 +397,7 @@ TEST_CASE("limits: tier 1 still wins over tier 3")
     // also too small: the message is malformed, and that is the truer statement.
     const auto wire = stringField(6);
 
-    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> in{kTight};
+    sofab::IStreamObject<StringMessage<sofab::FixedString<4>>> in;
     (*in).maxlen = 5;
 
     REQUIRE(in.feed(wire.data(), wire.size()).code() == sofab::Error::InvalidMessage);
@@ -372,8 +410,9 @@ TEST_CASE("limits: an over-capacity array count is refused, not silently truncat
     // a short array presented as the whole value.
     const auto wire = arrayField(3);        // array cap is 4: the count clears it
 
-    sofab::IStreamObject<ArrayMessage<sofab::InlineVector<uint32_t, 2>>> in{kTight};
+    sofab::IStreamObject<ArrayMessage<sofab::InlineVector<uint32_t, 2>>> in;
     (*in).cap = -1;
+    (*in).dynCap = kDynArrayCount;
 
     auto r = in.feed(wire.data(), wire.size());
     REQUIRE(r.code() == sofab::Error::InvalidArgument);
@@ -386,14 +425,16 @@ TEST_CASE("limits: a growable destination never reaches tier 3")
     // std::string can give are ok and LimitExceeded.
     const auto wire = stringField(8);       // exactly at the cap
 
-    sofab::IStreamObject<StringMessage<std::string>> in{kTight};
+    sofab::IStreamObject<StringMessage<std::string>> in;
+    (*in).dynCap = kDynStringLen;
     REQUIRE(in.feed(wire.data(), wire.size()).ok());
     REQUIRE((*in).value.size() == 8);
 }
 
 /* ---------------------------------------------------------------------------
  * a wrapper array has no count header, so the cap binds the element INDEX
- * (§6.2.1, §7.2 item 8)
+ * (§6.2.1, §7.2 item 8) -- and this is the ONE place the corelib applies a cap
+ * itself, from the number generated code set on the collector.
  * ------------------------------------------------------------------------- */
 
 TEST_CASE("limits: a wrapper array's cap binds the element index")
@@ -412,7 +453,9 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.sequenceEnd();
         os.flush();
 
-        sofab::IStreamObject<StringArrayMessage> in{kTight};
+        sofab::IStreamObject<StringArrayMessage> in;
+        (*in).seq.dynCap = kDynArrayCount;
+        (*in).seq.dynElemMax = kDynStringLen;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE((*in).out.size() == 4);
         REQUIRE((*in).out[0] == "a");
@@ -429,7 +472,9 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.sequenceEnd();
         os.flush();
 
-        sofab::IStreamObject<StringArrayMessage> in{kTight};
+        sofab::IStreamObject<StringArrayMessage> in;
+        (*in).seq.dynCap = kDynArrayCount;
+        (*in).seq.dynElemMax = kDynStringLen;
         auto r = in.feed(os.data(), os.bytesUsed());
 
         REQUIRE(r.code() == sofab::Error::LimitExceeded);
@@ -446,8 +491,9 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.sequenceEnd();
         os.flush();
 
-        sofab::IStreamObject<StringArrayMessage> in{kTight};
+        sofab::IStreamObject<StringArrayMessage> in;
         (*in).seq.cap = 2;                  // the schema says: two elements
+        (*in).seq.dynCap = kDynArrayCount;  // and the cap must stay out of it
         REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
     }
 
@@ -459,8 +505,27 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.sequenceEnd();
         os.flush();
 
-        sofab::IStreamObject<StringArrayMessage> in{kTight};
+        sofab::IStreamObject<StringArrayMessage> in;
+        (*in).seq.dynCap = kDynArrayCount;
+        (*in).seq.dynElemMax = kDynStringLen;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::LimitExceeded);
+    }
+
+    SECTION("no cap supplied: the collector invents none of its own")
+    {
+        // §6.2.1: "The codec never invents a limit of its own." A collector left
+        // without a dynCap applies nothing -- the omission is generated code's
+        // defect to have, and the corelib does not paper over it with a number
+        // it made up.
+        sofab::OStream os{256};
+        os.sequenceBeginLazy(1);
+        writeElement(os, 9, "j");           // far past kDynArrayCount
+        os.sequenceEnd();
+        os.flush();
+
+        sofab::IStreamObject<StringArrayMessage> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE((*in).out.size() == 10);
     }
 }
 
@@ -474,30 +539,32 @@ TEST_CASE("limits: a field the handler skips is never capped")
     // nothing -- it is walked, not materialized. A max_dyn_* limit MUST NOT be
     // applied to it, so a decode that steps over an over-cap field it was never
     // going to read stays COMPLETE."
-    const auto wire = stringField(64);      // far past every cap in kTight
+    const auto wire = stringField(64);      // far past every cap here
 
     struct SkipEverything final : sofab::IStreamMessage
     {
         void deserialize(sofab::IStreamImpl &, sofab::id, size_t, size_t) noexcept override { }
     };
 
-    sofab::IStreamObject<SkipEverything> in{kTight};
+    sofab::IStreamObject<SkipEverything> in;
     REQUIRE(in.feed(wire.data(), wire.size()).ok());
 }
 
 TEST_CASE("limits: a type-contradicting field is skipped, not capped")
 {
     // MESSAGE_SPEC §7.3: the read declines before it binds, so the field is
-    // walked like an unknown id. The cap must not fire on the way past.
+    // walked like an unknown id. The cap must not fire on the way past -- which
+    // is why the guard sits inside the id arm and not above the switch.
     const auto wire = blobField(64);
 
-    sofab::IStreamObject<StringMessage<std::string>> in{kTight};  // expects a string
+    sofab::IStreamObject<StringMessage<std::string>> in;  // expects a string
+    (*in).dynCap = kDynStringLen;
     REQUIRE(in.feed(wire.data(), wire.size()).ok());
     REQUIRE((*in).value.empty());
 }
 
 /* ---------------------------------------------------------------------------
- * the codes themselves
+ * the codes themselves, and who owns the numbers
  * ------------------------------------------------------------------------- */
 
 TEST_CASE("limits: LimitExceeded is its own code, distinct from every other")
@@ -515,20 +582,27 @@ TEST_CASE("limits: LimitExceeded is its own code, distinct from every other")
     SUCCEED("compile-time only");
 }
 
-TEST_CASE("limits: Limits has no unset state")
+TEST_CASE("limits: the corelib holds no limit of its own")
 {
-    // §6.2.1: "There is no unset state and no unlimited mode." The type enforces
-    // it -- a Limits cannot be default-constructed, so a stream cannot exist
-    // without all three numbers having been stated by whoever built it.
-    static_assert(!std::is_default_constructible_v<sofab::Limits>);
-    static_assert(!std::is_default_constructible_v<sofab::IStreamObject<StringArrayMessage>>);
+    // §6.2.1: the numbers "are not the codec's" -- they come from generated code,
+    // which knows the schema and the target. A stream therefore takes none and
+    // stores none; what this corelib contributes is exceedLimit() and the
+    // category it raises. A future refactor that parks a max_dyn_* default on the
+    // stream would pass every case above and break this one.
+    static_assert(std::is_default_constructible_v<sofab::IStreamObject<StringArrayMessage>>);
 
-    // And the stream carries exactly what it was given -- no number of the
-    // corelib's own (ARCHITECTURE §9.5).
-    sofab::IStreamObject<StringArrayMessage> in{kTight};
-    REQUIRE(in.limits().max_dyn_array_count == 4);
-    REQUIRE(in.limits().max_dyn_string_len == 8);
-    REQUIRE(in.limits().max_dyn_blob_len == 8);
+    // A read with no cap passed applies none: 64 bytes through a stream that was
+    // told nothing decodes, because there is no ceiling anywhere to consult.
+    sofab::IStreamObject<StringMessage<std::string>> uncapped;
+    const auto wire = stringField(64);
+    REQUIRE(uncapped.feed(wire.data(), wire.size()).ok());
+    REQUIRE((*uncapped).value.size() == 64);
 
-    SUCCEED("");
+    // The cap is an argument, defaulted to "none supplied" rather than to a
+    // number the library chose -- and data on the collector, per decode.
+    static_assert(sofab::StringSeq{}.dynCap == -1);
+    static_assert(sofab::StringSeq{}.dynElemMax == -1);
+    static_assert(sofab::BlobSeq{}.dynCap == -1);
+
+    SUCCEED("compile-time only");
 }

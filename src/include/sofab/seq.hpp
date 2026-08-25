@@ -256,7 +256,11 @@ namespace sofab
         static constexpr int elemFix = seq_elem_fix_v<Elem>;
 
         Container *out = nullptr;  //!< Destination, bound by @ref IStreamImpl::readSequence.
-        long cap = -1;             //!< Schema `count` N, or -1 for unbounded.
+        long cap = -1;             //!< Schema `count` N, or -1 when the schema declares none.
+        long dynCap = -1;          //!< §6.2.1 cap on the element index, or -1. Consulted only
+                                   //!< where @ref cap is -1; the number is generated code's,
+                                   //!< applied here because a wrapper array fires no callback
+                                   //!< at the index (see @ref sofab::StringSeq).
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
         {
@@ -272,10 +276,9 @@ namespace sofab
              * which is what keeps an announced index near 2^31 from becoming an
              * allocation. A wrapper array's length is highest present id + 1
              * (MESSAGE_SPEC §5.1), so that is what the bound is applied to. Where
-             * the schema declares no `count` the stream's Limits do
-             * (max_dyn_array_count, §6.2.1) -- there is no capacity here to refuse
-             * with, exactly as in @ref StringSeq. */
-            if (is.refuse(static_cast<size_t>(id) + 1, cap, is.limits().max_dyn_array_count))
+             * the schema declares no `count`, dynCap does (§6.2.1) -- there is no
+             * capacity here to refuse with, exactly as in @ref StringSeq. */
+            if (is.refuse(static_cast<size_t>(id) + 1, cap, dynCap))
             {
                 return;
             }
@@ -288,8 +291,8 @@ namespace sofab
             else
             {
                 /* A growable row publishes no capacity and the outer collector is
-                 * not told the inner array's `count`, so readArray falls to the
-                 * receiver cap for it -- which is the one bound left. */
+                 * not told the inner array's `count`, so the wire count is the only
+                 * bound left. A cap on it is generated code's to apply. */
                 is.readArray(elem, count, fixed_capacity_v<Elem>);
             }
         }
