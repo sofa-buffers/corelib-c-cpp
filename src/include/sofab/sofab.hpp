@@ -1580,15 +1580,51 @@ namespace sofab
     };
 
     class OStreamMessage;
-    /*! @brief Concept: a serializable message type usable with @ref OStreamObject
-     *  (derives from @ref OStreamMessage and exposes a @c _maxSize constant). */
+
+    /*! @brief Detects the CORELIB_PLAN §6.1.1 spelling of the worst-case size. */
+    template <class T>
+    concept HasMaxSize =
+        requires { { T::MAX_SIZE } -> std::convertible_to<std::size_t>; } &&
+        std::is_same_v<decltype(T::MAX_SIZE), const std::size_t>;
+
+    /*! @brief Detects the pre-0.11 spelling. Deprecated; see @ref OutputMessage. */
+    template <class T>
+    concept HasLegacyMaxSize =
+        requires { { T::_maxSize } -> std::convertible_to<std::size_t>; } &&
+        std::is_same_v<decltype(T::_maxSize), const std::size_t>;
+
+    /*!
+     * @brief The worst-case encoded size of a generated message, whichever
+     *        spelling it declares. Prefers `MAX_SIZE`.
+     */
+    template <class T>
+    inline constexpr size_t max_size_v = [] () constexpr -> size_t
+    {
+        if constexpr (HasMaxSize<T>) { return T::MAX_SIZE; }
+        else                         { return T::_maxSize; }
+    }();
+
+    /*!
+     * @brief Concept: a serializable message type usable with @ref OStreamObject.
+     *
+     * Derives from @ref OStreamMessage and declares its worst-case encoded size.
+     *
+     * CORELIB_PLAN §6.1.1 closes the generated-object name set and puts
+     * **`MAX_SIZE`** in it, permitting "only casing/idiom …, never the words".
+     * This concept required `_maxSize`, an underscore-prefixed private-marker
+     * spelling that is past casing — and because the concept is a hard
+     * requirement, it fixed that name for every generated type built against this
+     * corelib. (The C side was never affected: generated C emits
+     * `MESSAGE_<NAME>_MAX_SIZE`, an idiomatic C macro spelling.)
+     *
+     * Both spellings are accepted so the rename is not a flag day: a generated
+     * tree built against 0.10 keeps compiling while the `cpp` backend switches
+     * over. `_maxSize` is deprecated and will be dropped once no emitter uses it.
+     */
     template <class T>
     concept OutputMessage =
         std::derived_from<T, OStreamMessage> &&
-        requires {
-            { T::_maxSize } -> std::convertible_to<std::size_t>;
-        } &&
-        std::is_same_v<decltype(T::_maxSize), const std::size_t>;
+        (HasMaxSize<T> || HasLegacyMaxSize<T>);
 
     /*!
      * @brief Base class for serializable message objects.
@@ -1612,14 +1648,15 @@ namespace sofab
      * @brief Self-contained encoder that owns a message and an inline buffer.
      *
      * Bundles a @ref OStreamMessage instance with an @ref OStreamInline buffer
-     * sized from the message's @c _maxSize, so a message can be populated and
+     * sized from the message's worst-case size, so a message can be populated and
      * encoded in one object.
      *
      * @tparam MessageType  An @ref OutputMessage type.
-     * @tparam N            Buffer size in bytes (defaults to @c MessageType::_maxSize).
+     * @tparam N            Buffer size in bytes (defaults to the message's
+     *                      @c MAX_SIZE, or its deprecated @c _maxSize).
      * @tparam Offset       Initial write offset within the buffer.
      */
-    template <OutputMessage MessageType, size_t N = MessageType::_maxSize, size_t Offset = 0>
+    template <OutputMessage MessageType, size_t N = max_size_v<MessageType>, size_t Offset = 0>
     class OStreamObject : public OStreamInline<N + Offset, Offset>
     {
         MessageType message_;   //!< The owned message instance.
@@ -1657,14 +1694,14 @@ namespace sofab
     /*!
      * @brief @ref OStreamObject variant parameterized by offset only.
      *
-     * Convenience alias-like class fixing @c N to @c MessageType::_maxSize while
+     * Convenience alias-like class fixing @c N to the message's worst-case size while
      * letting the caller choose a leading @p Offset (e.g. to reserve a header).
      *
      * @tparam MessageType  An @ref OutputMessage type.
      * @tparam Offset       Initial write offset within the buffer.
      */
     template <OutputMessage MessageType, size_t Offset = 0>
-    class OStreamObjectOffset : public OStreamObject<MessageType, MessageType::_maxSize, Offset>
+    class OStreamObjectOffset : public OStreamObject<MessageType, max_size_v<MessageType>, Offset>
     {
     };
 
