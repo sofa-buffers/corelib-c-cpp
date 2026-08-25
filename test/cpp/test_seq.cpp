@@ -393,10 +393,19 @@ TEST_CASE("MessageSeq: a native-scalar row is placed by id and sized by the wire
     }
 }
 
-TEST_CASE("MessageSeq: a row longer than the row's own capacity is INVALID")
+TEST_CASE("MessageSeq: a row longer than the row's own capacity is InvalidArgument")
 {
-    // §7.1: the heap-free row's capacity IS the schema `count` it was generated
-    // for, so an over-long row is rejected rather than truncated into it.
+    // Rejected rather than truncated into the row -- that half is §6.2.1's
+    // "rejected, never clamped" and is unchanged.
+    //
+    // The CODE changed with the bounds move. The codec no longer takes a schema
+    // `count`: MESSAGE_SPEC §7 gives schema bounds to generated code, "the
+    // corelib cannot know the schema". What this corelib still sees is the row's
+    // storage, and a value the caller's storage cannot hold is §6.6.3's third
+    // refusal tier -- InvalidArgument, not InvalidMessage. A handler that wants
+    // the row's capacity to ALSO mean the schema `count` compares the announced
+    // count itself and calls invalidate(); the two answers are then its choice,
+    // made where the schema is known.
     const std::array<uint32_t, 5> row = {1, 2, 3, 4, 5};
 
     sofab::OStream os{256};
@@ -405,7 +414,7 @@ TEST_CASE("MessageSeq: a row longer than the row's own capacity is INVALID")
     os.sequenceEnd();
 
     sofab::IStreamObject<InlineRows> in;
-    REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
+    REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidArgument);
 }
 
 TEST_CASE("MessageSeq: rows within the capacity round-trip through inline storage")

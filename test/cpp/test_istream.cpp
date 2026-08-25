@@ -1453,7 +1453,7 @@ TEST_CASE("readArray: an InlineVector destination is sized to the wire count")
         sofab::InlineVector<uint32_t, 4> a{9, 9, 9, 9};
         void deserialize(sofab::IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
         {
-            if (id == 0) is.readArray(a, count, 4);
+            if (id == 0) is.readArray(a, count);
         }
     };
 

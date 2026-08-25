@@ -518,35 +518,50 @@ that bound is `SOFAB_RET_E_INVALID_MSG`. `SOFAB_RET_E_LIMIT_EXCEEDED` is declare
 in `sofab.h` because `sofab_ret_t` is the shared C/C++ code table, and **no C API
 function returns it**.
 
-**The C++ wrapper does have unbounded fields, and the cap for them is yours.** A
-`std::string`, `std::vector` or growable wrapper-array destination has no
-capacity of its own, so a field whose schema declares no `maxlen` / `count` would
-otherwise be sized by the wire alone. The ceiling for it is a per-deployment
-judgement — an element count trivial on a server is brutal in an MCU — so this
-library holds no such number, invents none, and stores none. You hand it over per
-read, which is what generated code emits:
+**The C++ wrapper does have unbounded fields, and both bounds for them are
+yours.** A `std::string`, `std::vector` or growable wrapper-array destination has
+no capacity of its own, so a field whose schema declares no `maxlen` / `count`
+would otherwise be sized by the wire alone. Neither number is this library's to
+hold: CORELIB_PLAN §6.2.1 gives the receiver caps to generated code — "the
+visitor decides. The codec never invents a limit of its own and never clamps to
+one" — and MESSAGE_SPEC §7 gives it the schema bounds, because "the corelib
+cannot know the schema". What this library contributes is the **report and the
+category**: the `size` / `count` your handler already receives, and a verdict it
+can set.
+
+So both bounds are applied in your handler, at the field callback, before you
+bind a destination:
 
 ```cpp
 void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
 {
-    //                      schema maxlen (-1 = none) ─┐   ┌─ your ceiling for that case
-    if (id == 1) is.readString(name, size, -1, SOFAB_MAX_DYN_STRING_LEN);
+    if (id != 1) return;
+
+    // §7.3 FIRST: a field whose wire type contradicts the read is skipped like an
+    // unknown id, and must never be measured against a ceiling on the way past.
+    if (is.wire() != sofab::Wire::Fixlen || is.fixType() != sofab::Fix::String) return;
+
+    // then the schema bound, if the schema declares one ...
+    // if (size > SCHEMA_MAXLEN) { is.invalidate(); return; }
+
+    // ... or the receiver cap, only where it does not
+    if (size > SOFAB_MAX_DYN_STRING_LEN) { is.exceedLimit(); return; }
+
+    is.readString(name, size);
 }
 ```
 
-The cap is consulted only where the schema declares nothing — it must never be
-applied to a field the schema already bounds — and only after the field's wire
-type has been checked, so a field that is about to be skipped is never measured
-against it (§7.3). That ordering is why the ceiling is passed into the read
-rather than checked in front of it: a `if (size > CAP) is.exceedLimit();` ahead
-of the call would reject a field the decoder was going to step over. Where a
-handler genuinely enforces a ceiling the read cannot see, `exceedLimit()` is
-public for it.
+The ordering is the part that is easy to get wrong: check the wire type before
+any ceiling. A `if (size > CAP) is.exceedLimit();` placed above the type test
+rejects a field the decoder was going to step over, which §6.2.1 forbids in as
+many words.
 
-The one place the library applies a cap for you is a **growable wrapper array**:
+The one place the library applies a bound for you is a **growable wrapper array**:
 it announces no count and delivers no callback at the element index, so there is
-no point at which your handler could check. Hand the number to the collector and
-it enforces it on the index, before the container is extended:
+no point at which your handler could check. Its collector is the static helper
+layer (§6.6.1) rather than the codec — the generated layer owns it, and no codec
+path calls it — so the numbers still come from you, set on the collector, and it
+enforces them on the index before the container is extended:
 
 ```cpp
 seq.cap = -1;                                 // the schema declares no count
@@ -559,9 +574,13 @@ what was wrong:
 
 | what was exceeded | code | who applies it |
 | - | - | - |
-| a `maxlen` / `count` the schema declares | `sofab::Error::InvalidMessage` | the library, from the bound you pass |
-| a receiver cap, on a field the schema leaves unbounded | `sofab::Error::LimitExceeded` | the library, from the ceiling you pass |
-| neither — the destination handed over is too short | `sofab::Error::InvalidArgument` | the library |
+| a `maxlen` / `count` the schema declares | `sofab::Error::InvalidMessage` | your handler, via `invalidate()` |
+| a receiver cap, on a field the schema leaves unbounded | `sofab::Error::LimitExceeded` | your handler, via `exceedLimit()` |
+| neither — the destination handed over is too short | `sofab::Error::InvalidArgument` | **the library** (§6.6.3) |
+
+The third row is the only bound this library judges, and it is not a limit: it is
+the size of the storage you handed over, which the codec must refuse rather than
+grow into or truncate to.
 
 All three are terminal. A field the handler skips is never capped.
 

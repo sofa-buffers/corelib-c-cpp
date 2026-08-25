@@ -122,16 +122,17 @@ namespace sofab
                                                 //!< @c InvalidMessage means "these bytes are
                                                 //!< broken". Terminal, like @c InvalidMessage.
                                                 //!<
-                                                //!< The **number is never this corelib's**: §6.2.1
-                                                //!< gives the limits to generated code, which knows
-                                                //!< the schema and the target, and leaves the codec
-                                                //!< only "the report and the category". Generated
-                                                //!< code hands the number over per call —
-                                                //!< @ref IStreamImpl::readString and friends take a
-                                                //!< @c dynCap, and a growable wrapper array is told
-                                                //!< one as @ref StringSeq::dynCap. Nothing is stored
-                                                //!< on the stream and nothing is defaulted: a caller
-                                                //!< that passes no cap gets none.
+                                                //!< **This corelib never decides it.** §6.2.1 gives
+                                                //!< the limits to generated code — "the visitor
+                                                //!< decides. The codec never invents a limit of its
+                                                //!< own and never clamps to one" — and leaves the
+                                                //!< codec "the report and the category". This
+                                                //!< enumerator is the category; the report is the
+                                                //!< @c size / @c count the field callback already
+                                                //!< carries. A handler that finds an announced
+                                                //!< length past its configured cap calls
+                                                //!< @ref IStreamImpl::exceedLimit and returns
+                                                //!< without binding a destination.
     };
 
 
@@ -1942,57 +1943,38 @@ namespace sofab
         }
 
         /*!
-         * @brief Apply CORELIB_PLAN §6.3's three refusal tiers to an announced
-         *        length or element count.
+         * @brief Refuse an announced length or element count the caller's own
+         *        destination cannot hold.
          *
-         * Called at the count/length header — the one word that decides all three,
-         * and after the §7.3 type check, so a field that is about to be skipped is
-         * never measured against anything (§6.2.1: "a skipped field is never
-         * capped"). Before the destination is sized, which is what keeps a hostile
-         * number from committing the allocation the check exists to prevent.
-         * Rejected, never clamped.
+         * This is the **only** bound the codec judges. CORELIB_PLAN §6.2.1 gives
+         * the receiver caps to generated code — "the visitor decides. The codec
+         * never invents a limit of its own and never clamps to one" — and
+         * MESSAGE_SPEC §7 gives it the schema bounds, because "the corelib cannot
+         * know the schema". Both are measured by the handler, at the `size` /
+         * `count` this corelib reports to it in the field callback, before it
+         * binds a destination at all.
          *
-         * @param n           The announced length in bytes, or element count.
-         * @param schemaBound The declared `maxlen` / `count`, or -1 when the
-         *                    schema declares none. Exceeding it is
-         *                    @ref Error::InvalidMessage.
-         * @param dynCap      The §6.2.1 receiver cap **the caller hands over** for
-         *                    this field, or -1 when none was supplied. Consulted
-         *                    **only** where @p schemaBound is -1 — a limit "MUST
-         *                    NOT be applied to a field the schema already bounds".
-         *                    Exceeding it is @ref Error::LimitExceeded. It is a
-         *                    parameter and never a member: §6.2.1 gives the
-         *                    numbers to generated code, which knows the schema and
-         *                    the target, and leaves this corelib "the report and
-         *                    the category". Nothing here has a default to fall
-         *                    back on, and none is invented.
-         * @param room        What the destination can actually hold, or -1 for a
-         *                    growable one, which holds whatever the two bounds
-         *                    above admit. Exceeding it is
-         *                    @ref Error::InvalidArgument.
+         * What is left here is not a limit but the caller's storage: §6.6.3
+         * requires "the codec refusing a destination too short rather than growing
+         * it. That refusal is **`InvalidArgument`**: the message is well-formed and
+         * within every bound it declares — what does not fit is the storage this
+         * caller offered."
+         *
+         * Called before the destination is written, and terminal. Rejected, never
+         * clamped — a short write with a `COMPLETE` verdict is the data corruption
+         * §6.2.1 calls "a safety jacket".
+         *
+         * @param n     The announced length in bytes, or element count.
+         * @param room  What the destination can actually hold, or -1 for a growable
+         *              one, which this corelib never bounds.
          * @return `true` when the value was refused, in which case the caller must
          *         return without touching the destination.
          */
-        [[nodiscard]] bool refuse(
-            size_t n, long schemaBound, long dynCap = -1, long room = -1) noexcept
+        [[nodiscard]] bool refuse(size_t n, long room) noexcept
         {
-            if (schemaBound >= 0)
-            {
-                if (n > static_cast<size_t>(schemaBound))
-                {
-                    invalidate();       /* tier 1: the schema says these bytes are invalid */
-                    return true;
-                }
-            }
-            else if (dynCap >= 0 && n > static_cast<size_t>(dynCap))
-            {
-                exceedLimit();          /* tier 2: well-formed, but past the cap you configured */
-                return true;
-            }
-
             if (room >= 0 && n > static_cast<size_t>(room))
             {
-                refuseArgument();       /* tier 3: both bounds admit it; this caller's storage does not */
+                refuseArgument();
                 return true;
             }
 
@@ -2292,7 +2274,7 @@ namespace sofab
          *                or -1 for none. See @ref refuse.
          */
         template <typename T>
-        void readString(T &value, size_t size, long maxlen = -1, long dynCap = -1) noexcept
+        void readString(T &value, size_t size) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::String)
             {
@@ -2300,7 +2282,7 @@ namespace sofab
                 return;
             }
 
-            if (refuse(size, maxlen, dynCap, fixed_capacity_v<T>))
+            if (refuse(size, fixed_capacity_v<T>))
             {
                 return;
             }
@@ -2342,7 +2324,7 @@ namespace sofab
          *                or -1 for none. See @ref refuse.
          */
         template <typename T>
-        void readBlob(T &value, size_t size, long maxlen = -1, long dynCap = -1) noexcept
+        void readBlob(T &value, size_t size) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::Blob)
             {
@@ -2350,7 +2332,7 @@ namespace sofab
                 return;
             }
 
-            if (refuse(size, maxlen, dynCap, fixed_capacity_v<T>))
+            if (refuse(size, fixed_capacity_v<T>))
             {
                 return;
             }
@@ -2396,7 +2378,7 @@ namespace sofab
          *                   or -1 for none. See @ref refuse.
          */
         template <typename C>
-        void readArray(C &out, size_t wireCount = 0, long cap = -1, long dynCap = -1) noexcept
+        void readArray(C &out, size_t wireCount = 0) noexcept
         {
             using Elem = typename C::value_type;
 
@@ -2434,7 +2416,7 @@ namespace sofab
                 room = static_cast<long>(out.size());
             }
 
-            if (refuse(wireCount, cap, dynCap, room))
+            if (refuse(wireCount, room))
             {
                 return;
             }
@@ -2806,6 +2788,43 @@ namespace sofab
         }
     };
 
+    /*!
+     * @brief Apply a collector's message-side bounds and report the verdict.
+     *
+     * The collectors below are the **static helper layer** (§6.6.1): they ship
+     * here for reuse, the generated layer owns them, and no codec path calls
+     * them — @ref IStreamImpl::readSequence hands control to the caller's
+     * collector exactly as it hands control to any other handler. So a bound
+     * applied here is generated code's bound, not the codec's, and §6.2.1's
+     * "the codec never invents a limit of its own" is kept: every number below
+     * arrives in a field the generated layer sets.
+     *
+     * A wrapper array is the one shape that has nowhere else to put it. It
+     * announces no count and fires no callback per element, so the caller has no
+     * point at which to check, and §6.2.1 puts the enforcement point on the
+     * element **index**, before the container is extended.
+     *
+     * @param is           The stream, for the verdict.
+     * @param n            The index + 1, or the element length.
+     * @param schemaBound  The schema's `count` / `maxlen`, or -1. Exceeding it is
+     *                     @ref Error::InvalidMessage.
+     * @param dynCap       The §6.2.1 receiver cap, or -1. Consulted **only** where
+     *                     @p schemaBound is -1. Exceeding it is
+     *                     @ref Error::LimitExceeded.
+     * @return `true` when the element was refused.
+     */
+    [[nodiscard]] inline bool seqRefuse(
+        IStreamImpl &is, size_t n, long schemaBound, long dynCap) noexcept
+    {
+        if (schemaBound >= 0)
+        {
+            if (n > static_cast<size_t>(schemaBound)) { is.invalidate(); return true; }
+            return false;
+        }
+        if (dynCap >= 0 && n > static_cast<size_t>(dynCap)) { is.exceedLimit(); return true; }
+        return false;
+    }
+
     /**
      * @brief Collects a `string` wrapper sequence into a `std::vector<std::string>`.
      *
@@ -2830,10 +2849,8 @@ namespace sofab
         std::vector<std::string> *out = nullptr;
         long cap = -1;         //!< Schema `count` N, or -1 when the schema declares none.
         long elemMax = -1;     //!< Element `maxlen`, or -1 when the schema declares none.
-        long dynCap = -1;      //!< §6.2.1 cap on the element index, or -1. Consulted only
-                               //!< where @ref cap is -1; the number is generated code's.
-        long dynElemMax = -1;  //!< §6.2.1 cap on the element length, or -1. Consulted only
-                               //!< where @ref elemMax is -1.
+        long dynCap = -1;      //!< §6.2.1 receiver cap on the index; consulted only where @ref cap is -1.
+        long dynElemMax = -1;  //!< §6.2.1 receiver cap on the element length; only where @ref elemMax is -1.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
         {
@@ -2845,11 +2862,11 @@ namespace sofab
              * -- which is what keeps an announced index near 2^31 from becoming an
              * allocation. A wrapper array's length is highest present id + 1
              * (MESSAGE_SPEC §5.1), so that is what the bound is applied to. */
-            if (is.refuse(static_cast<size_t>(id) + 1, cap, dynCap))
+            if (seqRefuse(is, static_cast<size_t>(id) + 1, cap, dynCap))
             {
                 return;
             }
-            if (is.refuse(size, elemMax, dynElemMax))
+            if (seqRefuse(is, size, elemMax, dynElemMax))
             {
                 return;
             }
@@ -2869,8 +2886,8 @@ namespace sofab
         std::vector<std::vector<uint8_t>> *out = nullptr;
         long cap = -1;         //!< Schema `count` N, or -1 when the schema declares none.
         long elemMax = -1;     //!< Element `maxlen`, or -1 when the schema declares none.
-        long dynCap = -1;      //!< §6.2.1 cap on the element index, or -1 (see @ref StringSeq).
-        long dynElemMax = -1;  //!< §6.2.1 cap on the element length, or -1.
+        long dynCap = -1;      //!< §6.2.1 receiver cap on the index; consulted only where @ref cap is -1.
+        long dynElemMax = -1;  //!< §6.2.1 receiver cap on the element length; only where @ref elemMax is -1.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
         {
@@ -2878,11 +2895,11 @@ namespace sofab
             {
                 return; /* §7.3 */
             }
-            if (is.refuse(static_cast<size_t>(id) + 1, cap, dynCap))
+            if (seqRefuse(is, static_cast<size_t>(id) + 1, cap, dynCap))
             {
                 return;
             }
-            if (is.refuse(size, elemMax, dynElemMax))
+            if (seqRefuse(is, size, elemMax, dynElemMax))
             {
                 return;
             }

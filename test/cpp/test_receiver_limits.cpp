@@ -101,6 +101,29 @@ std::vector<uint8_t> arrayField(size_t n)
  *
  * @tparam Dst  `std::string` (growable) or `sofab::FixedString<N>` (heap-free).
  */
+/*! Apply the two message-side bounds the way generated code does — in the
+ *  handler, at the `size` / `count` the field callback reports, before any
+ *  destination is bound.
+ *
+ *  CORELIB_PLAN §6.2.1 leaves the codec "the report and the category": "the
+ *  visitor decides. The codec never invents a limit of its own and never clamps
+ *  to one." MESSAGE_SPEC §7 says the same about the schema bound, because "the
+ *  corelib cannot know the schema". So both live here, and the corelib is asked
+ *  only to carry the verdict.
+ *
+ *  @return `true` when the field was refused and must not be read.
+ */
+inline bool refusedByHandler(sofab::IStreamImpl &is, size_t n, long schemaBound, long dynCap) noexcept
+{
+    if (schemaBound >= 0)
+    {
+        if (n > static_cast<size_t>(schemaBound)) { is.invalidate(); return true; }
+        return false;
+    }
+    if (dynCap >= 0 && n > static_cast<size_t>(dynCap)) { is.exceedLimit(); return true; }
+    return false;
+}
+
 template <typename Dst>
 struct StringMessage final : sofab::IStreamMessage
 {
@@ -110,7 +133,16 @@ struct StringMessage final : sofab::IStreamMessage
 
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
     {
-        if (id == 1) is.readString(value, size, maxlen, dynCap);
+        if (id != 1) return;
+        /* §7.3 FIRST. Moving the bounds out of the codec moves this with them:
+         * `readString` used to make the type test before it consulted any
+         * ceiling, so a field about to be skipped was never measured. A handler
+         * that checks its cap above this line caps a field it is about to walk
+         * past -- which §6.2.1 forbids in as many words, and which is the shape
+         * generator#420 is about. */
+        if (is.wire() != sofab::Wire::Fixlen || is.fixType() != sofab::Fix::String) return;
+        if (refusedByHandler(is, size, maxlen, dynCap)) return;
+        is.readString(value, size);
     }
 };
 
@@ -124,7 +156,10 @@ struct BlobMessage final : sofab::IStreamMessage
 
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
     {
-        if (id == 1) is.readBlob(value, size, maxlen, dynCap);
+        if (id != 1) return;
+        if (is.wire() != sofab::Wire::Fixlen || is.fixType() != sofab::Fix::Blob) return; /* §7.3 first */
+        if (refusedByHandler(is, size, maxlen, dynCap)) return;
+        is.readBlob(value, size);
     }
 };
 
@@ -138,7 +173,10 @@ struct ArrayMessage final : sofab::IStreamMessage
 
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t, size_t count) noexcept override
     {
-        if (id == 1) is.readArray(value, count, cap, dynCap);
+        if (id != 1) return;
+        if (is.wire() != sofab::Wire::ArrayUnsigned) return; /* §7.3 first */
+        if (refusedByHandler(is, count, cap, dynCap)) return;
+        is.readArray(value, count);
     }
 };
 

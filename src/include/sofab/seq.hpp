@@ -214,7 +214,7 @@ namespace sofab
                  * instead of truncating into it (§7.1). A heap-free row's capacity
                  * IS the schema `count` it was generated for, so it is passed as
                  * the bound. */
-                is.readArray(elem, count, fixed_capacity_v<Elem>);
+                is.readArray(elem, count);
             }
         }
     };
@@ -257,10 +257,7 @@ namespace sofab
 
         Container *out = nullptr;  //!< Destination, bound by @ref IStreamImpl::readSequence.
         long cap = -1;             //!< Schema `count` N, or -1 when the schema declares none.
-        long dynCap = -1;          //!< §6.2.1 cap on the element index, or -1. Consulted only
-                                   //!< where @ref cap is -1; the number is generated code's,
-                                   //!< applied here because a wrapper array fires no callback
-                                   //!< at the index (see @ref sofab::StringSeq).
+        long dynCap = -1;          //!< §6.2.1 receiver cap on the index; only where @ref cap is -1.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
         {
@@ -278,7 +275,7 @@ namespace sofab
              * (MESSAGE_SPEC §5.1), so that is what the bound is applied to. Where
              * the schema declares no `count`, dynCap does (§6.2.1) -- there is no
              * capacity here to refuse with, exactly as in @ref StringSeq. */
-            if (is.refuse(static_cast<size_t>(id) + 1, cap, dynCap))
+            if (seqRefuse(is, static_cast<size_t>(id) + 1, cap, dynCap))
             {
                 return;
             }
@@ -293,7 +290,7 @@ namespace sofab
                 /* A growable row publishes no capacity and the outer collector is
                  * not told the inner array's `count`, so the wire count is the only
                  * bound left. A cap on it is generated code's to apply. */
-                is.readArray(elem, count, fixed_capacity_v<Elem>);
+                is.readArray(elem, count);
             }
         }
     };
