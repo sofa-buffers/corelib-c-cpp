@@ -28,7 +28,7 @@ _SOFAB_SOURCE_ONLY_MACROS = {"SOFAB_DISABLE_OBJECT_API"}
 
 class SofaBuffersCorelibConan(ConanFile):
     name = "sofa-buffers-corelib-c-cpp"
-    version = "0.10.0"
+    version = "0.11.0"
     license = "MIT"
     author = "andste82"
     url = "https://github.com/sofa-buffers/corelib-c-cpp"

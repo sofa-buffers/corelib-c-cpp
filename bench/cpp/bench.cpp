@@ -74,6 +74,7 @@ public:
     void init(sofab_istream_field_cb_t cb, void *usr) noexcept
     {
         sofab_istream_init(&ctx_, cb, usr);
+        resetRefusal_();   // the member outlives the core's own flag
     }
     sofab_istream_t *ctx() noexcept { return &ctx_; }
 };

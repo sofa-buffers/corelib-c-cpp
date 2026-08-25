@@ -1655,11 +1655,16 @@ namespace sofab
      * @ref InlineVector, @ref FixedString and @ref FixedBytes all declare
      * @c capacity() @c static @c constexpr, which is what tells them apart from
      * @c std::vector — whose @c capacity() is a per-object, runtime quantity and
-     * so cannot be called on the type. For the heap-free containers that
-     * capacity @b is the schema `count` (or `maxlen`) they were generated for, so
-     * it is the bound a collector may apply without being told one — and it is
-     * the destination ceiling §6.3's third tier is measured against
-     * (@ref IStreamImpl::readString).
+     * so cannot be called on the type.
+     *
+     * It is the destination ceiling §6.3's **third** tier is measured against
+     * (@ref IStreamImpl::readString) and nothing more. A heap-free container is
+     * usually generated for a schema `count` / `maxlen` and its capacity is then
+     * numerically that bound — but the codec cannot know that, and does not treat
+     * it as one: a value the storage cannot hold is @ref Error::InvalidArgument,
+     * not @ref Error::InvalidMessage. A handler that wants the schema reading
+     * compares the announced count itself and calls @ref IStreamImpl::invalidate,
+     * where the schema is known (MESSAGE_SPEC §7).
      *
      * @tparam C  Container type.
      */
@@ -1737,6 +1742,23 @@ namespace sofab
                 refusal_ = static_cast<uint8_t>(category);
             }
             sofab_istream_invalidate(&ctx_);
+        }
+
+        /*!
+         * @brief Clear a latched refusal, for a subclass that re-initialises the
+         *        stream itself.
+         *
+         * @ref invalidate documents the verdict as cleared by re-initialising the
+         * stream, and the C core's own sticky flag is. This one is not: it is a
+         * member, so it survives a bare `sofab_istream_init()` on the embedded
+         * context and would report a stale category on the next message. The
+         * library never hits that — `sofab_istream_init` is called from the
+         * constructors — but a subclass that re-inits to reuse one object (as
+         * `bench/cpp` does) must call this in the same breath.
+         */
+        void resetRefusal_() noexcept
+        {
+            refusal_ = SOFAB_RET_OK;
         }
 
         // Count a §7.3 skip the C core cannot see. The core counts a skip when a
