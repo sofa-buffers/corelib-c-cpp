@@ -1070,8 +1070,33 @@ namespace sofab
             }
             else if constexpr (std::is_convertible_v<T, std::string_view>)
             {
+                /* The view carries its own length, so use it. Routing this
+                 * through sofab_ostream_write_string() would derive the length
+                 * with strlen() instead, which is wrong in both directions: a
+                 * std::string_view need not be NUL-terminated, so strlen()
+                 * reads past the caller's buffer; and a value holding an
+                 * embedded U+0000 would be truncated there, though §4.6 frames
+                 * a string by length with no terminator and §6.4.3 makes
+                 * embedded U+0000 valid. The C convenience wrapper stays what
+                 * it is — the entry point for a genuinely NUL-terminated
+                 * const char*, which reaches this branch already converted. */
                 std::string_view sv{value};
-                ret = sofab_ostream_write_string(&ctx_, id, sv.data());
+                if ((uintmax_t)sv.size() > (uintmax_t)INT32_MAX
+                    || (uintmax_t)sv.size() > (uintmax_t)SOFAB_FIXLEN_MAX)
+                {
+                    /* Longer than the wire can frame: a caller mistake, so
+                     * §6.3's InvalidArgument rather than a malformed-message
+                     * code. Checked here because datalen below is an int32_t
+                     * and the cast would otherwise wrap. */
+                    ret = SOFAB_RET_E_ARGUMENT;
+                }
+                else
+                {
+                    ret = sofab_ostream_write_fixlen(
+                        &ctx_, id, sv.data(),
+                        static_cast<int32_t>(sv.size()),
+                        SOFAB_FIXLENTYPE_STRING);
+                }
             }
             else if constexpr (std::is_base_of_v<OStreamMessage, T>)
             {

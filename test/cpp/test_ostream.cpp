@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 #include <array>
+#include <cstdlib>
+#include <cstring>
 #include <valarray>
 #include <vector>
 #include <span>
@@ -1435,4 +1437,70 @@ TEST_CASE("OStream: a failing nested ELEMENT serialize still closes its sequence
     };
     REQUIRE(used == sizeof(expected));
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
+/* A string value carries its own length; the encoder must use it.
+ *
+ * Routing the string-like branch of `write()` through the C convenience
+ * wrapper `sofab_ostream_write_string()` derived the payload length with
+ * strlen() instead, which is wrong in both directions: a std::string_view need
+ * not be NUL-terminated, so strlen() read past the caller's buffer; and a value
+ * holding an embedded U+0000 was truncated there, although CORELIB_PLAN §4.6
+ * frames a string by length with no terminator and §6.4.3 makes embedded
+ * U+0000 valid UTF-8 that MUST NOT be rejected.
+ */
+TEST_CASE("OStream: a string_view's length is the payload length, not strlen")
+{
+    /* Deliberately unterminated: the six bytes are the whole allocation, so a
+     * strlen() over them runs off the end. Heap-allocated rather than a local
+     * array so a sanitizer build has a redzone to catch it. */
+    char *raw = static_cast<char *>(std::malloc(6));
+    REQUIRE(raw != nullptr);
+    std::memcpy(raw, "abcdef", 6);
+
+    sofab::OStreamInline<64> ostream;
+    auto res = ostream.write(1, std::string_view(raw, 6));
+    REQUIRE(res == sofab::Error::None);
+    ostream.flush();
+
+    const uint8_t expected[] = {
+        0x0A,                               // id 1, FIXLEN
+        0x32,                               // fixlen_word: (6 << 3) | STRING
+        'a', 'b', 'c', 'd', 'e', 'f',
+    };
+    REQUIRE(ostream.bytesUsed() == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, sizeof(expected)) == 0);
+
+    std::free(raw);
+}
+
+TEST_CASE("OStream: an embedded U+0000 survives; the string is not cut at it")
+{
+    const std::string value("a\0b", 3);
+    REQUIRE(value.size() == 3);
+
+    sofab::OStreamInline<64> ostream;
+    auto res = ostream.write(1, value);
+    REQUIRE(res == sofab::Error::None);
+    ostream.flush();
+
+    const uint8_t expected[] = {
+        0x0A,                               // id 1, FIXLEN
+        0x1A,                               // fixlen_word: (3 << 3) | STRING
+        'a', 0x00, 'b',
+    };
+    REQUIRE(ostream.bytesUsed() == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, sizeof(expected)) == 0);
+}
+
+TEST_CASE("OStream: a NUL-terminated const char* is unchanged by that")
+{
+    sofab::OStreamInline<64> ostream;
+    auto res = ostream.write(1, "abc");
+    REQUIRE(res == sofab::Error::None);
+    ostream.flush();
+
+    const uint8_t expected[] = { 0x0A, 0x1A, 'a', 'b', 'c' };
+    REQUIRE(ostream.bytesUsed() == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, sizeof(expected)) == 0);
 }
