@@ -1769,8 +1769,11 @@ namespace sofab
         // within a feed after a callback rejects).
         uint8_t refusal_ = SOFAB_RET_OK;
 
+        // ctx_ and arrayDecoder_ are deliberately left to sofab_istream_init()
+        // and sofab_istream_read_sequence(), which is where they were initialized
+        // before this constructor existed.
         explicit IStreamImpl(Limits limits) noexcept
-            : ctx_{}, arrayDecoder_{}, limits_{limits}
+            : limits_{limits}
         { }
 
         // Latch a callback-side refusal and stop the decode. The category is
@@ -1989,27 +1992,29 @@ namespace sofab
         }
 
         /*!
-         * @brief Apply CORELIB_PLAN §6.3's "three ways a value can be refused, and only one
-         * means the bytes are bad", applied in the only order that is correct and
-         * at the one word that decides it — the count/length header, BEFORE the
-         * destination is sized, which is what keeps a hostile number from
-         * committing the allocation the check exists to prevent (§6.2.1).
+         * @brief Apply CORELIB_PLAN §6.3's three refusal tiers to an announced
+         *        length or element count.
          *
-         *   @p n            the announced length (bytes) or element count
-         *   @p schemaBound  the declared `maxlen`/`count`, or -1 when the schema
-         *                   declares none
-         *   @p dynCap       the receiver's ceiling for this field kind (§6.2.1);
-         *                   consulted ONLY when the schema declared none, because
-         *                   a limit "MUST NOT be applied to a field the schema
-         *                   already bounds"
-         *   @p room         what the destination can actually hold, or -1 for a
-         *                   growable one, which can hold whatever the two bounds
-         *                   above admit
+         * Called at the count/length header — the one word that decides all three,
+         * and before the destination is sized, which is what keeps a hostile
+         * number from committing the allocation the check exists to prevent
+         * (§6.2.1). Rejected, never clamped.
          *
-         * Returns true when the value was refused; the caller must then return
-         * without touching the destination. Rejected, never clamped: "silently
-         * materializing `limit` elements where the wire said more is data
-         * corruption wearing a safety jacket".
+         * @param n           The announced length in bytes, or element count.
+         * @param schemaBound The declared `maxlen` / `count`, or -1 when the
+         *                    schema declares none. Exceeding it is
+         *                    @ref Error::InvalidMessage.
+         * @param dynCap      This receiver's ceiling for the field kind (§6.2.1),
+         *                    consulted **only** when the schema declared none —
+         *                    a limit "MUST NOT be applied to a field the schema
+         *                    already bounds". Exceeding it is
+         *                    @ref Error::LimitExceeded.
+         * @param room        What the destination can actually hold, or -1 for a
+         *                    growable one, which holds whatever the two bounds
+         *                    above admit. Exceeding it is
+         *                    @ref Error::InvalidArgument.
+         * @return `true` when the value was refused, in which case the caller must
+         *         return without touching the destination.
          */
         [[nodiscard]] bool refuse(
             size_t n, long schemaBound, size_t dynCap, long room = -1) noexcept

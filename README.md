@@ -760,11 +760,11 @@ column is the reading published in
 | encode: blob 1MB one-shot | 10 000 162 | 10 000 191 | **1 000 026** |
 | encode: blob 1MB streaming | **10 004 819** | 10 009 790 | 13 009 127 |
 | encode: composite | 16 164 | 16 501 | **11 514** |
-| decode: u64 array (1000) | 300 432 | 300 456 | **43 839** |
-| decode: typical message | 2 109 | 2 131 | **1 275** |
-| decode: blob 1MB | 25 011 323 | 25 011 350 | **3 654 639** |
-| decode: composite | 32 168 | 36 556 | **22 417** |
-| decode: composite skip-all | 25 411 | 25 434 | **7 671** |
+| decode: u64 array (1000) | 300 432 | 300 438 | **43 839** |
+| decode: typical message | 2 109 | 2 113 | **1 275** |
+| decode: blob 1MB | 25 011 323 | 25 011 331 | **3 654 639** |
+| decode: composite | 32 168 | 36 538 | **22 417** |
+| decode: composite skip-all | 25 411 | 25 416 | **7 671** |
 
 `corelib-cpp` runs **1.4× to 10× fewer instructions**, widest where a payload
 moves in bulk: it establishes a varint window once and then moves whole 64-bit
