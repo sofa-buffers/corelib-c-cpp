@@ -1731,11 +1731,13 @@ namespace sofab
      * way, and the two callers in this header differ:
      *
      *  - **the reads** — @ref IStreamImpl::readString, @ref IStreamImpl::readBlob
-     *    and @ref IStreamImpl::readArray are told no bound at all: they bind a
-     *    destination and nothing else. All they can see is how much storage the
-     *    caller offered, so that is what the capacity means to them — §6.3's
-     *    **third** tier, and a value it cannot hold is
-     *    @ref Error::InvalidArgument, never @ref Error::InvalidMessage;
+     *    and @ref IStreamImpl::readArray take the schema bound as a parameter, so
+     *    the capacity is *not* what states it to them. What the capacity means to
+     *    a read is how much storage the caller offered — §6.3's **third** tier,
+     *    and a value the schema and the cap both admit but the destination cannot
+     *    hold is @ref Error::InvalidArgument, never @ref Error::InvalidMessage.
+     *    A read passed no bound is told nothing about the schema and can only
+     *    apply that third tier;
      *  - **the fixed-storage collectors** — @ref FixedMessageSeq and the fixed
      *    string/blob sequences take no `cap` at all, by design: their
      *    @c static_assert says the container's capacity *is* the schema bound
@@ -1744,11 +1746,9 @@ namespace sofab
      *    @ref Error::InvalidMessage (MESSAGE_SPEC §7.1).
      *
      * Both are correct, and the difference is not about the number — it is about
-     * what the caller knows. A collector generated *for* a bound carries it in
-     * the only place it has; a read that was handed a destination and nothing
-     * else cannot invent one. On a read path the schema reading is the
-     * handler's: compare the announced count and call
-     * @ref IStreamImpl::invalidate (MESSAGE_SPEC §7.1).
+     * which channel states it. A collector generated *for* a bound carries it in
+     * the only place it has; a read is told it outright, and applies it through
+     * @ref IStreamImpl::refuseBound before it sizes anything.
      *
      * @tparam C  Container type.
      */
@@ -2088,6 +2088,44 @@ namespace sofab
         }
 
         /*!
+         * @brief The two **message-side** refusals of §6.3, in the order §6.2.1
+         *        fixes: the schema first, the receiver cap only where the schema
+         *        declared nothing.
+         *
+         * @ref refuse above is the third tier and answers a different question —
+         * that one is about the caller's storage, these two are about the message.
+         *
+         * The number is the **caller's**, passed in for this one comparison and
+         * not kept: §6.2.1 leaves the codec "the report and the category" and
+         * forbids it to *invent* or *store* a limit, which is not the same as
+         * forbidding it to compare against one it was handed. Passing it here
+         * rather than testing it before the call is what keeps a §7.3-skipped
+         * field uncapped — every caller of this runs the tag test first, so a
+         * header contradicting the declared type has already returned.
+         *
+         * @param n            The announced length in bytes, or element count.
+         * @param schemaBound  Schema `maxlen`/`count`, or -1 when the schema
+         *                     declares none — which is what arms @p dynCap.
+         * @param dynCap       The §6.2.1 receiver cap for a schema-unbounded
+         *                     field, or -1 for none.
+         * @return `true` when the value was refused, in which case the caller
+         *         must return without touching the destination.
+         */
+        [[nodiscard]] bool refuseBound(size_t n, long schemaBound, long dynCap) noexcept
+        {
+            if (schemaBound >= 0)
+            {
+                // Schema-bounded: its violation is INVALID (MESSAGE_SPEC §7.1),
+                // and §6.2.1 forbids the cap from reaching this field at all.
+                if (n > static_cast<size_t>(schemaBound)) { invalidate(); return true; }
+                return false;
+            }
+
+            if (dynCap >= 0 && n > static_cast<size_t>(dynCap)) { exceedLimit(); return true; }
+            return false;
+        }
+
+        /*!
          * @brief Wire type of the field currently being delivered.
          *
          * Valid inside a field callback / @c deserialize, before the field's
@@ -2380,11 +2418,16 @@ namespace sofab
          *                or -1 for none. See @ref refuse.
          */
         template <typename T>
-        void readString(T &value, size_t size) noexcept
+        void readString(T &value, size_t size, long maxlen = -1, long dynCap = -1) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::String)
             {
                 noteSkip_();
+                return;
+            }
+
+            if (refuseBound(size, maxlen, dynCap))
+            {
                 return;
             }
 
@@ -2430,11 +2473,16 @@ namespace sofab
          *                or -1 for none. See @ref refuse.
          */
         template <typename T>
-        void readBlob(T &value, size_t size) noexcept
+        void readBlob(T &value, size_t size, long maxlen = -1, long dynCap = -1) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::Blob)
             {
                 noteSkip_();
+                return;
+            }
+
+            if (refuseBound(size, maxlen, dynCap))
+            {
                 return;
             }
 
@@ -2484,7 +2532,7 @@ namespace sofab
          *                   or -1 for none. See @ref refuse.
          */
         template <typename C>
-        void readArray(C &out, size_t wireCount = 0) noexcept
+        void readArray(C &out, size_t wireCount = 0, long cap = -1, long dynCap = -1) noexcept
         {
             using Elem = typename C::value_type;
 
@@ -2522,7 +2570,7 @@ namespace sofab
                 room = static_cast<long>(out.size());
             }
 
-            if (refuse(wireCount, room))
+            if (refuseBound(wireCount, cap, dynCap) || refuse(wireCount, room))
             {
                 return;
             }
@@ -2922,13 +2970,9 @@ namespace sofab
     [[nodiscard]] inline bool seqRefuse(
         IStreamImpl &is, size_t n, long schemaBound, long dynCap) noexcept
     {
-        if (schemaBound >= 0)
-        {
-            if (n > static_cast<size_t>(schemaBound)) { is.invalidate(); return true; }
-            return false;
-        }
-        if (dynCap >= 0 && n > static_cast<size_t>(dynCap)) { is.exceedLimit(); return true; }
-        return false;
+        // The collectors' spelling of IStreamImpl::refuseBound. One implementation
+        // of the two message-side tiers, reached from both surfaces (§5.3.1).
+        return is.refuseBound(n, schemaBound, dynCap);
     }
 
     /**
