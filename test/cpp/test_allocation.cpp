@@ -140,9 +140,20 @@ struct HeapFreeSink final : sofab::IStreamMessage
     }
 };
 
-/*! The same, into growable destinations the caller owns. */
+/*! The same, into growable destinations the caller owns.
+ *
+ *  A growable destination publishes no capacity, so nothing about it bounds what
+ *  a decode may size it to -- the ceiling has to be stated, and the `…Capped`
+ *  reads are where a schema-unbounded field states it (CORELIB_PLAN §6.2.1). The
+ *  numbers below stand in for the SOFAB_MAX_DYN_* defines generated code carries;
+ *  they are the caller's, passed per call and not retained. A plain
+ *  `readString(text, size)` here would be a read with no ceiling at all, which
+ *  this corelib refuses rather than reading as unlimited.
+ */
 struct GrowableSink final : sofab::IStreamMessage
 {
+    static constexpr size_t kCap = 4096;
+
     uint32_t              scalar = 0;
     std::string           text{};
     std::vector<uint8_t>  blob{};
@@ -156,11 +167,11 @@ struct GrowableSink final : sofab::IStreamMessage
         switch (id)
         {
             case 1: in.read(scalar); break;
-            case 2: in.readString(text, size); break;
-            case 3: in.readBlob(blob, size); break;
-            case 4: in.readArray(us, count); break;
-            case 5: in.readArray(is, count); break;
-            case 6: in.readArray(fs, count); break;
+            case 2: in.readStringCapped(text, size, kCap); break;
+            case 3: in.readBlobCapped(blob, size, kCap); break;
+            case 4: in.readArrayCapped(us, count, kCap); break;
+            case 5: in.readArrayCapped(is, count, kCap); break;
+            case 6: in.readArrayCapped(fs, count, kCap); break;
             case 0: in.read(nested); break;
             default: break;
         }

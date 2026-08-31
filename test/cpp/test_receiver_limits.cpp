@@ -101,29 +101,26 @@ std::vector<uint8_t> arrayField(size_t n)
  *
  * @tparam Dst  `std::string` (growable) or `sofab::FixedString<N>` (heap-free).
  */
-/*! Apply the two message-side bounds the way generated code does — in the
- *  handler, at the `size` / `count` the field callback reports, before any
- *  destination is bound.
+/*! Route a field to the entry point its ceiling belongs to.
  *
- *  CORELIB_PLAN §6.2.1 leaves the codec "the report and the category": "the
- *  visitor decides. The codec never invents a limit of its own and never clamps
- *  to one." MESSAGE_SPEC §7 says the same about the schema bound, because "the
- *  corelib cannot know the schema". So both live here, and the corelib is asked
- *  only to carry the verdict.
+ *  §6.2.1 fixes the PROVENANCE of the numbers -- generated code's, never the
+ *  codec's -- and leaves the SITE of the comparison open: "a corelib MAY take a
+ *  limit as an argument and perform the check itself". This corelib does, through
+ *  two entry points per read, and which one a field uses is decided by which
+ *  ceiling the schema left it:
  *
- *  @return `true` when the field was refused and must not be read.
+ *   - the schema declares `maxlen`/`count` -> the plain read takes it, and
+ *     §6.2.1 forbids the receiver cap from reaching the field at all;
+ *   - it declares nothing -> the `…Capped` read takes the receiver cap, whose
+ *     parameter is required and unsigned, so "no cap" cannot be spelled;
+ *   - it declares nothing and no cap was configured -> the plain read, which
+ *     diagnoses that as Error::InvalidArgument for a growable destination rather
+ *     than decoding without a ceiling. The tests below pin exactly that.
+ *
+ *  The §7.3 tag test lives INSIDE the read, which is why nothing here checks a
+ *  ceiling before calling: a handler that did would cap a field the read is
+ *  required to skip, which §6.2.1 forbids in as many words.
  */
-inline bool refusedByHandler(sofab::IStreamImpl &is, size_t n, long schemaBound, long dynCap) noexcept
-{
-    if (schemaBound >= 0)
-    {
-        if (n > static_cast<size_t>(schemaBound)) { is.invalidate(); return true; }
-        return false;
-    }
-    if (dynCap >= 0 && n > static_cast<size_t>(dynCap)) { is.exceedLimit(); return true; }
-    return false;
-}
-
 template <typename Dst>
 struct StringMessage final : sofab::IStreamMessage
 {
@@ -134,15 +131,9 @@ struct StringMessage final : sofab::IStreamMessage
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
     {
         if (id != 1) return;
-        /* §7.3 FIRST. Moving the bounds out of the codec moves this with them:
-         * `readString` used to make the type test before it consulted any
-         * ceiling, so a field about to be skipped was never measured. A handler
-         * that checks its cap above this line caps a field it is about to walk
-         * past -- which §6.2.1 forbids in as many words, and which is the shape
-         * generator#420 is about. */
-        if (is.wire() != sofab::Wire::Fixlen || is.fixType() != sofab::Fix::String) return;
-        if (refusedByHandler(is, size, maxlen, dynCap)) return;
-        is.readString(value, size);
+        if (maxlen >= 0)      is.readString(value, size, maxlen);
+        else if (dynCap >= 0) is.readStringCapped(value, size, static_cast<size_t>(dynCap));
+        else                  is.readString(value, size);
     }
 };
 
@@ -157,9 +148,9 @@ struct BlobMessage final : sofab::IStreamMessage
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
     {
         if (id != 1) return;
-        if (is.wire() != sofab::Wire::Fixlen || is.fixType() != sofab::Fix::Blob) return; /* §7.3 first */
-        if (refusedByHandler(is, size, maxlen, dynCap)) return;
-        is.readBlob(value, size);
+        if (maxlen >= 0)      is.readBlob(value, size, maxlen);
+        else if (dynCap >= 0) is.readBlobCapped(value, size, static_cast<size_t>(dynCap));
+        else                  is.readBlob(value, size);
     }
 };
 
@@ -174,9 +165,9 @@ struct ArrayMessage final : sofab::IStreamMessage
     void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t, size_t count) noexcept override
     {
         if (id != 1) return;
-        if (is.wire() != sofab::Wire::ArrayUnsigned) return; /* §7.3 first */
-        if (refusedByHandler(is, count, cap, dynCap)) return;
-        is.readArray(value, count);
+        if (cap >= 0)         is.readArray(value, count, cap);
+        else if (dynCap >= 0) is.readArrayCapped(value, count, static_cast<size_t>(dynCap));
+        else                  is.readArray(value, count);
     }
 };
 
@@ -492,8 +483,8 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.flush();
 
         sofab::IStreamObject<StringArrayMessage> in;
-        (*in).seq.dynCap = kDynArrayCount;
-        (*in).seq.dynElemMax = kDynStringLen;
+        (*in).seq.dynCap = sofab::DynCap{std::size_t(kDynArrayCount)};
+        (*in).seq.dynElemMax = sofab::DynCap{std::size_t(kDynStringLen)};
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE((*in).out.size() == 4);
         REQUIRE((*in).out[0] == "a");
@@ -511,8 +502,8 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.flush();
 
         sofab::IStreamObject<StringArrayMessage> in;
-        (*in).seq.dynCap = kDynArrayCount;
-        (*in).seq.dynElemMax = kDynStringLen;
+        (*in).seq.dynCap = sofab::DynCap{std::size_t(kDynArrayCount)};
+        (*in).seq.dynElemMax = sofab::DynCap{std::size_t(kDynStringLen)};
         auto r = in.feed(os.data(), os.bytesUsed());
 
         REQUIRE(r.code() == sofab::Error::LimitExceeded);
@@ -531,7 +522,7 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
 
         sofab::IStreamObject<StringArrayMessage> in;
         (*in).seq.cap = 2;                  // the schema says: two elements
-        (*in).seq.dynCap = kDynArrayCount;  // and the cap must stay out of it
+        (*in).seq.dynCap = sofab::DynCap{std::size_t(kDynArrayCount)};  // and the cap must stay out of it
         REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
     }
 
@@ -544,17 +535,27 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.flush();
 
         sofab::IStreamObject<StringArrayMessage> in;
-        (*in).seq.dynCap = kDynArrayCount;
-        (*in).seq.dynElemMax = kDynStringLen;
+        (*in).seq.dynCap = sofab::DynCap{std::size_t(kDynArrayCount)};
+        (*in).seq.dynElemMax = sofab::DynCap{std::size_t(kDynStringLen)};
         REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::LimitExceeded);
     }
 
-    SECTION("no cap supplied: the collector invents none of its own")
+    SECTION("no cap supplied: the omission is DIAGNOSED, not read as unlimited")
     {
-        // §6.2.1: "The codec never invents a limit of its own." A collector left
-        // without a dynCap applies nothing -- the omission is generated code's
-        // defect to have, and the corelib does not paper over it with a number
-        // it made up.
+        // corelib-c-cpp#152, and the regression this file exists to pin. The
+        // collector still invents no number of its own -- §6.2.1's "the codec
+        // never invents a limit" is untouched -- but an UNSTATED cap on a
+        // schema-unbounded wrapper array is not a licence to decode without a
+        // ceiling either: "there is no unset state and no unlimited mode", and a
+        // format ceiling reached because no cap was stated "is the FORMAT's bound
+        // and MUST NOT be presented as a receiver cap".
+        //
+        // Nothing is wrong with these bytes and no limit was configured to raise,
+        // which rules out the other two categories: the mistake is in the CALL,
+        // and §6.3 gives that InvalidArgument.
+        //
+        // Before the fix this decoded, and `out` came back ten elements long from
+        // a count the SENDER chose.
         sofab::OStream os{256};
         os.sequenceBeginLazy(1);
         writeElement(os, 9, "j");           // far past kDynArrayCount
@@ -562,8 +563,203 @@ TEST_CASE("limits: a wrapper array's cap binds the element index")
         os.flush();
 
         sofab::IStreamObject<StringArrayMessage> in;
-        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
-        REQUIRE((*in).out.size() == 10);
+        auto r = in.feed(os.data(), os.bytesUsed());
+
+        REQUIRE(r.code() == sofab::Error::InvalidArgument);
+        REQUIRE_FALSE(r.ok());
+        REQUIRE_FALSE(r.invalid());          // the bytes are well-formed
+        REQUIRE_FALSE(r.limitExceeded());    // and no limit was ever configured
+        REQUIRE((*in).out.empty());          // refused before the container grew
+    }
+
+    SECTION("an omitted member cannot be read as unlimited by aggregate init")
+    {
+        // The shape the finding names: `sofab::StringSeq seq{&out, cap, elemMax};`
+        // leaves dynCap/dynElemMax default-constructed. That default is UNSTATED,
+        // not SIZE_MAX -- and a signed cap does not compile at all, so the old
+        // `-1` cannot re-enter as an unlimited mode through the new type.
+        static_assert(!sofab::DynCap{}.stated());
+        static_assert(sofab::DynCap{std::size_t{7}}.stated());
+        static_assert(sofab::DynCap{std::size_t{7}}.value() == 7);
+        static_assert(!std::is_constructible_v<sofab::DynCap, long>);
+        static_assert(!std::is_constructible_v<sofab::DynCap, int>);
+        // ... and it is never implicitly conjured from a bare count either.
+        static_assert(!std::is_convertible_v<std::size_t, sofab::DynCap>);
+        SUCCEED("compile-time only");
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * an UNSTATED cap is not an unlimited one (§6.2.1, corelib-c-cpp#152)
+ *
+ * §6.2.1: a codec "MUST NOT hold a limit of its own, MUST NOT supply a default
+ * for one it was not given, MUST NOT read an omitted argument as *unlimited*",
+ * and "a format ceiling reached because no cap was stated is the FORMAT's bound
+ * and MUST NOT be presented as a receiver cap".
+ *
+ * The reads used to take `long dynCap = -1`, and -1 meant "no tier 2" -- so a
+ * hand-written visitor binding a growable destination decoded a schema-unbounded
+ * field with no ceiling whatever, sizing its own storage from a number the SENDER
+ * chose (§6.6). That is the gap corelib-c-cpp#152 was filed for. It is now two
+ * entry points: the plain read takes the SCHEMA bound, the …Capped read takes the
+ * RECEIVER cap and cannot be called without one, and a read handed neither is
+ * diagnosed.
+ * ------------------------------------------------------------------------- */
+
+TEST_CASE("limits: a growable read with no ceiling at all is refused, not decoded")
+{
+    // 64 bytes, no maxlen, no cap. Before the fix: ok(), and a 64-byte string
+    // the sender sized. Now: InvalidArgument -- nothing is wrong with the bytes
+    // and no limit was configured to raise, so §6.3 leaves only the call.
+
+    SECTION("string")
+    {
+        const auto wire = stringField(64);
+        sofab::IStreamObject<StringMessage<std::string>> in;   // maxlen -1, dynCap -1
+
+        auto r = in.feed(wire.data(), wire.size());
+
+        REQUIRE(r.code() == sofab::Error::InvalidArgument);
+        REQUIRE_FALSE(r.ok());
+        REQUIRE_FALSE(r.invalid());
+        REQUIRE_FALSE(r.limitExceeded());
+        REQUIRE((*in).value.empty());
+    }
+
+    SECTION("blob")
+    {
+        const auto wire = blobField(64);
+        sofab::IStreamObject<BlobMessage<std::vector<uint8_t>>> in;
+
+        REQUIRE(in.feed(wire.data(), wire.size()).code() == sofab::Error::InvalidArgument);
+        REQUIRE((*in).value.empty());
+    }
+
+    SECTION("array")
+    {
+        const auto wire = arrayField(64);
+        sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> in;
+
+        REQUIRE(in.feed(wire.data(), wire.size()).code() == sofab::Error::InvalidArgument);
+        REQUIRE((*in).value.empty());
+    }
+}
+
+TEST_CASE("limits: the diagnosis lands before the allocation, not after it")
+{
+    // The A2-0001 reproducer with NO cap configured: six bytes claiming a 100 MB
+    // string, and the payload never arrives. Reading the omitted cap as unlimited
+    // is what made the old code commit the resize and then answer INCOMPLETE --
+    // "send me the other 100 MB". The refusal has to be decided at the length
+    // header, like every other tier.
+    const uint8_t header[] = {0x0A, 0x82, 0x90, 0xBC, 0xFD, 0x02};
+
+    sofab::IStreamObject<StringMessage<std::string>> in;
+    auto r = in.feed(header, sizeof(header));
+
+    REQUIRE(r.code() == sofab::Error::InvalidArgument);
+    REQUIRE_FALSE(r.incomplete());
+    REQUIRE((*in).value.capacity() < 100000);
+}
+
+TEST_CASE("limits: a heap-free destination states its own ceiling and still decodes")
+{
+    // The other half, and the one a blanket "every read needs a bound" would
+    // break: an inline destination publishes a capacity the sender cannot move,
+    // so it needs neither a maxlen nor a cap. This is the README's own shape, and
+    // the embedded profile's normal operation.
+    const auto wire = stringField(6);
+
+    sofab::IStreamObject<StringMessage<sofab::FixedString<8>>> in;  // no bound, no cap
+    REQUIRE(in.feed(wire.data(), wire.size()).ok());
+    REQUIRE(std::string((*in).value.data(), (*in).value.size()) == std::string(6, 'a'));
+
+    // ... and over that capacity it is still §6.3's THIRD tier, not the new one:
+    // the diagnosis is about a MISSING ceiling, not about a breached one.
+    const auto big = stringField(9);
+    sofab::IStreamObject<StringMessage<sofab::FixedString<8>>> over;
+    REQUIRE(over.feed(big.data(), big.size()).code() == sofab::Error::InvalidArgument);
+}
+
+TEST_CASE("limits: the diagnosis sits behind the §7.3 tag test, like every ceiling")
+{
+    // "A skipped field is never capped" -- and it is never diagnosed either. A
+    // field whose wire type contradicts the read is walked past, so a visitor
+    // that never reads it allocates nothing and needs no ceiling for it. Moving
+    // the check in front of the read would fail exactly here.
+    const auto wire = blobField(64);                        // a blob...
+
+    sofab::IStreamObject<StringMessage<std::string>> in;    // ...bound to a string read
+    REQUIRE(in.feed(wire.data(), wire.size()).ok());
+    REQUIRE((*in).value.empty());
+}
+
+TEST_CASE("limits: the capped reads take the cap and refuse past it")
+{
+    // The replacement entry points, end to end. `dynCap` on these test messages
+    // routes to readStringCapped / readBlobCapped / readArrayCapped.
+    SECTION("at the cap decodes")
+    {
+        const auto wire = stringField(8);
+        sofab::IStreamObject<StringMessage<std::string>> in;
+        (*in).dynCap = kDynStringLen;                       // 8: a maximum
+        REQUIRE(in.feed(wire.data(), wire.size()).ok());
+        REQUIRE((*in).value.size() == 8);
+    }
+
+    SECTION("one past it is LimitExceeded, and nothing is materialized")
+    {
+        const auto wire = arrayField(5);
+        sofab::IStreamObject<ArrayMessage<std::vector<uint32_t>>> in;
+        (*in).dynCap = kDynArrayCount;                      // 4
+        REQUIRE(in.feed(wire.data(), wire.size()).code() == sofab::Error::LimitExceeded);
+        REQUIRE((*in).value.empty());
+    }
+}
+
+TEST_CASE("limits: a growable ROW states its own ceiling too")
+{
+    // MessageSeq's row read was the last uncapped path: a growable row publishes
+    // no capacity, and the collector used to size it straight from the wire count.
+    struct Rows final : sofab::IStreamMessage
+    {
+        sofab::MessageSeq<std::vector<std::vector<uint32_t>>> seq;
+        std::vector<std::vector<uint32_t>> out;
+
+        void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t, size_t) noexcept override
+        {
+            if (id == 1) is.readSequence(seq, out);
+        }
+    };
+
+    const std::array<uint32_t, 5> row = {1, 2, 3, 4, 5};
+    sofab::OStream os{256};
+    os.sequenceBeginLazy(1);
+    os.write(0, row);
+    os.sequenceEnd();
+    os.flush();
+
+    SECTION("no row ceiling stated: refused, not sized from the wire")
+    {
+        sofab::IStreamObject<Rows> in;
+        (*in).seq.cap = 4;                                  // the OUTER bound only
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidArgument);
+    }
+
+    SECTION("a receiver cap on the row's element count binds it")
+    {
+        sofab::IStreamObject<Rows> in;
+        (*in).seq.cap = 4;
+        (*in).seq.dynElemCount = sofab::DynCap{std::size_t{4}};
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::LimitExceeded);
+    }
+
+    SECTION("the row's own schema count binds it, and its breach is INVALID")
+    {
+        sofab::IStreamObject<Rows> in;
+        (*in).seq.cap = 4;
+        (*in).seq.elemCount = 4;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
     }
 }
 
@@ -629,18 +825,27 @@ TEST_CASE("limits: the corelib holds no limit of its own")
     // stream would pass every case above and break this one.
     static_assert(std::is_default_constructible_v<sofab::IStreamObject<StringArrayMessage>>);
 
-    // A read with no cap passed applies none: 64 bytes through a stream that was
-    // told nothing decodes, because there is no ceiling anywhere to consult.
+    // A read with no cap passed still applies none of the library's own -- but it
+    // does not decode either. §6.2.1 forbids reading the omission as *unlimited*,
+    // so 64 bytes into a growable destination through a stream that was told
+    // nothing is Error::InvalidArgument: the call stated no ceiling, and neither
+    // the message nor the deployment is at fault.
+    //
+    // Before the fix this returned ok() and resized the destination to 64 bytes
+    // the SENDER chose.
     sofab::IStreamObject<StringMessage<std::string>> uncapped;
     const auto wire = stringField(64);
-    REQUIRE(uncapped.feed(wire.data(), wire.size()).ok());
-    REQUIRE((*uncapped).value.size() == 64);
+    auto r = uncapped.feed(wire.data(), wire.size());
+    REQUIRE(r.code() == sofab::Error::InvalidArgument);
+    REQUIRE((*uncapped).value.empty());
 
-    // The cap is an argument, defaulted to "none supplied" rather than to a
-    // number the library chose -- and data on the collector, per decode.
-    static_assert(sofab::StringSeq{}.dynCap == -1);
-    static_assert(sofab::StringSeq{}.dynElemMax == -1);
-    static_assert(sofab::BlobSeq{}.dynCap == -1);
+    // The cap is an argument with no "absent" value the library can read as a
+    // number -- and data on the collector, per decode, unstated until set.
+    static_assert(!sofab::StringSeq{}.dynCap.stated());
+    static_assert(!sofab::StringSeq{}.dynElemMax.stated());
+    static_assert(!sofab::BlobSeq{}.dynCap.stated());
 
-    SUCCEED("compile-time only");
+    // And the stream itself still carries nothing: no member of IStreamImpl holds
+    // a max_dyn_* value between calls.
+    static_assert(std::is_default_constructible_v<sofab::IStreamObject<StringMessage<std::string>>>);
 }

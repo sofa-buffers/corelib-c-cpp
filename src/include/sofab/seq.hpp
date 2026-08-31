@@ -257,7 +257,9 @@ namespace sofab
 
         Container *out = nullptr;  //!< Destination, bound by @ref IStreamImpl::readSequence.
         long cap = -1;             //!< Schema `count` N, or -1 when the schema declares none.
-        long dynCap = -1;          //!< §6.2.1 receiver cap on the index; only where @ref cap is -1.
+        DynCap dynCap{};           //!< §6.2.1 receiver cap on the index; required where @ref cap is -1.
+        long elemCount = -1;       //!< A ROW element's own schema `count`, or -1. Ignored for message elements.
+        DynCap dynElemCount{};     //!< §6.2.1 receiver cap on a row's element count; required where @ref elemCount is -1.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
         {
@@ -287,10 +289,27 @@ namespace sofab
             }
             else
             {
-                /* A growable row publishes no capacity and the outer collector is
-                 * not told the inner array's `count`, so the wire count is the only
-                 * bound left. A cap on it is generated code's to apply. */
-                is.readArray(elem, count);
+                /* A growable row publishes no capacity of its own, so the ceiling
+                 * has to be stated here -- @ref elemCount for the row's schema
+                 * `count`, @ref dynElemCount for the §6.2.1 receiver cap where the
+                 * schema declares none. An inline row needs neither: its capacity
+                 * IS a ceiling the sender cannot move.
+                 *
+                 * Neither stated, on a growable row, is not "unlimited": the read
+                 * refuses it as Error::InvalidArgument rather than sizing the row
+                 * from a count the SENDER chose. */
+                if (elemCount >= 0)
+                {
+                    is.readArray(elem, count, elemCount);
+                }
+                else if (dynElemCount.stated())
+                {
+                    is.readArrayCapped(elem, count, dynElemCount.value());
+                }
+                else
+                {
+                    is.readArray(elem, count);
+                }
             }
         }
     };

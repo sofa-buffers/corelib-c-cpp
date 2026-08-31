@@ -1737,7 +1737,9 @@ namespace sofab
      *    and a value the schema and the cap both admit but the destination cannot
      *    hold is @ref Error::InvalidArgument, never @ref Error::InvalidMessage.
      *    A read passed no bound is told nothing about the schema and can only
-     *    apply that third tier;
+     *    apply that third tier — which is why a capacity of -1 there, with no
+     *    bound and no cap, leaves the read with **no** ceiling at all and is
+     *    refused outright (@ref IStreamImpl::refuseUnbounded);
      *  - **the fixed-storage collectors** — @ref FixedMessageSeq and the fixed
      *    string/blob sequences take no `cap` at all, by design: their
      *    @c static_assert says the container's capacity *is* the schema bound
@@ -1748,7 +1750,8 @@ namespace sofab
      * Both are correct, and the difference is not about the number — it is about
      * which channel states it. A collector generated *for* a bound carries it in
      * the only place it has; a read is told it outright, and applies it through
-     * @ref IStreamImpl::refuseBound before it sizes anything.
+     * @ref IStreamImpl::refuseSchema (or @ref IStreamImpl::refuseCap, on the
+     * `…Capped` entry point) before it sizes anything.
      *
      * @tparam C  Container type.
      */
@@ -1765,6 +1768,56 @@ namespace sofab
                 return -1;
             }
         }();
+
+
+    /*!
+     * @brief A CORELIB_PLAN §6.2.1 receiver cap, exactly as the caller states it.
+     *
+     * §6.2.1 draws a line this type exists to make unforgeable: the **provenance**
+     * of a receiver limit is generated code's, and "there is no unset state and no
+     * unlimited mode". A codec "**MUST NOT** hold a limit of its own, **MUST NOT**
+     * supply a default for one it was not given, **MUST NOT** read an omitted
+     * argument as *unlimited*".
+     *
+     * A `long dynCap = -1` parameter breaks the last of those by construction: the
+     * sentinel *is* an omitted argument, and reading it as "no ceiling" is the
+     * unlimited mode the clause forbids. This type has no such spelling.
+     *
+     *  - a value is stated by constructing from an unsigned count — @c DynCap{64};
+     *  - a default-constructed @c DynCap is **unstated**, which is not "unlimited"
+     *    but *missing*. Reaching it on a schema-unbounded field is an error in the
+     *    **call** — the caller stated neither a schema bound nor a cap — and is
+     *    reported as @ref Error::InvalidArgument (§6.3), never decoded uncapped;
+     *  - a signed argument does not compile, so the old `-1` cannot be smuggled in
+     *    as @c SIZE_MAX, which would be the unlimited mode wearing a new type.
+     *
+     * The number is still never held past the comparison it was passed for: a
+     * @c DynCap lives in the caller's collector or on the caller's stack, and this
+     * header only reads it.
+     */
+    class DynCap
+    {
+        std::size_t value_  = 0;
+        bool        stated_ = false;
+
+    public:
+        /*! @brief The **unstated** cap: missing, not unlimited. */
+        constexpr DynCap() noexcept = default;
+
+        /*! @brief State the cap. @p v is a maximum: @c n @c > @c v is refused. */
+        constexpr explicit DynCap(std::size_t v) noexcept : value_(v), stated_(true) {}
+
+        /*! @brief Deleted: a signed cap would let `-1` re-enter as an unlimited mode. */
+        template <typename T>
+            requires std::is_signed_v<T>
+        constexpr explicit DynCap(T) = delete;
+
+        /*! @brief Whether the caller stated a number at all. */
+        [[nodiscard]] constexpr bool stated() const noexcept { return stated_; }
+
+        /*! @brief The stated maximum. Meaningless unless @ref stated. */
+        [[nodiscard]] constexpr std::size_t value() const noexcept { return value_; }
+    };
 
 
     /*!
@@ -1861,6 +1914,128 @@ namespace sofab
                 ctx_.skipped++;
             }
 #endif
+        }
+
+        // ---- the bodies the capped and uncapped read entry points share ------
+        //
+        // §6.2.1 asks for ONE implementation of the rule wherever it runs, and the
+        // two entry points differ only in WHICH ceiling they were handed: the
+        // schema's, or the receiver's. Everything after that verdict -- the third
+        // tier, the sizing, the bind -- is identical, so it lives here once rather
+        // than being copied into the *Capped twin, where the two could drift.
+
+        // Third tier, then size and bind a string/blob destination.
+        template <typename T>
+        void bindString_(T &value, size_t size) noexcept
+        {
+            if (refuse(size, fixed_capacity_v<T>))
+            {
+                return;
+            }
+
+            if constexpr (requires { value.set_len(size); })
+            {
+                value.set_len(size);
+            }
+            else
+            {
+                value.resize(size);
+            }
+
+            // a zero-length string binds no target: there is nothing to fill
+            if (value.size())
+            {
+                read(value);
+            }
+        }
+
+        template <typename T>
+        void bindBlob_(T &value, size_t size) noexcept
+        {
+            if (refuse(size, fixed_capacity_v<T>))
+            {
+                return;
+            }
+
+            if constexpr (requires { value.set_len(size); })
+            {
+                value.set_len(size);
+            }
+            else
+            {
+                value.resize(size);
+            }
+
+            // Bind the destination's own size, not the wire length: a wire length
+            // beyond the declared bound is then rejected as INVALID by the C
+            // decoder rather than silently truncated (MESSAGE_SPEC §7.1).
+            read(value.data(), value.size());
+        }
+
+        // MESSAGE_SPEC §7.3 for an array: does the delivered tag match the
+        // destination's element type?
+        template <typename C>
+        [[nodiscard]] bool arrayTagOk_() noexcept
+        {
+            using Elem = typename C::value_type;
+
+            if constexpr (std::is_same_v<Elem, float>)
+            {
+                return wire() == Wire::ArrayFixlen && fixType() == Fix::Fp32;
+            }
+            else if constexpr (std::is_same_v<Elem, double>)
+            {
+                return wire() == Wire::ArrayFixlen && fixType() == Fix::Fp64;
+            }
+            else if constexpr (std::is_signed_v<Elem>)
+            {
+                return wire() == Wire::ArraySigned;
+            }
+            else
+            {
+                return wire() == Wire::ArrayUnsigned;
+            }
+        }
+
+        // What the destination can hold. A heap-free container publishes it as a
+        // static capacity(); a std::array publishes it as its (fixed) size(); a
+        // resizable container publishes none and takes whatever the message-side
+        // ceiling admits.
+        template <typename C>
+        [[nodiscard]] static long arrayRoom_(C &out, size_t wireCount) noexcept
+        {
+            if constexpr (fixed_capacity_v<C> < 0 && !requires { out.resize(wireCount); })
+            {
+                (void)wireCount;
+                return static_cast<long>(out.size());
+            }
+            else
+            {
+                (void)out;
+                (void)wireCount;
+                return fixed_capacity_v<C>;
+            }
+        }
+
+        // Third tier, then size and bind an array destination.
+        template <typename C>
+        void bindArray_(C &out, size_t wireCount, long room) noexcept
+        {
+            if (refuse(wireCount, room))
+            {
+                return;
+            }
+
+            if constexpr (requires { out.resize(wireCount); })
+            {
+                out.resize(wireCount);
+            }
+            else
+            {
+                out = C{};
+            }
+
+            read(out);
         }
 
 
@@ -2021,10 +2196,10 @@ namespace sofab
          * reports @ref Error::LimitExceeded and never @ref Error::InvalidMessage.
          * Terminal, like @ref invalidate.
          *
-         * @ref readString, @ref readBlob, @ref readArray and the growable
-         * wrapper-array collectors call it for you, at the length/count header and
-         * before the destination is sized. Call it directly when a callback
-         * enforces a limit those cannot see.
+         * @ref readStringCapped, @ref readBlobCapped, @ref readArrayCapped and the
+         * growable wrapper-array collectors call it for you, at the length/count
+         * header and before the destination is sized. Call it directly when a
+         * callback enforces a limit those cannot see.
          */
         void exceedLimit() noexcept
         {
@@ -2088,41 +2263,125 @@ namespace sofab
         }
 
         /*!
-         * @brief The two **message-side** refusals of §6.3, in the order §6.2.1
-         *        fixes: the schema first, the receiver cap only where the schema
-         *        declared nothing.
+         * @brief §6.3's **first** tier: the bound the *schema* declares.
          *
-         * @ref refuse above is the third tier and answers a different question —
-         * that one is about the caller's storage, these two are about the message.
-         *
-         * The number is the **caller's**, passed in for this one comparison and
-         * not kept: §6.2.1 leaves the codec "the report and the category" and
-         * forbids it to *invent* or *store* a limit, which is not the same as
+         * A value past a declared `maxlen` / `count` is a statement about the
+         * message's validity, so it is @ref Error::InvalidMessage (MESSAGE_SPEC
+         * §7.1). The number is the **caller's**, passed in for this one comparison
+         * and not kept: §6.2.1 leaves the codec "the report and the category" and
+         * forbids it to *invent* or *store* a bound, which is not the same as
          * forbidding it to compare against one it was handed. Passing it here
          * rather than testing it before the call is what keeps a §7.3-skipped
-         * field uncapped — every caller of this runs the tag test first, so a
+         * field unjudged — every caller of this runs the tag test first, so a
          * header contradicting the declared type has already returned.
          *
          * @param n            The announced length in bytes, or element count.
          * @param schemaBound  Schema `maxlen`/`count`, or -1 when the schema
-         *                     declares none — which is what arms @p dynCap.
-         * @param dynCap       The §6.2.1 receiver cap for a schema-unbounded
-         *                     field, or -1 for none.
+         *                     declares none, in which case nothing is refused here
+         *                     and the field is the receiver cap's business instead.
          * @return `true` when the value was refused, in which case the caller
          *         must return without touching the destination.
          */
-        [[nodiscard]] bool refuseBound(size_t n, long schemaBound, long dynCap) noexcept
+        [[nodiscard]] bool refuseSchema(size_t n, long schemaBound) noexcept
+        {
+            if (schemaBound >= 0 && n > static_cast<size_t>(schemaBound))
+            {
+                invalidate();
+                return true;
+            }
+            return false;
+        }
+
+        /*!
+         * @brief §6.3's **second** tier: the receiver cap on a schema-unbounded
+         *        field (§6.2.1).
+         *
+         * The bytes are well-formed — the same message decodes on a receiver
+         * configured more loosely — so a breach is @ref Error::LimitExceeded and
+         * never @ref Error::InvalidMessage. Rejected, never clamped.
+         *
+         * @ref DynCap is the parameter type on purpose: a cap this corelib was not
+         * given has no spelling here, so there is no omitted-argument path that
+         * could be read as *unlimited* (§6.2.1). The value is used for this one
+         * comparison and not retained.
+         *
+         * @param n       The announced length in bytes, or element count.
+         * @param dynCap  The caller's cap. A maximum: `n > dynCap` is refused.
+         * @return `true` when the value was refused.
+         */
+        [[nodiscard]] bool refuseCap(size_t n, size_t dynCap) noexcept
+        {
+            if (n > dynCap) { exceedLimit(); return true; }
+            return false;
+        }
+
+        /*!
+         * @brief Refuse a read that was given **no ceiling of any kind**.
+         *
+         * The gap corelib-c-cpp#152 was filed for, and the one a `long dynCap = -1`
+         * parameter used to swallow. A read of a field the schema does not bound,
+         * into a destination that publishes no capacity, with no receiver cap
+         * stated, sizes the caller's storage from a number the **sender** chose.
+         * §6.2.1 forbids treating that as *unlimited*: "there is no unset state and
+         * no unlimited mode", and a format ceiling reached because no cap was
+         * stated "is the FORMAT's bound and MUST NOT be presented as a receiver
+         * cap".
+         *
+         * So it is diagnosed instead. Nothing about the message is wrong and no
+         * limit was configured to raise, which rules out the other two categories:
+         * the mistake is in the **call**, and §6.3 gives that
+         * @ref Error::InvalidArgument. The fix at the call site is to state one of
+         * the two ceilings — pass the schema bound, or use the `…Capped` entry
+         * point with the receiver cap.
+         *
+         * A heap-free destination needs neither: its capacity is a ceiling the
+         * sender cannot move, so `room >= 0` passes here and an over-capacity value
+         * is refused by @ref refuse as the third tier.
+         *
+         * @param schemaBound  Schema `maxlen`/`count`, or -1 for none.
+         * @param room         The destination's static capacity, or -1 for a
+         *                     growable one.
+         * @return `true` when the read must not proceed.
+         */
+        [[nodiscard]] bool refuseUnbounded(long schemaBound, long room) noexcept
+        {
+            if (schemaBound < 0 && room < 0) { refuseArgument(); return true; }
+            return false;
+        }
+
+        /*!
+         * @brief The two **message-side** refusals of §6.3 in one call, in the
+         *        order §6.2.1 fixes: the schema first, the receiver cap only where
+         *        the schema declared nothing — and a **diagnosis** where neither
+         *        was stated.
+         *
+         * @ref refuse is the third tier and answers a different question — that one
+         * is about the caller's storage, these two are about the message.
+         *
+         * This is the collectors' entry point (@ref seqRefuse). A growable wrapper
+         * array has no capacity to fall back on, so "the schema declared nothing
+         * and no cap was stated" is not a decode without a ceiling: it is
+         * @ref Error::InvalidArgument, exactly as in @ref refuseUnbounded.
+         *
+         * @param n            The announced length in bytes, or element index + 1.
+         * @param schemaBound  Schema `maxlen`/`count`, or -1 when the schema
+         *                     declares none — which is what arms @p dynCap.
+         * @param dynCap       The §6.2.1 receiver cap for a schema-unbounded field.
+         *                     An unstated one is refused, never read as unlimited.
+         * @return `true` when the value was refused, in which case the caller
+         *         must return without touching the destination.
+         */
+        [[nodiscard]] bool refuseBound(size_t n, long schemaBound, DynCap dynCap) noexcept
         {
             if (schemaBound >= 0)
             {
                 // Schema-bounded: its violation is INVALID (MESSAGE_SPEC §7.1),
                 // and §6.2.1 forbids the cap from reaching this field at all.
-                if (n > static_cast<size_t>(schemaBound)) { invalidate(); return true; }
-                return false;
+                return refuseSchema(n, schemaBound);
             }
 
-            if (dynCap >= 0 && n > static_cast<size_t>(dynCap)) { exceedLimit(); return true; }
-            return false;
+            if (!dynCap.stated()) { refuseArgument(); return true; }
+            return refuseCap(n, dynCap.value());
         }
 
         /*!
@@ -2380,45 +2639,56 @@ namespace sofab
          * and a @c std::string (@c resize), so the same call works in the no-heap
          * and the dynamic profile.
          *
-         * @par The three ways this refuses (§6.3)
-         * All three are decided here, on the length header, after the §7.3 type
-         * check and before @p value is sized — and they are three different
-         * answers, not one:
+         * @par The four ways a read refuses (§6.3)
+         * All of them are decided on the length header, after the §7.3 type check
+         * and before @p value is sized — and they are four different answers, not
+         * one:
          *  1. @p maxlen is declared and the field is longer → @ref Error::InvalidMessage.
          *     The schema says these bytes are invalid (MESSAGE_SPEC §7.1).
-         *  2. @p maxlen is `-1` — the schema declares no bound — and the field is
-         *     longer than @p dynCap → @ref Error::LimitExceeded. The bytes are
-         *     well-formed; this receiver declines to hold that much (§6.2.1). The
-         *     cap is consulted *only* here: it must never be applied to a field
-         *     the schema already bounds.
+         *  2. the schema declares no bound and the field is longer than the
+         *     receiver cap → @ref Error::LimitExceeded. The bytes are well-formed;
+         *     this receiver declines to hold that much (§6.2.1). That is
+         *     @ref readStringCapped's answer, and only its: a cap must never be
+         *     applied to a field the schema already bounds.
          *  3. Both admit the field, but @p value is a @ref FixedString too small
          *     for it → @ref Error::InvalidArgument (§6.6.3). Nothing is wrong with
          *     the message or with the deployment; the storage this caller offered
          *     is too short, and it is refused rather than filled part-way.
+         *  4. No ceiling was stated at all — no @p maxlen, no cap, and a growable
+         *     @p value → @ref Error::InvalidArgument (§6.2.1, @ref refuseUnbounded).
+         *     The message and the deployment are again blameless; what is missing
+         *     is part of the call.
          * A `std::string` destination never reaches 3: it can hold whatever 1 and
-         * 2 let through.
+         * 2 let through. A @ref FixedString never reaches 4: its capacity is a
+         * ceiling of its own.
          *
-         * @par The cap is yours, and it is passed, not stored
-         * §6.2.1 gives the numbers to generated code and leaves this corelib "the
-         * report and the category", so there is no limit on the stream to fall
-         * back on: a caller who passes no @p dynCap gets no tier 2. Passing it
-         * here rather than checking it yourself before the call is what keeps a
-         * §7.3-skipped field uncapped — the type check runs first, and a field
-         * that contradicts the wire never reaches the ceiling at all. This is what
-         * generated code emits:
+         * @par This is the schema-bounded entry point
+         * §6.2.1 gives the receiver caps to generated code and leaves this corelib
+         * "the report and the category", so there is no limit on the stream to fall
+         * back on — and, since the clause also forbids reading an omitted argument
+         * as *unlimited*, there is no `dynCap = -1` here to omit. A field the schema
+         * leaves unbounded goes through @ref readStringCapped instead, which takes
+         * the cap and cannot be called without one. The two are never both in play:
+         * §6.2.1 forbids a receiver cap on a field the schema already bounds.
+         *
+         * A read given neither ceiling — no @p maxlen, and a growable @p value that
+         * publishes no capacity — is refused as @ref Error::InvalidArgument
+         * (@ref refuseUnbounded), not decoded. A heap-free @p value needs no
+         * @p maxlen: its capacity is a ceiling of its own.
+         *
+         * This is what generated code emits for the embedded profile, where every
+         * `string` carries a `maxlen`:
          * ```cpp
-         * is.readString(name, _size, -1, SOFAB_MAX_DYN_STRING_LEN);
+         * is.readString(name, _size, 32);
          * ```
          *
          * @param value   Destination string.
          * @param size    Field length, as delivered to the field callback.
-         * @param maxlen  Schema `maxlen`, or -1 when the schema declares none —
-         *                which is what arms @p dynCap.
-         * @param dynCap  The §6.2.1 receiver cap for a schema-unbounded `string`,
-         *                or -1 for none. See @ref refuse.
+         * @param maxlen  Schema `maxlen`, or -1 when the schema declares none — in
+         *                which case @p value must publish a capacity.
          */
         template <typename T>
-        void readString(T &value, size_t size, long maxlen = -1, long dynCap = -1) noexcept
+        void readString(T &value, size_t size, long maxlen = -1) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::String)
             {
@@ -2426,30 +2696,57 @@ namespace sofab
                 return;
             }
 
-            if (refuseBound(size, maxlen, dynCap))
+            if (refuseUnbounded(maxlen, fixed_capacity_v<T>) || refuseSchema(size, maxlen))
             {
                 return;
             }
 
-            if (refuse(size, fixed_capacity_v<T>))
+            bindString_(value, size);
+        }
+
+        /*!
+         * @brief @ref readString for a **schema-unbounded** `string`, bounded by the
+         *        receiver cap the caller supplies (§6.2.1).
+         *
+         * The separate entry point is the point. @p dynCap is required and unsigned,
+         * so "no cap" has no spelling: §6.2.1's "no unset state and no unlimited
+         * mode" becomes a property of the signature rather than a rule every caller
+         * has to remember. A breach is @ref Error::LimitExceeded — a **policy**
+         * rejection of well-formed bytes, never @ref Error::InvalidMessage and never
+         * a truncating read.
+         *
+         * The cap is applied at the length header, after the MESSAGE_SPEC §7.3 tag
+         * test and before @p value is sized. Both halves matter: checking in front
+         * of the call would cap a field this read is required to *skip*, which
+         * §6.2.1 forbids in as many words, and checking after the resize would be
+         * the allocation the cap exists to prevent.
+         *
+         * @p dynCap is used for this one comparison and not retained — the number is
+         * the caller's, and this corelib neither defaults it nor remembers it.
+         *
+         * ```cpp
+         * is.readStringCapped(name, _size, SOFAB_MAX_DYN_STRING_LEN);
+         * ```
+         *
+         * @param value   Destination string.
+         * @param size    Field length, as delivered to the field callback.
+         * @param dynCap  The §6.2.1 receiver cap. A maximum, not an exclusive bound.
+         */
+        template <typename T>
+        void readStringCapped(T &value, size_t size, size_t dynCap) noexcept
+        {
+            if (wire() != Wire::Fixlen || fixType() != Fix::String)
+            {
+                noteSkip_();
+                return;
+            }
+
+            if (refuseCap(size, dynCap))
             {
                 return;
             }
 
-            if constexpr (requires { value.set_len(size); })
-            {
-                value.set_len(size);
-            }
-            else
-            {
-                value.resize(size);
-            }
-
-            // a zero-length string binds no target: there is nothing to fill
-            if (value.size())
-            {
-                read(value);
-            }
+            bindString_(value, size);
         }
 
         /*!
@@ -2459,21 +2756,20 @@ namespace sofab
          * destination must be sized before it is bound, so the delivered type is
          * checked before @p value is touched (MESSAGE_SPEC §7.3).
          *
-         * The three refusals of @ref readString apply unchanged, with
-         * `SOFAB_MAX_DYN_BLOB_LEN` as @p dynCap: `blob` and `string` are separate
-         * limits in §6.2.1 because a deployment may well accept a megabyte of
-         * opaque bytes and no such quantity of text.
+         * The refusals of @ref readString apply unchanged, and so does the split
+         * into two entry points: this one takes the schema `maxlen`,
+         * @ref readBlobCapped takes `SOFAB_MAX_DYN_BLOB_LEN`. `blob` and `string`
+         * are separate limits in §6.2.1 because a deployment may well accept a
+         * megabyte of opaque bytes and no such quantity of text.
          *
          * @param value   Destination byte buffer (@ref FixedBytes or
          *                @c std::vector<uint8_t>).
          * @param size    Field length, as delivered to the field callback.
-         * @param maxlen  Schema `maxlen`, or -1 when the schema declares none —
-         *                which is what arms @p dynCap.
-         * @param dynCap  The §6.2.1 receiver cap for a schema-unbounded `blob`,
-         *                or -1 for none. See @ref refuse.
+         * @param maxlen  Schema `maxlen`, or -1 when the schema declares none — in
+         *                which case @p value must publish a capacity.
          */
         template <typename T>
-        void readBlob(T &value, size_t size, long maxlen = -1, long dynCap = -1) noexcept
+        void readBlob(T &value, size_t size, long maxlen = -1) noexcept
         {
             if (wire() != Wire::Fixlen || fixType() != Fix::Blob)
             {
@@ -2481,29 +2777,40 @@ namespace sofab
                 return;
             }
 
-            if (refuseBound(size, maxlen, dynCap))
+            if (refuseUnbounded(maxlen, fixed_capacity_v<T>) || refuseSchema(size, maxlen))
             {
                 return;
             }
 
-            if (refuse(size, fixed_capacity_v<T>))
+            bindBlob_(value, size);
+        }
+
+        /*!
+         * @brief @ref readBlob for a **schema-unbounded** `blob`, bounded by the
+         *        receiver cap the caller supplies (§6.2.1).
+         *
+         * The blob counterpart of @ref readStringCapped, with the same required,
+         * unsigned @p dynCap and the same ordering guarantees.
+         *
+         * @param value   Destination byte buffer.
+         * @param size    Field length, as delivered to the field callback.
+         * @param dynCap  The §6.2.1 receiver cap. A maximum, not an exclusive bound.
+         */
+        template <typename T>
+        void readBlobCapped(T &value, size_t size, size_t dynCap) noexcept
+        {
+            if (wire() != Wire::Fixlen || fixType() != Fix::Blob)
+            {
+                noteSkip_();
+                return;
+            }
+
+            if (refuseCap(size, dynCap))
             {
                 return;
             }
 
-            if constexpr (requires { value.set_len(size); })
-            {
-                value.set_len(size);
-            }
-            else
-            {
-                value.resize(size);
-            }
-
-            // Bind the destination's own size, not the wire length: a wire length
-            // beyond the declared bound is then rejected as INVALID by the C
-            // decoder rather than silently truncated (MESSAGE_SPEC §7.1).
-            read(value.data(), value.size());
+            bindBlob_(value, size);
         }
 
         /*!
@@ -2518,73 +2825,66 @@ namespace sofab
          * against the schema bound before a resize, so an over-count message
          * cannot make the receiver allocate what the bound exists to prevent.
          *
-         * The three refusals of @ref readString apply unchanged, counting elements
-         * instead of bytes and with `SOFAB_MAX_DYN_ARRAY_COUNT` as @p dynCap.
-         * Tier 3 matters more here than it does for a string: a heap-free
-         * destination's @c resize *clamps*, so without the check an over-capacity
-         * count would decode as a silently short array rather than as a refusal.
+         * The refusals of @ref readString apply unchanged, counting elements
+         * instead of bytes, and so does the split into two entry points: this one
+         * takes the schema `count`, @ref readArrayCapped takes
+         * `SOFAB_MAX_DYN_ARRAY_COUNT`. Tier 3 matters more here than it does for a
+         * string: a heap-free destination's @c resize *clamps*, so without the
+         * check an over-capacity count would decode as a silently short array
+         * rather than as a refusal.
          *
          * @param out        Destination array or vector.
          * @param wireCount  Element count delivered to the field callback.
          * @param cap        Schema `count`, or -1 when the schema declares none —
-         *                   which is what arms @p dynCap.
-         * @param dynCap     The §6.2.1 receiver cap for a schema-unbounded array,
-         *                   or -1 for none. See @ref refuse.
+         *                   in which case @p out must publish a capacity.
          */
         template <typename C>
-        void readArray(C &out, size_t wireCount = 0, long cap = -1, long dynCap = -1) noexcept
+        void readArray(C &out, size_t wireCount = 0, long cap = -1) noexcept
         {
-            using Elem = typename C::value_type;
-
-            bool tagOk;
-            if constexpr (std::is_same_v<Elem, float>)
-            {
-                tagOk = wire() == Wire::ArrayFixlen && fixType() == Fix::Fp32;
-            }
-            else if constexpr (std::is_same_v<Elem, double>)
-            {
-                tagOk = wire() == Wire::ArrayFixlen && fixType() == Fix::Fp64;
-            }
-            else if constexpr (std::is_signed_v<Elem>)
-            {
-                tagOk = wire() == Wire::ArraySigned;
-            }
-            else
-            {
-                tagOk = wire() == Wire::ArrayUnsigned;
-            }
-
-            if (!tagOk)
+            if (!arrayTagOk_<C>())
             {
                 noteSkip_();
                 return;
             }
 
-            // What the destination can hold. A heap-free container publishes it
-            // as a static capacity(); a std::array publishes it as its (fixed)
-            // size(); a resizable container publishes none and takes whatever the
-            // two message-side bounds admit.
-            long room = fixed_capacity_v<C>;
-            if constexpr (fixed_capacity_v<C> < 0 && !requires { out.resize(wireCount); })
-            {
-                room = static_cast<long>(out.size());
-            }
+            const long room = arrayRoom_(out, wireCount);
 
-            if (refuseBound(wireCount, cap, dynCap) || refuse(wireCount, room))
+            if (refuseUnbounded(cap, room) || refuseSchema(wireCount, cap))
             {
                 return;
             }
 
-            if constexpr (requires { out.resize(wireCount); })
+            bindArray_(out, wireCount, room);
+        }
+
+        /*!
+         * @brief @ref readArray for a **schema-unbounded** array, bounded by the
+         *        receiver cap the caller supplies (§6.2.1).
+         *
+         * The array counterpart of @ref readStringCapped: @p dynCap is required and
+         * unsigned, it is compared against the wire count at the count header —
+         * behind the §7.3 tag test, before anything is sized from it — and a breach
+         * is @ref Error::LimitExceeded.
+         *
+         * @param out        Destination array or vector.
+         * @param wireCount  Element count delivered to the field callback.
+         * @param dynCap     The §6.2.1 receiver cap on the element count.
+         */
+        template <typename C>
+        void readArrayCapped(C &out, size_t wireCount, size_t dynCap) noexcept
+        {
+            if (!arrayTagOk_<C>())
             {
-                out.resize(wireCount);
-            }
-            else
-            {
-                out = C{};
+                noteSkip_();
+                return;
             }
 
-            read(out);
+            if (refuseCap(wireCount, dynCap))
+            {
+                return;
+            }
+
+            bindArray_(out, wireCount, arrayRoom_(out, wireCount));
         }
 
         /*!
@@ -2962,13 +3262,15 @@ namespace sofab
      * @param n            The index + 1, or the element length.
      * @param schemaBound  The schema's `count` / `maxlen`, or -1. Exceeding it is
      *                     @ref Error::InvalidMessage.
-     * @param dynCap       The §6.2.1 receiver cap, or -1. Consulted **only** where
+     * @param dynCap       The §6.2.1 receiver cap. Consulted **only** where
      *                     @p schemaBound is -1. Exceeding it is
-     *                     @ref Error::LimitExceeded.
+     *                     @ref Error::LimitExceeded; leaving it **unstated** there
+     *                     is @ref Error::InvalidArgument, because §6.2.1 has no
+     *                     unlimited mode for it to mean instead.
      * @return `true` when the element was refused.
      */
     [[nodiscard]] inline bool seqRefuse(
-        IStreamImpl &is, size_t n, long schemaBound, long dynCap) noexcept
+        IStreamImpl &is, size_t n, long schemaBound, DynCap dynCap) noexcept
     {
         // The collectors' spelling of IStreamImpl::refuseBound. One implementation
         // of the two message-side tiers, reached from both surfaces (§5.3.1).
@@ -2999,8 +3301,8 @@ namespace sofab
         std::vector<std::string> *out = nullptr;
         long cap = -1;         //!< Schema `count` N, or -1 when the schema declares none.
         long elemMax = -1;     //!< Element `maxlen`, or -1 when the schema declares none.
-        long dynCap = -1;      //!< §6.2.1 receiver cap on the index; consulted only where @ref cap is -1.
-        long dynElemMax = -1;  //!< §6.2.1 receiver cap on the element length; only where @ref elemMax is -1.
+        DynCap dynCap{};       //!< §6.2.1 receiver cap on the index; required where @ref cap is -1.
+        DynCap dynElemMax{};   //!< §6.2.1 receiver cap on the element length; required where @ref elemMax is -1.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
         {
@@ -3036,8 +3338,8 @@ namespace sofab
         std::vector<std::vector<uint8_t>> *out = nullptr;
         long cap = -1;         //!< Schema `count` N, or -1 when the schema declares none.
         long elemMax = -1;     //!< Element `maxlen`, or -1 when the schema declares none.
-        long dynCap = -1;      //!< §6.2.1 receiver cap on the index; consulted only where @ref cap is -1.
-        long dynElemMax = -1;  //!< §6.2.1 receiver cap on the element length; only where @ref elemMax is -1.
+        DynCap dynCap{};       //!< §6.2.1 receiver cap on the index; required where @ref cap is -1.
+        DynCap dynElemMax{};   //!< §6.2.1 receiver cap on the element length; required where @ref elemMax is -1.
 
         void deserialize(IStreamImpl &is, sofab_id_t id, size_t size, size_t) noexcept override
         {
