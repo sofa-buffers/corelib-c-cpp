@@ -376,6 +376,11 @@ TEST_CASE("MessageSeq: a native-scalar row is placed by id and sized by the wire
     {
         sofab::IStreamObject<DynRows> in;
         (*in).seq.cap = 3;
+        // A growable row publishes no capacity, so the row's own ceiling has to
+        // be stated: `elemCount` is the inner array's schema `count`. Without it
+        // the row would be sized from a count the sender chose, which is what
+        // IStreamImpl::refuseUnbounded now refuses (§6.2.1, §6.6).
+        (*in).seq.elemCount = 3;
         REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
         REQUIRE(in->out.size() == 3);
         REQUIRE(in->out[0] == std::vector<uint32_t>{1, 2, 3});
