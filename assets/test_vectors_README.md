@@ -131,6 +131,53 @@ sequence), then verifies the remaining fields still decode and the message is
 fully consumed. **Fields are only ever skipped when `skip_ids` is present**;
 vectors without it just don't run that scenario.
 
+#### The skip matrix — group `skip/matrix`
+
+Skipping is driven by the **wire type** alone
+([CORELIB_PLAN §4.3](https://github.com/sofa-buffers/documentation/blob/main/CORELIB_PLAN.md)),
+and each type has its own length computation: a varint ends at its continuation
+bit, a `fixlen` at the length in its `fixlen_word` (§4.6), an integer array after
+`count` elements (§4.7), a fixlen array after `count × element_length` (§4.8), a
+sequence at its end marker (§4.9). Every one of them can be off by a byte on its
+own, and the symptom is always the same — the *next* field is read from the wrong
+offset.
+
+The 36 vectors in group `skip/matrix` are the full cross product over the ten
+skippable constructs (the eight wire types, `fixlen` split by subtype because the
+decoder branches on it, `sequence end` left out because it is a marker and not a
+field a receiver can decline). Each vector is a chain of rows
+
+```
+[ read field of type P ] [ SKIPPED field of type S ] [ read unsigned anchor ]
+```
+
+with ids `3k` / `3k+1` / `3k+2`, so `skip_ids` is exactly the `3k+1` column. All
+**100** (P, S) pairs are present across the 36 vectors. The anchor is the
+detector: a skip that consumes one byte too few or too many leaves the decoder
+inside it, and its value comparison fails. One anchor wire type is enough — what
+a resync must land on is a field header, and every header is the same varint.
+
+Vectors are grouped by the capability set their pair block needs
+(`skip_matrix_<skipped tier>_after_<read tier>`, tiers: `varint`, `fixlen`,
+`fp64`, `int_array`, `fixlen_array`, `sequence`), so a reduced build still runs
+the part of the matrix it can represent instead of dropping one big all-types
+vector whole. `boolean` is not in the matrix: §4.4 makes it an unsigned integer
+on the wire, which the `varint` tier already covers.
+
+The matrix varies only *which* construct is skipped behind *which* — it uses
+small, non-empty payloads, top-level fields and an anchor behind every skip. The
+remaining axes of a skip sit beside it, in group `skip`:
+
+| Axis | Vectors |
+|---|---|
+| **zero-length payload** — `fixlen_word` with no payload; a count that ends the field; count `0` that still **keeps** the `fixlen_word` (§4.8) | `skip_empty_fixlen_payloads`, `skip_empty_int_arrays`, `skip_empty_fixlen_arrays` |
+| **length/count needs two varint bytes** — 130-byte payloads and 130-element arrays, so a decoder that reads the length as one byte lands mid-payload | `skip_long_fixlen_payloads`, `skip_long_int_arrays`, `skip_long_fixlen_array` |
+| **element width from the `fixlen_word`** — an fp64 array (element length 8), where the matrix uses fp32 (4) | `skip_fp64_array` |
+| **three-byte header varint** — id `100000`, so `(id << 3 \| type)` spans three bytes (§4.3) | `skip_large_id` |
+| **position: message start / message end** — nothing before the one, nothing behind the other, so the skip itself must reach a clean boundary (§5.2). One per wire-type state: varint, fixlen, integer array, fixlen array, sequence | `skip_at_message_edges`, `skip_fixlen_at_message_end`, `skip_int_array_at_message_end`, `skip_fixlen_array_at_message_end`, `skip_sequence_at_message_end` |
+| **position: last field inside a sequence** — the resync lands on the end marker, not on a value-bearing header (§4.9) | `skip_before_sequence_end` |
+| **nested / consecutive skips** — a skip inside a skipped sub-tree, at depth 2, and skips back to back | `nested_sequence_deep_skip`, `full_scale_example`, `skip_all_wire_types` |
+
 ### Negative vectors — `invalid_utf8`
 
 Alongside the positive `vectors`, the file carries a **separate top-level

@@ -333,7 +333,16 @@ static int load_vector(const sofab_json_t *vj, vector_t *out)
     /* optional: field ids a receiver is expected to skip */
     const sofab_json_t *skip = sofab_json_get(vj, "skip_ids");
     size_t ns = sofab_json_array_size(skip);
-    if (ns > MAXSKIP) ns = MAXSKIP;
+    if (ns > MAXSKIP)
+    {
+        /* Refuse rather than truncate: a silently shortened list still decodes
+         * (the extra ids are simply read instead of skipped) and the vector
+         * would pass while testing less than it claims. */
+        fprintf(stderr, "vector '%s': %zu skip_ids exceed MAXSKIP (%d)\n",
+                out->name, ns, MAXSKIP);
+        free_vector(out);
+        return -1;
+    }
     out->nskip = ns;
     for (size_t i = 0; i < ns; i++)
         out->skip_ids[i] = (uint32_t)sofab_json_u64(sofab_json_array_at(skip, i));
