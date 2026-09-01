@@ -494,6 +494,159 @@ static void emit_vector(FILE *o, const char *name, const char *group,
         emit_vector(o, name, group, desc, &l);  \
     } while (0)
 
+/* the skip matrix ***********************************************************
+ *
+ * A receiver skips every field it does not bind — an unknown id (MESSAGE_SPEC
+ * §5.1.5) or one whose wire type contradicts the schema (§7.3) — and must resume
+ * at the very next header, whatever the skipped construct was. The skip is
+ * driven by the WIRE TYPE alone (CORELIB_PLAN §4.3): a varint is consumed by its
+ * continuation bits, a fixlen by the length in its `fixlen_word` (§4.6), an
+ * integer array element by element (§4.7), a fixlen array by
+ * `count × element_length` (§4.8) and a sequence by its end marker (§4.9).
+ * Those are five different length computations, and each can be off by a byte on
+ * its own.
+ *
+ * This block is the full matrix over them: every skippable construct skipped
+ * directly behind every skippable construct that IS read, each followed by an
+ * unsigned ANCHOR that the receiver reads and compares. The anchor is the
+ * detector — a skip that consumes one byte too few or too many lands the decoder
+ * in the middle of it, and the comparison fails. One anchor wire type is enough:
+ * what a resync must land on is a header, and every header is the same varint.
+ *
+ * The ten constructs are the eight wire types with `fixlen` split by subtype
+ * (the decoder branches on it) and `sequence end` left out (it is a marker, not
+ * a field a receiver can decline). `boolean` is not a construct of its own —
+ * §4.4 makes it an unsigned integer on the wire, which the matrix already covers.
+ *
+ * Pairs are grouped into vectors by the capability set they need, so a reduced
+ * build still runs the part of the matrix it can represent: a single vector
+ * holding all ten constructs would carry every "requires" tag and be dropped
+ * whole by every SOFAB_DISABLE_* build.
+ */
+
+typedef enum
+{
+    MW_UNSIGNED, MW_SIGNED,           /* tier "varint"       */
+    MW_FP32, MW_STRING, MW_BLOB,      /* tier "fixlen"       */
+    MW_FP64,                          /* tier "fp64"         */
+    MW_ARR_U, MW_ARR_I,               /* tier "int_array"    */
+    MW_ARR_F,                         /* tier "fixlen_array" */
+    MW_SEQ,                           /* tier "sequence"     */
+    MW_COUNT
+} mwire_t;
+
+static const char *const MW_NAME[MW_COUNT] = {
+    "unsigned", "signed", "fp32", "string", "blob", "fp64",
+    "array<unsigned>", "array<signed>", "array<fixlen>", "sequence",
+};
+
+/* Tiers are contiguous runs of MW_*, each with one capability set. */
+static const struct { const char *name; int first, last; } MTIER[] = {
+    { "varint",       MW_UNSIGNED, MW_SIGNED },
+    { "fixlen",       MW_FP32,     MW_BLOB   },
+    { "fp64",         MW_FP64,     MW_FP64   },
+    { "int_array",    MW_ARR_U,    MW_ARR_I  },
+    { "fixlen_array", MW_ARR_F,    MW_ARR_F  },
+    { "sequence",     MW_SEQ,      MW_SEQ    },
+};
+#define MTIER_COUNT (sizeof(MTIER) / sizeof(MTIER[0]))
+
+/* Widest vector the grouping produces: 3 (fixlen tier) x 3 (fixlen tier) pairs. */
+#define MMAX_PAIRS 9
+#define MMAX_SLOTS (MMAX_PAIRS * 3)
+
+/*!
+ * @brief Append one field of wire type @p w at id @p id.
+ *
+ * @p slot is the field's index inside the vector being built; it varies the
+ * payloads so no two fields of a vector carry the same value, and indexes the
+ * string pool (op_str stores the pointer, so the buffer must outlive the build).
+ * Every value is non-default, which keeps the sparse column identical to the
+ * dense one: the matrix is about skipping, not about omission.
+ */
+static void push_wire(oplist_t *l, mwire_t w, uint32_t id, size_t slot)
+{
+    static const uint32_t au[3] = {1000u, 2000u, 3000u};
+    static const int32_t  ai[3] = {-1000, -2000, -3000};
+    static const float    af[3] = {1.5f, -2.5f, 3.5f};
+    static const uint8_t  bl[3] = {0xDE, 0xAD, 0xBE};
+    static char strpool[MMAX_SLOTS][8];
+
+    switch (w)
+    {
+        /* Multi-byte payloads throughout: a one-byte varint would hide a skip
+         * that stops after the first byte. */
+        case MW_UNSIGNED: op_u  (l, id, UINT64_C(1000) + slot); break;
+        case MW_SIGNED:   op_i  (l, id, -(int64_t)(1000 + slot)); break;
+        case MW_FP32:     op_f32(l, id, 1.5f + (float)slot); break;
+        case MW_STRING:   snprintf(strpool[slot], sizeof(strpool[0]), "s%02zu", slot);
+                          op_str(l, id, strpool[slot]); break;
+        case MW_BLOB:     op_blob(l, id, bl, (int32_t)sizeof(bl)); break;
+        case MW_FP64:     op_f64(l, id, 2.5 + (double)slot); break;
+        case MW_ARR_U:    op_arr(l, K_ARR_U32,  id, au, 3); break;
+        case MW_ARR_I:    op_arr(l, K_ARR_I32,  id, ai, 3); break;
+        case MW_ARR_F:    op_arr(l, K_ARR_FP32, id, af, 3); break;
+        /* A sequence carries content, so skipping it means skipping a frame with
+         * something in it -- the empty frame is covered by
+         * empty_sequence_between_fields. The child id is 0, which no skip_ids
+         * list here names (skipped ids are always 3k+1), so a READ sequence keeps
+         * its child. */
+        case MW_SEQ:      op_seqb(l, id); op_u(l, 0, UINT64_C(7) + slot); op_seqe(l); break;
+        default:          break;
+    }
+}
+
+/* "unsigned, signed" — the tier's members, for the vector description. */
+static void tier_members(char *buf, size_t n, size_t tier)
+{
+    size_t used = 0;
+    buf[0] = '\0';
+    for (int w = MTIER[tier].first; w <= MTIER[tier].last; ++w)
+    {
+        int k = snprintf(buf + used, n - used, "%s%s",
+                         w == MTIER[tier].first ? "" : ", ", MW_NAME[w]);
+        if (k < 0 || (size_t)k >= n - used) return;
+        used += (size_t)k;
+    }
+}
+
+static void emit_skip_matrix(FILE *o)
+{
+    for (size_t pt = 0; pt < MTIER_COUNT; ++pt)
+    for (size_t st = 0; st < MTIER_COUNT; ++st)
+    {
+        oplist_t l = {0};
+        uint32_t skip[MMAX_PAIRS];
+        size_t   nskip = 0, slot = 0;
+        uint32_t id = 0;
+
+        for (int p = MTIER[pt].first; p <= MTIER[pt].last; ++p)
+        for (int s = MTIER[st].first; s <= MTIER[st].last; ++s)
+        {
+            /* one row: read a field, skip the next, read the anchor after it.
+             * Ids run 3k / 3k+1 / 3k+2, so the skipped id is never one a read
+             * field (or a read sequence's child) carries. */
+            push_wire(&l, (mwire_t)p, id++, slot++);
+            skip[nskip++] = id;
+            push_wire(&l, (mwire_t)s, id++, slot++);
+            op_u(&l, id++, UINT64_C(500) + slot);
+            slot++;
+        }
+
+        char pmem[96], smem[96], name[64], desc[640];
+        tier_members(pmem, sizeof(pmem), pt);
+        tier_members(smem, sizeof(smem), st);
+        snprintf(name, sizeof(name), "skip_matrix_%s_after_%s", MTIER[st].name, MTIER[pt].name);
+        snprintf(desc, sizeof(desc),
+                 "Skip matrix, %zu of the 100 (read, skipped) wire-type pairs: each of {%s} is skipped "
+                 "where it directly follows a {%s} field the receiver DOES read. Every skipped field is "
+                 "followed by an unsigned anchor that must still decode with its exact value -- a skip "
+                 "consuming one byte too few or too many is caught there (MESSAGE_SPEC S7.3, S4.3).",
+                 nskip, smem, pmem);
+        emit_vector_skip(o, name, "skip/matrix", desc, &l, skip, nskip);
+    }
+}
+
 /* the vectors ***************************************************************/
 
 static void emit_all(FILE *o)
@@ -642,6 +795,223 @@ static void emit_all(FILE *o)
         emit_vector_skip(o, "skip_all_wire_types", "skip",
             "Every wire type as an optional field; a receiver skipping ids 2-9 "
             "must still read the id 1 and id 10 anchors.",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        /* Zero-length payloads as the skipped field. Each is its own branch in
+         * the length arithmetic: a fixlen with length 0 has a fixlen_word and no
+         * payload, a zero-count integer array ends after the count (§4.7), and a
+         * zero-count fixlen array still carries its fixlen_word (§4.8) -- the one
+         * empty construct where the skip must consume a word it cannot infer
+         * from the count. The skip matrix below uses non-empty payloads
+         * throughout, so these three sit here. */
+        static const uint32_t skip[] = {1, 3};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_str(&l, 1, "");                  /* skip: zero-length string */
+        op_u  (&l, 2, 2000);
+        op_blob(&l, 3, NULL, 0);            /* skip: zero-length blob   */
+        op_u  (&l, 4, 3000);
+        emit_vector_skip(o, "skip_empty_fixlen_payloads", "skip",
+            "Zero-length string and blob as skipped fields: the fixlen_word is there, the "
+            "payload is not, and the anchors after them must still decode (S4.6).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static const uint32_t au[1] = {0};
+        static const int32_t  ai[1] = {0};
+        static const uint32_t skip[] = {1, 3};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_arr(&l, K_ARR_U32, 1, au, 0);    /* skip: zero-count unsigned array */
+        op_u  (&l, 2, 2000);
+        op_arr(&l, K_ARR_I32, 3, ai, 0);    /* skip: zero-count signed array   */
+        op_u  (&l, 4, 3000);
+        emit_vector_skip(o, "skip_empty_int_arrays", "skip",
+            "Zero-count integer arrays as skipped fields: the field ends after the count, "
+            "with no elements and no fixlen_word (S4.7).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static const float  af[1] = {0};
+        static const double ad[1] = {0};
+        static const uint32_t skip[] = {1, 3};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_arr(&l, K_ARR_FP32, 1, af, 0);   /* skip: zero-count fp32 array */
+        op_u  (&l, 2, 2000);
+        op_arr(&l, K_ARR_FP64, 3, ad, 0);   /* skip: zero-count fp64 array */
+        op_u  (&l, 4, 3000);
+        emit_vector_skip(o, "skip_empty_fixlen_arrays", "skip",
+            "Zero-count fixlen arrays as skipped fields: count 0 KEEPS the fixlen_word "
+            "(S4.8), so a skip that stops at the count desynchronises the anchor after it.",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        /* A non-empty fp64 array as the skipped field: the skip matrix uses fp32
+         * arrays, whose fixlen_word says 4 -- here it says 8, so a skip that
+         * assumes the element width instead of reading it desynchronises (§4.8). */
+        static const double a[] = {1.5, -2.5, 3.5};
+        static const uint32_t skip[] = {1};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_arr(&l, K_ARR_FP64, 1, a, 3);
+        op_u  (&l, 2, 2000);
+        emit_vector_skip(o, "skip_fp64_array", "skip",
+            "A non-empty fp64 array skipped: element length 8 comes from the fixlen_word, "
+            "and count x length must be consumed exactly (S4.8).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+
+    /* --- skipped fields whose LENGTH/COUNT needs more than one varint byte ---
+     *
+     * Everything above keeps the skipped payload under 128, so its fixlen_word /
+     * element count fits in a single byte. A decoder that reads that varint as
+     * one byte, or truncates the count at 127, passes all of them. These carry
+     * 130-byte / 130-element payloads, where the length itself is a two-byte
+     * varint (§4.1). */
+    {
+        static char  s[131];
+        static uint8_t b[130];
+        static const uint32_t skip[] = {1, 3};
+        for (size_t i = 0; i < sizeof(s) - 1; ++i) s[i] = (char)('a' + (i % 26));
+        s[sizeof(s) - 1] = '\0';
+        for (size_t i = 0; i < sizeof(b); ++i) b[i] = (uint8_t)(i & 0xFF);
+
+        oplist_t l = {0};
+        op_u   (&l, 0, 1000);
+        op_str (&l, 1, s);                              /* skip: 130-byte string */
+        op_u   (&l, 2, 2000);
+        op_blob(&l, 3, b, (int32_t)sizeof(b));          /* skip: 130-byte blob   */
+        op_u   (&l, 4, 3000);
+        emit_vector_skip(o, "skip_long_fixlen_payloads", "skip",
+            "Skipped string and blob of 130 bytes: the fixlen_word is a TWO-byte varint, so a "
+            "skip that reads the length as one byte lands mid-payload (S4.1, S4.6).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static uint32_t au[130];
+        static int32_t  ai[130];
+        static const uint32_t skip[] = {1, 3};
+        for (size_t i = 0; i < 130; ++i) { au[i] = (uint32_t)(i + 1); ai[i] = -(int32_t)(i + 1); }
+
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_arr(&l, K_ARR_U32, 1, au, 130);   /* skip: 130-element unsigned array */
+        op_u  (&l, 2, 2000);
+        op_arr(&l, K_ARR_I32, 3, ai, 130);   /* skip: 130-element signed array   */
+        op_u  (&l, 4, 3000);
+        emit_vector_skip(o, "skip_long_int_arrays", "skip",
+            "Skipped integer arrays of 130 elements: the element count is a TWO-byte varint and "
+            "the elements are skipped one varint at a time (S4.7).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static float af[130];
+        static const uint32_t skip[] = {1};
+        for (size_t i = 0; i < 130; ++i) af[i] = 1.5f + (float)i;
+
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_arr(&l, K_ARR_FP32, 1, af, 130);  /* skip: 520 payload bytes */
+        op_u  (&l, 2, 2000);
+        emit_vector_skip(o, "skip_long_fixlen_array", "skip",
+            "Skipped fixlen array of 130 fp32 elements: a two-byte count, and 520 payload bytes "
+            "to consume as count x element_length (S4.8).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        /* A skipped field whose HEADER is a three-byte varint: the id is part of
+         * the same varint as the type (§4.3), so a decoder that stops early
+         * misreads both. */
+        static const uint32_t skip[] = {100000};
+        oplist_t l = {0};
+        op_u(&l, 0, 1000);
+        op_i(&l, 100000, -4242);
+        op_u(&l, 100001, 2000);
+        emit_vector_skip(o, "skip_large_id", "skip",
+            "A skipped field at id 100000: its (id << 3 | type) header is a three-byte varint "
+            "(S4.3), and the anchor behind it carries an equally wide header.",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+
+    /* --- where the skipped field SITS: message start, message end, and the last
+     * position inside a sequence. Everything above puts an anchor behind every
+     * skip, so the decoder never had to end a message, or close a sequence,
+     * directly on a skip -- the moment where a skip that left the state machine
+     * mid-field shows up as INCOMPLETE instead of a clean boundary (§5.2). The
+     * end-of-message case is split per wire type because each leaves the decoder
+     * in a different state to return from. --- */
+    {
+        static const uint32_t skip[] = {0, 2};
+        oplist_t l = {0};
+        op_i(&l, 0, -1234);   /* skip: the message's FIRST field  */
+        op_u(&l, 1, 1000);
+        op_u(&l, 2, 2000);    /* skip: the message's LAST field   */
+        emit_vector_skip(o, "skip_at_message_edges", "skip",
+            "The first and the last field of the message are both skipped: nothing precedes the "
+            "one, nothing follows the other, and the message must still end at a clean boundary.",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static const uint32_t skip[] = {1};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_str(&l, 1, "trailing");   /* skip: a fixlen at end of message */
+        emit_vector_skip(o, "skip_fixlen_at_message_end", "skip",
+            "A fixlen field is the last thing in the message and is skipped: the decoder must "
+            "leave the payload state and reach the message boundary (S4.6, S5.2).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static const uint32_t a[] = {10, 20, 30};
+        static const uint32_t skip[] = {1};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_arr(&l, K_ARR_U32, 1, a, 3);   /* skip: an array at end of message */
+        emit_vector_skip(o, "skip_int_array_at_message_end", "skip",
+            "An integer array is the last thing in the message and is skipped: the element loop "
+            "must run out exactly at the boundary (S4.7, S5.2).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static const float a[] = {1.5f, -2.5f, 3.5f};
+        static const uint32_t skip[] = {1};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_arr(&l, K_ARR_FP32, 1, a, 3);  /* skip: a fixlen array at end of message */
+        emit_vector_skip(o, "skip_fixlen_array_at_message_end", "skip",
+            "A fixlen array is the last thing in the message and is skipped: count x "
+            "element_length must run out exactly at the boundary (S4.8, S5.2).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static const uint32_t skip[] = {1};
+        oplist_t l = {0};
+        op_u  (&l, 0, 1000);
+        op_seqb(&l, 1);                   /* skip: a sequence at end of message */
+            op_u(&l, 0, 7);
+            op_seqb(&l, 1);
+                op_u(&l, 0, 8);
+            op_seqe(&l);
+        op_seqe(&l);
+        emit_vector_skip(o, "skip_sequence_at_message_end", "skip",
+            "A nested sequence is the last thing in the message and is skipped: skip_depth must "
+            "unwind to zero on the closing marker, or the message never reaches a boundary (S4.9).",
+            &l, skip, sizeof(skip) / sizeof(skip[0]));
+    }
+    {
+        static const uint32_t skip[] = {2};
+        oplist_t l = {0};
+        op_u(&l, 0, 1000);
+        op_seqb(&l, 1);
+            op_u(&l, 0, 7);
+            op_i(&l, 2, -55);   /* skip: the LAST field inside a read sequence */
+        op_seqe(&l);
+        op_u(&l, 3, 2000);
+        emit_vector_skip(o, "skip_before_sequence_end", "skip",
+            "The last field inside a sequence the receiver DOES read is skipped, so the resync "
+            "lands on the sequence-end marker rather than on a value-bearing header (S4.9).",
             &l, skip, sizeof(skip) / sizeof(skip[0]));
     }
 
@@ -1072,6 +1442,9 @@ static void emit_all(FILE *o)
                     "Large message mixing scalars, nested sequences, "
                     "integer/float arrays and strings.", &l, skip, 2);
     }
+
+    /* --- the (read, skipped) wire-type matrix, grouped by capability --- */
+    emit_skip_matrix(o);
 }
 
 /* the negative (invalid-UTF-8) vectors *************************************/
