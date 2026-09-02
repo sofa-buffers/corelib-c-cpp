@@ -14,15 +14,45 @@
  */
 
 /* includes *******************************************************************/
+/*
+ * Freestanding split. The per-target toolchain files build C++ with
+ * -ffreestanding (utils/cortex-m/toolchain-arm-none-eabi.cmake), where libstdc++
+ * offers only a subset of the library: <string> and <vector> refuse to be
+ * included at all, and <memory>/<functional> include but do not define
+ * std::shared_ptr or std::function (both allocate). Everything below the split
+ * is available in either mode, so only the hosted convenience layer is gated —
+ * see SOFAB_CPP_HAVE_HOSTED.
+ */
 #include <array>
 #include <concepts>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <memory>
 #include <span>
-#include <string>
+#include <string_view>
 #include <type_traits>
-#include <vector>
+
+/*! @brief 1 if the hosted standard library is available, else 0.
+ *
+ * Gates the convenience layer that needs an allocator: the @c std::string /
+ * @c std::vector overloads, @ref OStream (a @c std::shared_ptr buffer owner) and
+ * the @c std::function callback typedefs. Every gated entity has a heap-free
+ * counterpart that stays available freestanding — @ref FixedString,
+ * @ref FixedBytes, @ref InlineVector, @ref OStreamInline, @ref OStreamView and
+ * plain function pointers — so the wire API is complete in both modes.
+ *
+ * Defaults to the compiler's own answer (@c __STDC_HOSTED__ is 0 under
+ * @c -ffreestanding, 1 otherwise) and can be forced either way with
+ * @c -DSOFAB_CPP_HAVE_HOSTED=0/1. */
+#if !defined(SOFAB_CPP_HAVE_HOSTED)
+#  define SOFAB_CPP_HAVE_HOSTED __STDC_HOSTED__
+#endif
+
+#if SOFAB_CPP_HAVE_HOSTED
+#  include <string>
+#  include <vector>
+#endif
 
 #include "sofab/istream.h"
 #include "sofab/ostream.h"
@@ -242,14 +272,19 @@ namespace sofab
             assign(sv);
         }
 
+#if SOFAB_CPP_HAVE_HOSTED
         /*!
          * @brief Construct from a @c std::string (the easy on-ramp; truncated to @p N).
          * @param s  Source string.
+         *
+         * Hosted only; freestanding builds take the @c std::string_view overload
+         * above, which a @c std::string converts to implicitly anyway.
          */
         FixedString(const std::string &s) noexcept
         {
             assign(std::string_view{s});
         }
+#endif
 
         /*! @brief Assign from a NUL-terminated C string (truncated to @p N). */
         FixedString &operator=(const char *s) noexcept
@@ -265,12 +300,14 @@ namespace sofab
             return *this;
         }
 
-        /*! @brief Assign from a @c std::string (truncated to @p N). */
+#if SOFAB_CPP_HAVE_HOSTED
+        /*! @brief Assign from a @c std::string (truncated to @p N). Hosted only. */
         FixedString &operator=(const std::string &s) noexcept
         {
             assign(std::string_view{s});
             return *this;
         }
+#endif
 
         /*!
          * @brief Replace the contents with @p sv, truncated to @p N characters.
@@ -362,11 +399,14 @@ namespace sofab
             return view();
         }
 
-        /*! @brief Copy the contents into an owning @c std::string (allocates). */
+#if SOFAB_CPP_HAVE_HOSTED
+        /*! @brief Copy the contents into an owning @c std::string (allocates).
+         *  Hosted only — it is the one member of this type that needs a heap. */
         std::string str() const
         {
             return std::string{buf_.data(), len_};
         }
+#endif
 
         /*! @brief Equality against any string view-like operand. */
         bool operator==(std::string_view rhs) const noexcept
@@ -769,13 +809,27 @@ namespace sofab
     class OStreamImpl
     {
     public:
-        /*! @brief Callback invoked with the bytes to flush (buffer full or on flush()). */
+        /*! @brief Callback invoked with the bytes to flush (buffer full or on flush()).
+         *
+         * A @c std::function hosted, a plain function pointer freestanding (where
+         * @c std::function is not available — it type-erases onto the heap). Both
+         * spellings are contextually convertible to @c bool and callable, which is
+         * all this class asks of the type. The freestanding form accepts a
+         * captureless lambda or a free function; carry state through a global or
+         * through the object the stream lives in. */
+#if SOFAB_CPP_HAVE_HOSTED
         using flushCallback = std::function<void(std::span<const uint8_t>)>;
+#else
+        using flushCallback = void (*)(std::span<const uint8_t>);
+#endif
 
     protected:
         sofab_ostream_t ctx_;           //!< Underlying C output stream context.
         uint8_t *buffer_;               //!< Pointer to the active encode buffer.
-        flushCallback flushCallback_;   //!< Optional user flush callback.
+        // Value-initialised: empty for std::function, and null rather than
+        // indeterminate for the freestanding function pointer, which
+        // onFlushCallback() tests before calling.
+        flushCallback flushCallback_{}; //!< Optional user flush callback.
         uint8_t failed_ = 0;            //!< Sticky: first failing write's sofab_ret_t
                                         //!< (0 = none). See @ref ok.
 
@@ -1412,11 +1466,17 @@ namespace sofab
     protected:
     };
 
+#if SOFAB_CPP_HAVE_HOSTED
     /*!
      * @brief Output stream backed by a heap buffer (@c std::shared_ptr).
      *
      * Owns (or shares) a dynamically allocated buffer. With a flush callback the
      * buffer can be swapped mid-encoding via @ref setBuffer to stream in chunks.
+     *
+     * Hosted only: @c std::shared_ptr is unavailable freestanding. The heap-free
+     * counterparts are @ref OStreamInline (buffer inside the object) and
+     * @ref OStreamView (buffer supplied by the caller), which cover every
+     * embedded use of this class.
      */
     class OStream : public OStreamImpl
     {
@@ -1495,6 +1555,7 @@ namespace sofab
             return bufferOwner_;
         }
     };
+#endif /* SOFAB_CPP_HAVE_HOSTED */
 
     /*!
      * @brief Output stream backed by an inline, fixed-size buffer.
@@ -1640,7 +1701,7 @@ namespace sofab
          * @param _ostream  Output stream to write the fields to.
          * @return The encode @ref OStreamImpl::Result.
          */
-        virtual OStream::Result
+        virtual OStreamImpl::Result
         serialize(OStreamImpl &_ostream) const noexcept = 0;
     };
 
@@ -1668,7 +1729,10 @@ namespace sofab
          * @brief Construct with a flush callback.
          * @param callback  Invoked with buffered bytes when the buffer fills or on flush().
          */
-        OStreamObject(typename OStream::flushCallback callback) noexcept
+        // The typedef comes from OStreamImpl, the base this type actually derives
+        // from through OStreamInline — not from the heap-backed OStream, which is
+        // unrelated to it and absent in a freestanding build.
+        OStreamObject(OStreamImpl::flushCallback callback) noexcept
             : OStreamInline<N + Offset, Offset>{callback}
         { };
 
@@ -1682,7 +1746,7 @@ namespace sofab
          * @brief Serialize the owned message and flush.
          * @return The encode @ref OStreamImpl::Result.
          */
-        OStream::Result serialize() noexcept
+        OStreamImpl::Result serialize() noexcept
         {
             auto result =  message_.serialize(static_cast<OStreamImpl&>(*this));
             OStreamImpl::flush();
@@ -2477,11 +2541,13 @@ namespace sofab
                         "via SOFAB_DISABLE_FP64_SUPPORT");
 #endif
                 }
+#if SOFAB_CPP_HAVE_HOSTED
                 else if constexpr (std::is_same_v<T, std::string>)
                 {
                     // std::string doesn't need a null terminator, so we use read_noterm
                     sofab_istream_read_string_noterm(&ctx_, value.data(), value.size());
                 }
+#endif
                 else if constexpr (is_fixed_string_v<T>)
                 {
                     // FixedString<N>: the heap-free counterpart of std::string.
@@ -2947,6 +3013,7 @@ namespace sofab
          * @param out  Vector that receives one element per string in the sequence;
          *             it must outlive decoding of the field.
          */
+#if SOFAB_CPP_HAVE_HOSTED
         void read(std::vector<std::string> &out) noexcept
         {
             sofab_istream_read_sequence(
@@ -2963,8 +3030,10 @@ namespace sofab
             sofab_istream_read_sequence(
                 &ctx_, &arrayDecoder_, &blobArrayElem_, &out);
         }
+#endif /* SOFAB_CPP_HAVE_HOSTED */
 
     private:
+#if SOFAB_CPP_HAVE_HOSTED
         /*! @brief Per-element callback: emplace and bind one string element. */
         static void strArrayElem_(
             sofab_istream_t *ctx, sofab_id_t, size_t size, size_t, void *usrptr)
@@ -2992,6 +3061,7 @@ namespace sofab
                 sofab_istream_read_blob(ctx, out->back().data(), size);
             }
         }
+#endif /* SOFAB_CPP_HAVE_HOSTED */
     };
 
     /*!
@@ -3004,13 +3074,20 @@ namespace sofab
     class IStreamInline : public IStreamImpl
     {
     public:
-        /*! @brief Per-field callback signature: (field id, value size, element count). */
+        /*! @brief Per-field callback signature: (field id, value size, element count).
+         *
+         * As with @ref OStreamImpl::flushCallback, a @c std::function hosted and a
+         * plain function pointer freestanding. */
+#if SOFAB_CPP_HAVE_HOSTED
         using fieldCallback = std::function<void(sofab::id _id, size_t _size, size_t _count)>;
+#else
+        using fieldCallback = void (*)(sofab::id _id, size_t _size, size_t _count);
+#endif
 
     private:
-        fieldCallback callback_;
+        fieldCallback callback_{};
 
-        /*! @brief C-ABI field-callback trampoline forwarding to the std::function. */
+        /*! @brief C-ABI field-callback trampoline forwarding to the stored callback. */
         static void field_callback_(
             sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
         {
@@ -3277,8 +3354,12 @@ namespace sofab
         return is.refuseBound(n, schemaBound, dynCap);
     }
 
+#if SOFAB_CPP_HAVE_HOSTED
     /**
      * @brief Collects a `string` wrapper sequence into a `std::vector<std::string>`.
+     *
+     * Hosted only, as the growable storage mode it serves is heap-backed by
+     * definition; @ref FixedStringSeq is the freestanding counterpart.
      *
      * The heap counterpart of @ref FixedStringSeq, for the `allow_dynamic`
      * storage mode: the schema's `count` and element `maxlen` still bind, they
@@ -3361,6 +3442,7 @@ namespace sofab
             if (size) is.read(b.data(), b.size());
         }
     };
+#endif /* SOFAB_CPP_HAVE_HOSTED */
 
     /**
      * @brief Narrow a fixed-count array to its non-default prefix, for encode.
