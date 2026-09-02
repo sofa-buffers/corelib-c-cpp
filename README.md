@@ -353,6 +353,12 @@ Two knobs are **opt-IN** (off by default in this footprint corelib — see below
 | `SOFAB_ENABLE_STRICT_UTF8` | CMake option | off | Enable strict UTF-8 validation of `string` fields (see below); off by default so the validator costs zero `.text`/`.rodata`. Resolves to the boolean `SOFAB_STRICT_UTF8`, which a direct `-DSOFAB_STRICT_UTF8=1` sets outright and wins over both knobs; the legacy `SOFAB_DISABLE_STRICT_UTF8` still forces it off |
 | `SOFAB_ENABLE_SKIP_COUNTER` | CMake option | off | Count fields skipped because their wire type contradicted the read bound for them (§7.3), readable with `sofab_istream_skipped()`; a pure diagnostic no decode path reads, costing 18&nbsp;B of `.text` when on. Resolves to `SOFAB_SKIP_COUNTER`, which `-DSOFAB_SKIP_COUNTER=1` sets outright |
 
+One knob is **C++-only** and normally needs no setting at all:
+
+| Switch | Set with | Default | Effect |
+| - | - | - | - |
+| `SOFAB_CPP_HAVE_HOSTED` | **macro only** | `__STDC_HOSTED__` | Whether `sofab.hpp` exposes its hosted convenience layer — the `std::string`/`std::vector` overloads, `sofab::OStream` (a `std::shared_ptr` buffer owner) and the `std::function` callback typedefs. Defaults to the compiler's own answer, so `-ffreestanding` (what every MCU toolchain file here sets) selects the no-heap surface automatically; force it with `-DSOFAB_CPP_HAVE_HOSTED=0/1`. See [The C++ wrapper on bare metal](#the-c-wrapper-on-bare-metal) |
+
 **Strict UTF-8 (`SOFAB_STRICT_UTF8`, off by default).** This is a
 footprint/embedded corelib, so the strict UTF-8 check **defaults OFF** — the
 constrained-profile allowance in
@@ -793,6 +799,42 @@ Three rows need a word:
 - **`SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` buys 72&nbsp;B** by giving up a decode
   safety check. It is in *Minimal* because that profile targets trusted,
   schema-bounded links; it is a poor trade on untrusted input.
+
+#### The C++ wrapper on bare metal
+
+**Every table above is the C core alone.** `libsofabuffers.a` is built from
+`.c` files only, and the C++ wrapper is header-only — it contributes `0`&nbsp;B
+to the archive in every configuration, so no row here moves when it changes.
+Its cost lands in **your** translation unit instead, and it is paid per TU,
+because the templates instantiate per TU.
+
+For one representative message (five scalar fields, a nested sequence and a
+string) on ARMv6-m at the same `-Os`:
+
+| Consumer translation unit | `.text` |
+| - | -: |
+| C API directly | 338&nbsp;B |
+| C++ wrapper, freestanding | 834&nbsp;B |
+| C++ wrapper, hosted | 884&nbsp;B |
+| C++ wrapper, hosted, RTTI on | 1034&nbsp;B |
+
+The two *Minimal* rows above are **C-only by construction**: the wrapper
+rejects `SOFAB_DISABLE_FIXLEN_SUPPORT`, `..._SEQUENCE_SUPPORT` and
+`..._LAZY_SEQ_SUPPORT` with an `#error`, and those are exactly the switches that
+profile sets.
+
+Under `-ffreestanding` the wrapper drops to the no-heap surface automatically
+(`SOFAB_CPP_HAVE_HOSTED`, above): `std::string`/`std::vector` overloads,
+`sofab::OStream` and the `std::function` callback typedefs are gated out, with
+`FixedString`, `FixedBytes`, `InlineVector`, `OStreamInline`, `OStreamView` and
+plain function pointers in their place. The wire API is complete in both modes.
+`test/cpp-freestanding/` compiles that surface with `-ffreestanding` on every CI
+run to hold the split closed.
+
+> **Note.** Only `gcc-arm-none-eabi` ships freestanding libstdc++ headers among
+> the toolchains here; `gcc-avr` and `gcc-riscv64-unknown-elf` ship none, so no
+> C++ wrapper TU can be compiled for those targets at all, gated or not. The
+> guard's CMake probe detects this and skips rather than failing the build.
 
 ### Choosing between the two C/C++ corelibs
 

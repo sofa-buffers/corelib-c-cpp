@@ -51,6 +51,24 @@ jobs:
             --target "$(sofab_config_target full hosted)" \
             --parallel "$(nproc)"
 
+      # The C++ wrapper splits into a freestanding core and a hosted convenience
+      # layer (SOFAB_CPP_HAVE_HOSTED in sofab.hpp). Nothing held that split
+      # closed before: every bare-metal job below builds with SOFAB_ENABLE_CPP=OFF,
+      # so no MCU build compiles a C++ TU, and the wrapper had drifted into being
+      # unbuildable with the project's own Cortex-M toolchain file. The guard TU
+      # sets -ffreestanding itself, so it reproduces that mode on this hosted
+      # runner and needs no cross toolchain (the AVR and RISC-V images ship no
+      # libstdc++ headers at all and cannot compile any wrapper TU regardless).
+      #
+      # Built by name rather than left to `all`: if the capability probe in
+      # test/cpp-freestanding/CMakeLists.txt ever skips the target, this step
+      # fails with "No rule to make target" instead of passing silently.
+      - name: Compile (C++ wrapper, freestanding)
+        run: |
+          cmake --build build/gate \
+            --target sofab_cpp_freestanding \
+            --parallel "$(nproc)"
+
   # ------------------------------------------------------------- the fan-out
   # One call site, one reusable workflow, ten targets. Twelve separate `uses:`
   # entries would also work and would sit near the 20-calls-per-run ceiling;

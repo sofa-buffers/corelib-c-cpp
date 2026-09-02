@@ -106,6 +106,19 @@ if(SOFAB_BUILD_TESTS)
     if(SOFAB_ENABLE_CPP_SMOKE)
         add_subdirectory(test/cpp-smoke)
     endif()
+
+    # --- C++ wrapper freestanding compile guard ---
+    # Compiles one no-heap translation unit with -ffreestanding, holding the
+    # SOFAB_CPP_HAVE_HOSTED split in sofab.hpp closed. Compile-only and
+    # Catch2-free, so it costs a single object file; on by default because
+    # nothing else covers the bare-metal C++ surface (every MCU CI job builds
+    # with SOFAB_ENABLE_CPP=OFF). Needs a C++ compiler but not the hosted
+    # library, hence its own option rather than riding on SOFAB_ENABLE_CPP.
+    option(SOFAB_ENABLE_CPP_FREESTANDING
+        "Build the C++ wrapper freestanding compile guard" ON)
+    if(SOFAB_ENABLE_CPP_FREESTANDING)
+        add_subdirectory(test/cpp-freestanding)
+    endif()
 endif()
 
 # --- build throughput benchmarks ---
