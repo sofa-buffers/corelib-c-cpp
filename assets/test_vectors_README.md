@@ -13,12 +13,14 @@ can load this file and, for every vector, either:
 That's all most consumers need — just read the JSON. It is machine-generated; to
 rebuild it, see the generator in [`../test/vectorgen`](../test/vectorgen).
 
-The file is **not only vectors.** Two further top-level blocks sit beside them —
+The file is **not only vectors.** Three further top-level blocks sit beside them —
 [`invalid_utf8`](#negative-vectors--invalid_utf8), whose cases are keyed by a
-byte string a valid encoder cannot produce, and
+byte string a valid encoder cannot produce,
 [`sequence_growth`](#growth-cases--sequence_growth), whose cases are keyed by a
-delivery sequence of element ids rather than by bytes at all. A port runs every
-block its `requires` gating does not exclude. Both are backward-compatible: a
+delivery sequence of element ids rather than by bytes at all, and
+[`header_limits`](#header-ceiling-cases--header_limits), whose cases are keyed by
+a **partial** byte string and carry a required **verdict**. A port runs every
+block its `requires` gating does not exclude. All are backward-compatible: a
 consumer that reads only `vectors` ignores them.
 
 ## File format
@@ -341,6 +343,140 @@ reporting the case as passed (CORELIB_PLAN §7.2 item 8).
 
 `sequence_growth` is **backward-compatible**: a consumer that only reads
 `vectors` ignores it and still passes every positive vector.
+
+### Header-ceiling cases — `header_limits`
+
+A fourth top-level block. It carries the **truncated over-ceiling header**: bytes
+that *declare* a length or count and then **end**, with not one payload byte
+behind them.
+
+```
+02 a2 06   then EOF
+^^ id 0, wire type 2 (fixlen)
+   ^^^^^ length word (100 << 3) | 2  ->  a 100-byte STRING is declared
+           ... and the message ends.
+```
+
+A conformant decoder answers **at that word** — before the payload is asked for
+— so the answer is the ceiling's and it is **terminal**. `INCOMPLETE` is wrong
+here, and not merely unhelpful:
+
+* **CORELIB_PLAN §6.2.1's enforcement point imports MESSAGE_SPEC §5.2.3's reason
+  by name** — "at the count/length header … *for the same reason `INVALID` is
+  decided there*". §5.2.3's reason is that a decoder deferring until the payload
+  arrives hits end-of-input first and mis-reports malformed input as
+  `INCOMPLETE`. A decoder that compares at the header and *then* answers
+  `INCOMPLETE` produces exactly the outcome that reason exists to prevent.
+* **§6.3 calls the rejection terminal**, while §5.2.1 defines `INCOMPLETE` as the
+  outcome more bytes *can* change and §5.2.4 has a streaming caller read it as
+  "feed me the next chunk". After a ceiling has fired, that is a false statement
+  about the state.
+* ARCHITECTURE §9.5: *"a claimed oversize fails fast even if the payload never
+  arrives."*
+
+**Why this cannot be a vector.** The `vectors` block is round-trip only — it
+carries no verdict field at all. It says "these fields encode to these bytes"; it
+cannot say "these bytes must be rejected, with category X". `invalid_utf8` is the
+wrong subject and `sequence_growth` is the right *shape* one axis over (the
+wrapper-array index, which has no header word to bind). Hence a block of its own.
+
+```jsonc
+{
+  "name": "header_string_over_cap",
+  "group": "limits/header",
+  "description": "...",
+  "requires": ["fixlen", "receiver_caps"],
+  "field_id": 0,                      // the field's id in the top-level scope
+  "declared": 100,                    // the length/count the header claims
+  "limits": { "max_dyn_string_len": 16 },   // configure this for the case's run
+  "serialized": "02a206",             // the header, and nothing after it
+  "expect": { "outcome": "limit_exceeded", "terminal": true }
+}
+```
+
+#### Which ceiling speaks is the subject
+
+The two are **opposite answers on the same word**, and a case carries `schema` or
+`limits` — never both, because §6.2.1 forbids applying a receiver cap to a field
+the schema already bounds.
+
+| the case states | the ceiling | a breach is | why |
+|---|---|---|---|
+| `"schema": { "maxlen": N }` | the schema bound | `invalid` | the schema says these bytes are invalid (MESSAGE_SPEC §7.1) |
+| `"limits": { "max_dyn_…": N }` | the receiver cap | `limit_exceeded` | the bytes are well-formed; this receiver declines to hold that much (§6.2.1) |
+
+`header_string_schema_bounded` and `header_string_over_cap` carry the **identical
+bytes** and differ only in which ceiling the case configures — that pair is what
+keeps the two categories apart. A port that routes both to one category passes
+every other case in the block and fails that one.
+
+| key | meaning |
+|---|---|
+| `field_id` | the field's id in the top-level scope |
+| `declared` | the length (`string`/`blob`) or element count (`array`) the header claims |
+| `limits` | the §6.2.1 receiver cap to configure for this case — `max_dyn_string_len`, `max_dyn_blob_len` or `max_dyn_array_count` |
+| `schema` | the schema `maxlen` to declare for this case, instead of a cap |
+| `serialized` | lowercase hex of the **header alone**; the message ends there |
+| `chunks` | OPTIONAL: feed the bytes as these separate chunks rather than in one call |
+| `expect.outcome` | `limit_exceeded`, `invalid`, or `incomplete` |
+| `expect.terminal` | the rejection is terminal — a further feed re-raises rather than consuming (absent on `incomplete`, which is precisely the state more bytes can lift) |
+
+#### Bounds are absolute here, not cap-relative
+
+The opposite of [`sequence_growth`](#growth-cases--sequence_growth), and for a
+concrete reason. There the port **builds** the message from a delivery list, so a
+cap-relative index can be substituted at run time. Here the case **is** a fixed
+byte string: the declared length is baked into the varint, so the case must
+instead *tell* the port which ceiling to configure. `limits`/`schema` are that
+instruction — not a family-wide claim about anyone's deployment. A port restores
+its own configuration after the block.
+
+#### Every rejection is paired with its in-cap control
+
+`header_string_in_cap` is the same shape at a length the ceiling **admits**, and
+it must still answer `incomplete`. Without it the block proves nothing: a port
+that rejects every short read passes all six rejection cases and is badly broken.
+Treat a missing control as a bug in the block, not an omission.
+
+#### Gating — `requires: ["receiver_caps"]`
+
+`receiver_caps` is a **profile** capability, like `dynamic_arrays` and unlike the
+wire-construct tags: a port declares it when its generated code carries §6.2.1
+receiver caps *distinct from* schema bounds. A profile that refuses
+schema-unbounded fields at generate time has no such cap and skips those cases —
+but still runs the `schema`-bounded pair, which needs no cap and is tagged
+accordingly.
+
+**In this block an unsatisfied `requires` tag means SKIP, for every tag.** That
+differs from a *vector*, where an unsatisfied wire-construct tag turns the vector
+into a negative case (the reduced build rejects the construct it was compiled
+without). The distinction is that these cases already assert a rejection *with a
+specific category*: a build that cannot represent the construct rejects it for an
+unrelated reason and would appear to pass while testing nothing.
+
+**What each port owes:** feed `serialized` (or `chunks`) under the stated
+`limits`/`schema`, assert `expect.outcome`, and where `terminal` is set, assert
+that a further feed re-raises rather than consuming.
+
+#### `corelib-c-cpp` authors these cases; only part of the family runs them
+
+As with `sequence_growth`, **the expected values come from CORELIB_PLAN §6.2.1 /
+§6.3 and MESSAGE_SPEC §5.2 — not from what this library does.**
+
+Worth stating plainly, because it is easy to get backwards: the C++ wrapper here
+**does** implement this ceiling and answers `LimitExceeded` at the length word
+(`readStringCapped` / `readBlobCapped`, and see
+[`../test/cpp/test_receiver_limits.cpp`](../test/cpp/test_receiver_limits.cpp),
+"the cap is enforced at the length header, before the allocation"). What this
+repo lacks is a **C++ runner for the JSON blocks** — the shared vector engine is
+plain C, and the plain-C API has no §6.2.1 receiver cap at all (its
+`SOFAB_FIXLEN_MAX` is a format ceiling, whose breach is `INVALID`). So the block
+is authored here and executed elsewhere, exactly like `sequence_growth`, and for
+an adjacent but distinct reason. See the note at the top of
+[`../test/shared/sofab_test_vectors.h`](../test/shared/sofab_test_vectors.h).
+
+`header_limits` is **backward-compatible**: a consumer that only reads `vectors`
+ignores it and still passes every positive vector.
 
 ### Decode scenarios the harness runs per vector
 

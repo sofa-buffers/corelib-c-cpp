@@ -1701,6 +1701,217 @@ static void emit_sequence_growth(FILE *o)
     }
 }
 
+/* header_limits: a truncated over-cap header *********************************
+ *
+ * The class no other block can carry: bytes that DECLARE a length or count and
+ * then END, with not one payload byte behind them. The ceiling is decided at
+ * that word — before the payload is asked for — so the answer is the ceiling's,
+ * never SOFAB_RET_INCOMPLETE.
+ *
+ * Which ceiling speaks is the whole point, and the two are opposite answers on
+ * the SAME word (CORELIB_PLAN §6.2.1):
+ *   - the schema declares a `maxlen` and the field is longer  -> INVALID
+ *     (MESSAGE_SPEC §7.1: the schema says these bytes are invalid)
+ *   - the schema declares none and the RECEIVER CAP is shorter -> LIMIT_EXCEEDED
+ *     (§6.2.1: the bytes are well-formed, this receiver declines to hold them)
+ * A cap MUST NOT be applied to a field the schema already bounds, so a case
+ * carries `schema` or `limits` and never both.
+ *
+ * WHY INCOMPLETE IS WRONG, and not merely unhelpful: §6.2.1's enforcement point
+ * imports §5.2.3's reason by name — a decoder that defers until the payload
+ * arrives hits end-of-input first and reports malformed input as INCOMPLETE.
+ * §5.2.1 defines INCOMPLETE as the outcome more bytes CAN change and §5.2.4 has
+ * a streaming caller read it as "feed me the next chunk"; after a ceiling has
+ * fired that is a false statement about the state, and §6.3 calls the rejection
+ * terminal. ARCHITECTURE §9.5: "a claimed oversize fails fast even if the
+ * payload never arrives."
+ *
+ * EVERY REJECTION HERE IS PAIRED WITH ITS IN-CAP CONTROL — the same shape at a
+ * length the ceiling admits, which must still answer INCOMPLETE. Without the
+ * control a port passes the block by rejecting everything, which is the other
+ * way to get this wrong.
+ *
+ * THE BOUNDS ARE ABSOLUTE, NOT CAP-RELATIVE — the opposite of
+ * emit_sequence_growth() above, and for a concrete reason: there the port
+ * BUILDS the message from a delivery list, so a cap-relative index can be
+ * substituted at run time. Here the case IS a fixed byte string, so the
+ * declared length is baked into the varint and the case must instead TELL the
+ * port which ceiling to configure for its run. `limits`/`schema` are that
+ * instruction, not a family-wide claim about anyone's deployment.
+ *
+ * THE EXPECTATIONS COME FROM CORELIB_PLAN §6.2.1/§6.3 AND MESSAGE_SPEC §5.2 —
+ * not from what this library does. See assets/test_vectors_README.md. */
+
+#define HK_STRING 0
+#define HK_BLOB   1
+#define HK_ARRAY  2
+
+/* The header alone: a field tag and its length/count word, and nothing after
+ * it. Assembled from the wire rules rather than replayed through the encoder —
+ * the encoder cannot emit a header whose payload never comes. */
+static size_t build_header_only(uint8_t *out, int kind, uint32_t id,
+                                uint64_t declared)
+{
+    size_t n = 0;
+
+    switch (kind)
+    {
+        case HK_STRING:
+            n += raw_varint(out + n, ((uint64_t)id << 3) | (uint64_t)SOFAB_TYPE_FIXLEN);
+            n += raw_varint(out + n, (declared << 3) | (uint64_t)SOFAB_FIXLENTYPE_STRING);
+            break;
+
+        case HK_BLOB:
+            n += raw_varint(out + n, ((uint64_t)id << 3) | (uint64_t)SOFAB_TYPE_FIXLEN);
+            n += raw_varint(out + n, (declared << 3) | (uint64_t)SOFAB_FIXLENTYPE_BLOB);
+            break;
+
+        default: /* HK_ARRAY -- the element count is a bare varint, not shifted */
+            n += raw_varint(out + n, ((uint64_t)id << 3) | (uint64_t)SOFAB_TYPE_VARINTARRAY_UNSIGNED);
+            n += raw_varint(out + n, declared);
+            break;
+    }
+
+    return n;
+}
+
+static void emit_header_limits(FILE *o)
+{
+    static const struct {
+        const char *name;
+        const char *group;
+        const char *desc;
+        const char *requires;   /* verbatim JSON array */
+        int         kind;
+        uint32_t    id;
+        uint64_t    declared;   /* the length/count the header claims */
+        const char *bound_key;  /* the limits/schema key this case configures */
+        long        bound;      /* its value */
+        int         schema;     /* 1 -> "schema" (§7.1), 0 -> "limits" (§6.2.1) */
+        int         split;      /* 1 -> also emit "chunks", split inside the word */
+        const char *outcome;    /* limit_exceeded | invalid | incomplete */
+    } seeds[] = {
+        { "header_string_over_cap", "limits/header",
+          "A 100-byte string is declared at id 0 and the message ends -- not one payload byte "
+          "arrives. The cap is decided at the length word, before the payload is asked for, so the "
+          "answer is LimitExceeded and terminal (CORELIB_PLAN S6.2.1, S6.3). INCOMPLETE would be the "
+          "outcome S5.2.3's reason exists to prevent: it says more bytes can change the verdict, and "
+          "after a cap has fired nothing can.",
+          "[\"fixlen\", \"receiver_caps\"]", HK_STRING, 0, 100,
+          "max_dyn_string_len", 16, 0, 0, "limit_exceeded" },
+
+        { "header_string_in_cap", "limits/header",
+          "THE CONTROL for header_string_over_cap: the same shape at a length the cap admits. Still "
+          "INCOMPLETE -- the cap must not turn every short read into a rejection, and a port that "
+          "passes the over-cap case by rejecting everything fails here.",
+          "[\"fixlen\", \"receiver_caps\"]", HK_STRING, 0, 8,
+          "max_dyn_string_len", 16, 0, 0, "incomplete" },
+
+        { "header_blob_over_cap", "limits/header",
+          "header_string_over_cap for a blob. S6.2.1 keeps blob and string on separate caps because a "
+          "deployment may accept a megabyte of opaque bytes and no such quantity of text, so the "
+          "enforcement point has to be asserted on both -- a port can wire one and miss the other.",
+          "[\"fixlen\", \"receiver_caps\"]", HK_BLOB, 0, 100,
+          "max_dyn_blob_len", 16, 0, 0, "limit_exceeded" },
+
+        { "header_blob_in_cap", "limits/header",
+          "THE CONTROL for header_blob_over_cap.",
+          "[\"fixlen\", \"receiver_caps\"]", HK_BLOB, 0, 8,
+          "max_dyn_blob_len", 16, 0, 0, "incomplete" },
+
+        { "header_array_count_over_cap", "limits/header",
+          "An unsigned varint array declares 100 elements at id 0 and the message ends before the "
+          "first of them. A COUNT ahead of its payload is bound exactly as a length is (S6.2.1) -- and "
+          "unlike a wrapper array, which has no count on the wire and is bound at the element index "
+          "instead (see the sequence_growth block).",
+          "[\"array\", \"receiver_caps\"]", HK_ARRAY, 0, 100,
+          "max_dyn_array_count", 16, 0, 0, "limit_exceeded" },
+
+        { "header_array_count_in_cap", "limits/header",
+          "THE CONTROL for header_array_count_over_cap.",
+          "[\"array\", \"receiver_caps\"]", HK_ARRAY, 0, 8,
+          "max_dyn_array_count", 16, 0, 0, "incomplete" },
+
+        { "header_string_amplification", "limits/header",
+          "Six bytes claim a 1 GiB string. The amplification shape: the verdict must not depend on the "
+          "payload arriving, or the cheapest possible message buys an allocation four million times "
+          "its own size (ARCHITECTURE S9.5, 'a claimed oversize fails fast even if the payload never "
+          "arrives'). Its in-cap control is header_string_in_cap -- same cap, same shape.",
+          "[\"fixlen\", \"receiver_caps\", \"int64\"]", HK_STRING, 0, 1073741824,
+          "max_dyn_string_len", 16, 0, 0, "limit_exceeded" },
+
+        { "header_string_schema_bounded", "limits/header",
+          "THE PAIR THAT KEEPS THE TWO CATEGORIES APART: the identical length word to "
+          "header_string_over_cap, at a field the SCHEMA bounds instead. The answer is INVALID, not "
+          "LimitExceeded -- a schema bound is a statement about validity, a receiver cap one about "
+          "capacity (MESSAGE_SPEC S7.1 vs CORELIB_PLAN S6.2.1), and S6.2.1 forbids applying a cap to a "
+          "field the schema already bounds. A port that routes both to one category passes every other "
+          "case in this block and fails this one.",
+          "[\"fixlen\"]", HK_STRING, 0, 100,
+          "maxlen", 16, 1, 0, "invalid" },
+
+        { "header_string_schema_bounded_in_bound", "limits/header",
+          "THE CONTROL for header_string_schema_bounded: within the schema bound, so INCOMPLETE again. "
+          "The schema bound no more rejects a short read than the cap does.",
+          "[\"fixlen\"]", HK_STRING, 0, 8,
+          "maxlen", 16, 1, 0, "incomplete" },
+
+        { "header_string_over_cap_split", "limits/header",
+          "header_string_over_cap fed in two chunks that divide the length varint itself, so the cap "
+          "fires on a word no single feed delivered whole. The verdict is a property of the bytes, not "
+          "of how they were chunked (CORELIB_PLAN S7.2 item 4); a decoder that compares before the "
+          "varint is complete sees a truncated number and lets the message through.",
+          "[\"fixlen\", \"receiver_caps\"]", HK_STRING, 0, 100,
+          "max_dyn_string_len", 16, 0, 1, "limit_exceeded" },
+    };
+
+    int first = 1;
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); ++i)
+    {
+        uint8_t hdr[32];
+        size_t  n = build_header_only(hdr, seeds[i].kind, seeds[i].id, seeds[i].declared);
+
+        if (!first) fputs(",\n", o);
+        first = 0;
+
+        fprintf(o, "    {\n");
+        fprintf(o, "      \"name\": ");        json_string(o, seeds[i].name);  fputs(",\n", o);
+        fprintf(o, "      \"group\": ");       json_string(o, seeds[i].group); fputs(",\n", o);
+        fprintf(o, "      \"description\": "); json_string(o, seeds[i].desc);  fputs(",\n", o);
+        fprintf(o, "      \"requires\": %s,\n", seeds[i].requires);
+        fprintf(o, "      \"field_id\": %u,\n", (unsigned)seeds[i].id);
+        fprintf(o, "      \"declared\": %llu,\n", (unsigned long long)seeds[i].declared);
+        fprintf(o, "      \"%s\": { \"%s\": %ld },\n",
+                seeds[i].schema ? "schema" : "limits", seeds[i].bound_key, seeds[i].bound);
+
+        fprintf(o, "      \"serialized\": ");  json_hex(o, hdr, n); fputs(",\n", o);
+
+        /* The split case additionally states the two feeds, so a port cannot
+         * satisfy it by handing the runner the whole header in one call. */
+        if (seeds[i].split)
+        {
+            fputs("      \"chunks\": [", o);
+            json_hex(o, hdr, n - 1);
+            fputs(", ", o);
+            json_hex(o, hdr + n - 1, 1);
+            fputs("],\n", o);
+        }
+
+        fprintf(o, "      \"expect\": {\n");
+        fprintf(o, "        \"outcome\": ");   json_string(o, seeds[i].outcome);
+        /* A ceiling that has fired is terminal (CORELIB_PLAN §6.3), and so is
+         * INVALID (MESSAGE_SPEC §5.2.2). INCOMPLETE is the one outcome that is
+         * not: it is precisely the state more bytes can lift. */
+        if (strcmp(seeds[i].outcome, "incomplete") != 0)
+        {
+            fputs(",\n        \"terminal\": true", o);
+        }
+        fputs("\n", o);
+        fprintf(o, "      }\n");
+        fprintf(o, "    }");
+    }
+}
+
 int main(void)
 {
     FILE *o = stdout;
@@ -1735,7 +1946,19 @@ int main(void)
                "grow and do not run this block. Expectations come from ARCHITECTURE S9.5 and CORELIB_PLAN S7.2 item "
                "8, NOT from the generating implementation, which authors these cases without executing them. "
                "Backward-compatible: consumers that only read 'vectors' ignore this key. See "
-               "test_vectors_README.md.\"\n");
+               "test_vectors_README.md.\",\n");
+    fprintf(o, "    \"header_limits\": \"HEADER-CEILING cases (CORELIB_PLAN S6.2.1/S6.3): bytes that DECLARE a length "
+               "or count and then END, with no payload behind them. The ceiling is decided at that word, before the "
+               "payload is asked for, so the answer is the ceiling's and TERMINAL -- never INCOMPLETE, which S5.2.1 "
+               "defines as the outcome more bytes can change. Which ceiling speaks is the subject: a schema 'maxlen' "
+               "answers INVALID (MESSAGE_SPEC S7.1), a receiver cap answers LIMIT_EXCEEDED (S6.2.1), and a case "
+               "carries 'schema' or 'limits' but never both -- a cap MUST NOT be applied to a field the schema already "
+               "bounds. Bounds are ABSOLUTE, not cap-relative as in sequence_growth: the case is a fixed byte string, "
+               "so it tells the port which ceiling to configure for the run. EVERY REJECTION IS PAIRED WITH AN IN-CAP "
+               "CONTROL that must still answer INCOMPLETE, so a port cannot pass by rejecting everything. An "
+               "unsatisfied 'requires' tag means SKIP. Expectations come from CORELIB_PLAN S6.2.1/S6.3 and "
+               "MESSAGE_SPEC S5.2, NOT from the generating implementation. Backward-compatible: consumers that only "
+               "read 'vectors' ignore this key. See test_vectors_README.md.\"\n");
     fprintf(o, "  },\n");
     fprintf(o, "  \"vectors\": [\n");
 
@@ -1760,6 +1983,17 @@ int main(void)
     fprintf(o, "  \"sequence_growth\": [\n");
 
     emit_sequence_growth(o);
+
+    fprintf(o, "\n  ],\n");
+
+    /* Header-ceiling cases: a declared length/count with no payload behind it.
+     * Keyed by bytes like a vector, but carrying a VERDICT the "vectors" block
+     * has no field for -- that block is round-trip only and cannot say "these
+     * bytes must be rejected, with this category" (CORELIB_PLAN §6.2.1/§6.3).
+     * A fourth dedicated top-level array, same backward-compatibility reason. */
+    fprintf(o, "  \"header_limits\": [\n");
+
+    emit_header_limits(o);
 
     fprintf(o, "\n  ]\n");
     fprintf(o, "}\n");

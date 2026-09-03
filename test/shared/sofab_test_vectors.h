@@ -52,6 +52,22 @@
  * which asserts that boundary directly. Running the JSON block through it needs a
  * C++ runner this shared C engine is not; that is the open half.
  *
+ * The file's fourth top-level block, "header_limits", is NOT run here either,
+ * and the reason is worth stating precisely because the obvious one is wrong.
+ * Those cases feed a header that declares a length or count and then ends, and
+ * assert the ceiling answers at that word — LimitExceeded for a receiver cap
+ * (CORELIB_PLAN §6.2.1), INVALID for a schema maxlen (MESSAGE_SPEC §7.1) — never
+ * INCOMPLETE. The C++ wrapper implements exactly that and answers correctly:
+ * readStringCapped()/readBlobCapped() compare at the length header, and
+ * test_receiver_limits.cpp asserts it directly ("the cap is enforced at the
+ * length header, before the allocation"). What excludes the block here is this
+ * engine, not the library: it is plain C, and the plain-C API carries no §6.2.1
+ * receiver cap at all — SOFAB_FIXLEN_MAX is a FORMAT ceiling whose breach is
+ * INVALID, which is a different question. So the block waits on the same missing
+ * C++ runner as sequence_growth. Its `schema`-bounded pair, which needs no cap,
+ * would be the first part to become runnable. Do not "fix" a case to match what
+ * this C engine answers; the expectations come from the specs.
+ *
  * The engine is plain C (linked into both the C/Unity and C++/Catch2 test
  * binaries). Both languages call sofab_test_vectors_run_all().
  *
