@@ -31,6 +31,23 @@
 #  error "freestanding.cpp must be compiled with -ffreestanding (or -DSOFAB_CPP_HAVE_HOSTED=0); it is the guard for the no-heap wrapper surface."
 #endif
 
+// Instantiates sofab::fixed_capacity_v, which nothing else in this translation
+// unit reaches. That is not incidental: this file is the only C++ the RL78 job
+// compiles, and Renesas' Clang 17 is the oldest front end in the matrix. The
+// obvious spelling of that variable template -- an immediately-invoked constexpr
+// lambda holding an inline requires-expression -- segfaults Clang 17 on
+// instantiation, and until this line existed nothing instantiated it here, so
+// the crash sat latent on main and surfaced only when an unrelated change
+// happened to call readArray from this file. Asserting the values pins the
+// spelling: revert it to the lambda and this job goes red rather than the next
+// PR that touches an array.
+static_assert(sofab::fixed_capacity_v<sofab::InlineVector<signed char, 4>> == 4,
+              "a container that states its capacity must report it");
+static_assert(sofab::fixed_capacity_v<sofab::FixedString<16>> == 16,
+              "the fixed string is capacity-bearing too");
+static_assert(sofab::fixed_capacity_v<int> == -1,
+              "a type with no capacity() must report -1, not fail to compile");
+
 namespace
 {
 
