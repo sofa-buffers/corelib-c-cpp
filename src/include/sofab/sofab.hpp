@@ -1780,6 +1780,28 @@ namespace sofab
     template <typename T>
     concept InputMessage = std::derived_from<T, IStreamMessage>;
 
+    /*! @brief Detects a container that states its own fixed capacity: the
+     *  condition behind @c fixed_capacity_v.
+     *
+     *  Named, rather than written inline where it is used, because the natural
+     *  spelling of @c fixed_capacity_v -- an immediately-invoked constexpr
+     *  lambda with a requires-expression in its body -- segfaults Clang 17 on
+     *  instantiation, in @c Sema::BuildExprRequirement reached through
+     *  @c TransformRequiresExpr inside @c TransformLambdaExpr inside
+     *  @c InstantiateVariableInitializer. That form is valid C++20 and GCC and
+     *  current Clang both accept it; the crash is an upstream Clang 17 bug,
+     *  reproduced on stock 17.0.6 rather than only on the Renesas fork the RL78
+     *  job builds with. What matters is where the requires-expression sits: it
+     *  is fine in a named concept, so @c max_size_v above keeps its lambda,
+     *  and fine in an @c if @c constexpr inside a function template, so
+     *  @c arrayRoom_ keeps its inline one. This was the only place that put a
+     *  requires-expression in a lambda body, and the only one that had to move.
+     *  test/cpp-freestanding/freestanding.cpp pins this with a static_assert,
+     *  because that file is the only C++ the RL78 job compiles. */
+    template <typename C>
+    concept HasFixedCapacity =
+        requires { { C::capacity() } -> std::convertible_to<std::size_t>; };
+
     /*!
      * @brief Compile-time capacity a heap-free container publishes, or -1.
      *
@@ -1820,18 +1842,10 @@ namespace sofab
      * @tparam C  Container type.
      */
     template <typename C>
-    inline constexpr long fixed_capacity_v =
-        [] () constexpr -> long
-        {
-            if constexpr (requires { { C::capacity() } -> std::convertible_to<std::size_t>; })
-            {
-                return static_cast<long>(C::capacity());
-            }
-            else
-            {
-                return -1;
-            }
-        }();
+    inline constexpr long fixed_capacity_v = -1;
+
+    template <HasFixedCapacity C>
+    inline constexpr long fixed_capacity_v<C> = static_cast<long>(C::capacity());
 
 
     /*!
