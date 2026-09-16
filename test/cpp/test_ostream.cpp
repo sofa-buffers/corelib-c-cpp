@@ -1009,6 +1009,165 @@ TEST_CASE("OStream: write span of double")
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
 }
 
+// --- arrays of scoped enums ---------------------------------------------
+//
+// The generator stores an `enum` field's array as std::vector<E> or
+// sofab::InlineVector<E, N> with `enum class E : <declared width>`, the width
+// being normative since MESSAGE_SPEC §1. The element TYPE differs from a plain
+// integer array; the bytes must not. Every row below therefore asserts one hex
+// string twice — once for the integer container, once for the enum container
+// holding the same values — and that equality is the wire-invariance check. The
+// same strings are asserted by corelib-cpp's test_roundtrip, which is the
+// cross-corelib half of it: one expression in generated code, two codecs, one
+// set of bytes.
+//
+// The wire type and the zig-zag come from the UNDERLYING type, never from the
+// enum: std::is_signed_v and std::is_unsigned_v are both false for *every*
+// enumeration, so the dispatch's is_unsigned_v test, asked about the element,
+// would send each of these down the SIGNED entry point — right for an `enum`
+// by accident, and wrong for every unsigned backing, which would then carry a
+// zig-zag it must not have. A signed backing (an `enum`, header 0x14 =
+// SOFAB_TYPE_VARINTARRAY_SIGNED) and an unsigned one (a `bitfield`'s width,
+// 0x13 = SOFAB_TYPE_VARINTARRAY_UNSIGNED) are both swept for that reason, and
+// it is the unsigned rows that catch that mistake.
+
+enum class EnumI8  : int8_t   { Zero = 0, Minus1 = -1, One = 1, Lowest = INT8_MIN,  Highest = INT8_MAX,  Neg = -64 };
+enum class EnumI16 : int16_t  { Zero = 0, Minus1 = -1, Mid = 300, Lowest = INT16_MIN, Highest = INT16_MAX, Neg = -9999 };
+enum class EnumI32 : int32_t  { Zero = 0, Minus1 = -1, Mid = 70000, Lowest = INT32_MIN, Highest = INT32_MAX, Neg = -123456 };
+enum class EnumI64 : int64_t  { Zero = 0, Minus1 = -1, Mid = 1099511627776, Lowest = INT64_MIN, Highest = INT64_MAX, Neg = -8589934592 };
+
+enum class EnumU8  : uint8_t  { Zero = 0, One = 1, Mid = 127, HighBit = 128, Highest = UINT8_MAX, Some = 64 };
+enum class EnumU16 : uint16_t { Zero = 0, One = 1, Mid = 300, Highest = UINT16_MAX, HighBit = 32768, Some = 255 };
+enum class EnumU32 : uint32_t { Zero = 0, One = 1, Mid = 70000, Highest = UINT32_MAX, HighBit = 2147483648u, Some = 255 };
+enum class EnumU64 : uint64_t { Zero = 0, One = 1, Mid = 1099511627776, Highest = UINT64_MAX, HighBit = 9223372036854775808ull, Some = 255 };
+
+// The i8 row's bytes, spelled out once. 0x14 = (2 << 3) | 4 -> id 2, signed
+// varint array; 0x06 = the count, which is the LENGTH and not a schema
+// capacity; then the zig-zag varints 0 -> 00, -1 -> 01, 1 -> 02, -128 -> ff01,
+// 127 -> fe01, -64 -> 7f; then 0x1c = (3 << 3) | 4 with count 0 for the empty
+// array that closes every row.
+static constexpr const char *ENUM_I8_HEX = "1406000102ff01fe017f1c00";
+
+static std::string hexOf(const void *data, size_t size)
+{
+    static const char digits[] = "0123456789abcdef";
+    const uint8_t *byte = static_cast<const uint8_t *>(data);
+    std::string hex;
+
+    hex.reserve(size * 2);
+    for (size_t i = 0; i < size; i++)
+    {
+        hex += digits[byte[i] >> 4];
+        hex += digits[byte[i] & 0x0F];
+    }
+
+    return hex;
+}
+
+// One row of the sweep — six values: zero, the smallest step either way, a
+// mid-sized one, both extremes of the width, and a high-bit case. Written as
+// the plain integers and again as the enums in front of them, each followed by
+// an EMPTY array of its own element type at id 3: a zero-count varint array is
+// [header][count = 0] whatever the element type is, so the empty enum case
+// rides along at every width.
+template <typename E>
+static void checkEnumRow(const char *expected, const std::array<E, 6> &enums)
+{
+    using U = std::underlying_type_t<E>;
+
+    std::array<U, 6> plain = {};
+    for (size_t i = 0; i < plain.size(); i++)
+    {
+        plain[i] = static_cast<U>(enums[i]);
+    }
+
+    sofab::OStream ints{128};
+    auto intResult = ints.write(2, plain).write(3, std::array<U, 0>{});
+
+    REQUIRE(intResult.code() == sofab::Error::None);
+    REQUIRE(hexOf(ints.data(), ints.bytesUsed()) == expected);
+
+    sofab::OStream enumerated{128};
+    auto enumResult = enumerated.write(2, enums).write(3, std::array<E, 0>{});
+
+    REQUIRE(enumResult.code() == sofab::Error::None);
+    REQUIRE(hexOf(enumerated.data(), enumerated.bytesUsed()) == expected);
+}
+
+TEST_CASE("OStream: write array of scoped enum with a signed backing")
+{
+    checkEnumRow<EnumI8>(ENUM_I8_HEX,
+        {EnumI8::Zero, EnumI8::Minus1, EnumI8::One, EnumI8::Lowest, EnumI8::Highest, EnumI8::Neg});
+    checkEnumRow<EnumI16>("14060001d804ffff03feff039d9c011c00",
+        {EnumI16::Zero, EnumI16::Minus1, EnumI16::Mid, EnumI16::Lowest, EnumI16::Highest, EnumI16::Neg});
+    checkEnumRow<EnumI32>("14060001e0c508ffffffff0ffeffffff0fff880f1c00",
+        {EnumI32::Zero, EnumI32::Minus1, EnumI32::Mid, EnumI32::Lowest, EnumI32::Highest, EnumI32::Neg});
+    checkEnumRow<EnumI64>("14060001808080808040ffffffffffffffffff01feffffffffffffffff01ffffffff3f1c00",
+        {EnumI64::Zero, EnumI64::Minus1, EnumI64::Mid, EnumI64::Lowest, EnumI64::Highest, EnumI64::Neg});
+}
+
+TEST_CASE("OStream: write array of scoped enum with an unsigned backing")
+{
+    checkEnumRow<EnumU8>("130600017f8001ff01401b00",
+        {EnumU8::Zero, EnumU8::One, EnumU8::Mid, EnumU8::HighBit, EnumU8::Highest, EnumU8::Some});
+    checkEnumRow<EnumU16>("13060001ac02ffff03808002ff011b00",
+        {EnumU16::Zero, EnumU16::One, EnumU16::Mid, EnumU16::Highest, EnumU16::HighBit, EnumU16::Some});
+    checkEnumRow<EnumU32>("13060001f0a204ffffffff0f8080808008ff011b00",
+        {EnumU32::Zero, EnumU32::One, EnumU32::Mid, EnumU32::Highest, EnumU32::HighBit, EnumU32::Some});
+    checkEnumRow<EnumU64>("13060001808080808020ffffffffffffffffff0180808080808080808001ff011b00",
+        {EnumU64::Zero, EnumU64::One, EnumU64::Mid, EnumU64::Highest, EnumU64::HighBit, EnumU64::Some});
+}
+
+// The other two container shapes a generated member can have: the dynamic one
+// and the heap-free one the footprint profiles use. Same bytes again — write()
+// takes whatever it can build a span over, and the element type is the only
+// thing that changed.
+TEST_CASE("OStream: write vector of scoped enum")
+{
+    sofab::OStream ostream{128};
+    const std::vector<EnumI8> array = {EnumI8::Zero, EnumI8::Minus1, EnumI8::One,
+        EnumI8::Lowest, EnumI8::Highest, EnumI8::Neg};
+
+    auto result = ostream.write(2, array).write(3, std::vector<EnumI8>{});
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(hexOf(ostream.data(), ostream.bytesUsed()) == ENUM_I8_HEX);
+}
+
+TEST_CASE("OStream: write inline vector of scoped enum")
+{
+    sofab::OStream ostream{128};
+    sofab::InlineVector<EnumI8, 8> array;
+    array.push_back(EnumI8::Zero);
+    array.push_back(EnumI8::Minus1);
+    array.push_back(EnumI8::One);
+    array.push_back(EnumI8::Lowest);
+    array.push_back(EnumI8::Highest);
+    array.push_back(EnumI8::Neg);
+
+    auto result = ostream.write(2, array).write(3, sofab::InlineVector<EnumI8, 8>{});
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(hexOf(ostream.data(), ostream.bytesUsed()) == ENUM_I8_HEX);
+}
+
+// An empty enum array on its own, so the case is asserted and not only carried
+// along at the tail of every row above: a zero-count array is its header and a
+// count of 0, and no fixlen word — that word belongs to the fp32/fp64 arrays.
+TEST_CASE("OStream: write empty array of scoped enum")
+{
+    sofab::OStream ostream{16};
+    const std::vector<EnumI8> array;
+
+    auto result = ostream.write(2, array);
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {0x14, 0x00};
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
 TEST_CASE("OStream: write nested sequence")
 {
     sofab::OStream ostream{64};

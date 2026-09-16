@@ -484,6 +484,52 @@ TEST_CASE("IStream: round-trip arrays of every type into object")
     REQUIRE(d.fp64Array == f64a);
 }
 
+// An `enum` field's array is handed to write() as it is stored — a container of
+// scoped enums, no converted copy — and what comes back off the wire must be the
+// constants that went in. Encode-side byte expectations live in test_ostream;
+// this is the other end of them, and it is what pins the zig-zag to the signed
+// path: a rule that took the signedness from the enum rather than from its
+// declared underlying type produces bytes that still parse, just as different
+// numbers.
+//
+// The destination is the plain underlying width, because that is what generated
+// code binds (an enum array decodes through sofabgen::RawArray); only the encode
+// side sees the enum type.
+TEST_CASE("IStream: round-trip an array of scoped enums, negatives included")
+{
+    enum class Gear : int8_t { Reverse = -1, Neutral = 0, First = 1, Lowest = INT8_MIN, Highest = INT8_MAX };
+
+    struct M : sofab::IStreamMessage
+    {
+        std::array<int8_t, 5> gears = {};
+        size_t count = 999;
+        void deserialize(sofab::IStreamImpl &is, sofab_id_t id, size_t, size_t n) noexcept override
+        {
+            if (id == 2)
+            {
+                count = n;
+                is.read(gears);
+            }
+        }
+    };
+
+    const std::array<Gear, 5> gears = {Gear::Reverse, Gear::Neutral, Gear::First,
+        Gear::Lowest, Gear::Highest};
+
+    sofab::OStream ostream{64};
+    REQUIRE(ostream.write(2, gears).code() == sofab::Error::None);
+
+    sofab::IStreamObject<M> istream;
+    auto result = istream.feed(ostream.data(), ostream.bytesUsed());
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE((*istream).count == gears.size());
+    for (size_t i = 0; i < gears.size(); i++)
+    {
+        REQUIRE((*istream).gears[i] == static_cast<int8_t>(gears[i]));
+    }
+}
+
 TEST_CASE("IStream: round-trip repeated fields into dynamic vector")
 {
     sofab::OStream ostream{64};

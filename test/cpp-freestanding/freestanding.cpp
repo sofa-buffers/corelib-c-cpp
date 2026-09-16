@@ -51,6 +51,23 @@ static_assert(sofab::fixed_capacity_v<int> == -1,
 namespace
 {
 
+/*! @brief An `enum` field's element type, as the generator declares it: a scoped
+ *  enum at its normative declared width (MESSAGE_SPEC §1). The encode side takes
+ *  a container of these directly, so nothing here materialises a converted copy
+ *  -- which is the point on a profile with no heap.
+ *
+ *  Everything it touches below is behind @c SOFAB_CPP_HAVE_ARRAY: an enum array
+ *  is an array, so it is part of the wire-feature subset a
+ *  @c SOFAB_DISABLE_ARRAY_SUPPORT build compiles out, exactly like the integer
+ *  array it replaces. */
+enum class Gear : std::int8_t
+{
+    Reverse = -1,
+    Neutral = 0,
+    First   = 1,
+    Second  = 2,
+};
+
 class Child : public sofab::IStreamMessage
 {
 public:
@@ -83,10 +100,16 @@ public:
         float                  ratio  = 0.0f;
         sofab::FixedString<16> tag;                  // heap-free string field
         sofab::FixedBytes<8>   blob;                 // heap-free blob field
+#if SOFAB_CPP_HAVE_ARRAY
+        sofab::InlineVector<std::int8_t, 4> gears;   // heap-free enum array, at its width
+#endif
     } data_;
 
-    void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t) noexcept override
+    void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t count) noexcept override
     {
+#if !SOFAB_CPP_HAVE_ARRAY
+        (void)count;   // the array field below is compiled out with its support
+#endif
         switch (id)
         {
             case 1: is.read(data_.header); break;
@@ -108,6 +131,9 @@ public:
                     is.read(data_.blob);
                 }
                 break;
+#if SOFAB_CPP_HAVE_ARRAY
+            case 8: is.readArray(data_.gears, count); break;
+#endif
             default: break;
         }
     }
@@ -142,6 +168,18 @@ extern "C" int sofab_freestanding_roundtrip(void)
       .write(6, sofab::FixedString<16>{"tag42"});
     os.write(7, blobIn, static_cast<int32_t>(sizeof(blobIn)));
 
+#if SOFAB_CPP_HAVE_ARRAY
+    // The enum array goes over as stored: a container of scoped enums, written
+    // with the one expression every other array uses. The negative constant is
+    // there so the signed array wire type and its zig-zag are on this path too --
+    // the underlying width picks both, and it is signed here.
+    sofab::InlineVector<Gear, 4> gears;
+    gears.push_back(Gear::Reverse);
+    gears.push_back(Gear::Neutral);
+    gears.push_back(Gear::Second);
+    os.write(8, gears);
+#endif
+
     const size_t used = os.bytesUsed();
 
     sofab::IStreamObject<Parent> is;
@@ -156,6 +194,14 @@ extern "C" int sofab_freestanding_roundtrip(void)
     {
         return -2;
     }
+
+#if SOFAB_CPP_HAVE_ARRAY
+    if (d.gears.size() != 3 || d.gears[0] != static_cast<std::int8_t>(Gear::Reverse)
+        || d.gears[2] != static_cast<std::int8_t>(Gear::Second))
+    {
+        return -3;
+    }
+#endif
 
     return 0;
 }
