@@ -109,8 +109,16 @@ if(SOFAB_ENABLE_SKIP_COUNTER)
     target_compile_definitions(sofabuffers PUBLIC SOFAB_ENABLE_SKIP_COUNTER)
 endif()
 
+# Skipped under LTO: the archive then holds IR rather than machine code, and
+# code generation is deferred to the link. GNU size reads a GCC member as a
+# near-empty ELF and reports 32 bytes of .text for the whole file; a Clang
+# member is LLVM bitcode, which it cannot read at all -- it exits non-zero and
+# fails the build on the archive rule. Neither outcome is the footprint this
+# command exists to display, so there is nothing to display in that
+# configuration. (utils/ci/build-one.sh skips its own size step for the same
+# reason.)
 find_program(SIZE_EXECUTABLE NAMES size)
-if(SIZE_EXECUTABLE)
+if(SIZE_EXECUTABLE AND NOT SOFAB_ENABLE_LTO)
     add_custom_command(TARGET sofabuffers POST_BUILD
         COMMAND "${SIZE_EXECUTABLE}" "$<TARGET_FILE:sofabuffers>"
         COMMENT "Displaying size of sofabuffers"

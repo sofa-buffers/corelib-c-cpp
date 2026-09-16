@@ -83,6 +83,12 @@ jobs:
       SOFAB_VERIFY_CXX: ${{ inputs.verify-cxx && 1 || 0 }}
       SOFAB_VERIFY_CONFIGS: ${{ inputs.verify-configs }}
       SOFAB_CPP_FROM_CONFIG: ${{ inputs.cpp-from-config && 1 || 0 }}
+      # Derived rather than passed as its own input: a caller that says
+      # -DSOFAB_ENABLE_LTO=ON in cmake-args has already stated the fact, and a
+      # second knob is a second thing that can disagree with the first. The only
+      # consumer is build-one.sh's archive size step, which has nothing to
+      # measure when the archive holds IR.
+      SOFAB_LTO: ${{ contains(inputs.cmake-args, 'SOFAB_ENABLE_LTO=ON') && 1 || 0 }}
       SOFAB_BUILD_TARGET: ${{ inputs.build-target }}
       SOFAB_CMAKE_ARGS: |
         ${{ inputs.cmake-args }}
