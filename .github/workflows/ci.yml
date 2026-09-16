@@ -102,6 +102,59 @@ jobs:
               -DCMAKE_CXX_COMPILER=clang++
               -DCMAKE_BUILD_TYPE=Debug
 
+          # What SOFAB_ENABLE_LTO buys is in CMakeLists.txt next to the option;
+          # what belongs here is where it sits in the matrix and why twice.
+          #
+          # LTO is a property of the build, not of the target, so it rides on
+          # the host legs rather than fanning out again -- and it has to be a
+          # host leg, because these must *run* the suite: the tests assert exact
+          # wire bytes, and that assertion under this build is the whole check.
+          # A leg that merely linked would prove nothing.
+          #
+          # Both compilers, because GCC and Clang differ in how aggressively
+          # they exploit type-based alias analysis; an assumption that survives
+          # one may not survive the other.
+          #
+          # Deliberately not a cortex-m LTO leg as well, tempting as it is --
+          # that is how a footprint user really builds, but every bare-metal leg
+          # runs with SOFAB_ENABLE_CPP=OFF, so it compiles no C++ TU and there
+          # is no C/C++ boundary there for LTO to see across. It would cost five
+          # variants to test the C core against itself.
+          #
+          # Debug, like the two legs above, so each LTO leg differs from its
+          # non-LTO twin in exactly one flag. The build type is not what sets
+          # the optimisation level in this project (see the -Os in
+          # CMakeLists.txt); SOFAB_ENABLE_LTO supplies the -O3 itself.
+          - name: x86_64 (GCC, LTO)
+            packages: build-essential cmake
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "build", "args": ""}]'
+            args: |
+              -DCMAKE_BUILD_TYPE=Debug
+              -DSOFAB_ENABLE_LTO=ON
+
+          # lld, not the default ld.bfd: LLVM LTO through binutils needs the
+          # LLVMgold plugin, which Ubuntu's ld.bfd does not reliably load. llvm
+          # is here for llvm-ar/llvm-ranlib, which CMakeLists.txt picks up to
+          # index an archive of bitcode -- plain ar writes an index the linker
+          # cannot resolve against.
+          - name: x86_64 (Clang, LTO)
+            packages: clang lld llvm cmake make
+            kind: hosted
+            tests: true
+            cxx: true
+            cpp-from-config: true
+            variants: '[{"label": "build", "args": ""}]'
+            args: |
+              -DCMAKE_C_COMPILER=clang
+              -DCMAKE_CXX_COMPILER=clang++
+              -DCMAKE_BUILD_TYPE=Debug
+              -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+              -DSOFAB_ENABLE_LTO=ON
+
           - name: aarch64
             # qemu-user-static: this target's tests run under emulation.
             packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake make qemu-user-static

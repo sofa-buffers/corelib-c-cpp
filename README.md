@@ -659,6 +659,7 @@ Build-shaping options; the wire-feature switches are listed under
 | `SOFAB_ENABLE_BENCH` | `ON` | Build the benchmarks (`bench_c`/`bench_cpp`, `perf_c`/`perf_cpp`) |
 | `SOFAB_ENABLE_COVERAGE` | `OFF` | Enable code coverage instrumentation (`-O0 -g --coverage`) |
 | `SOFAB_ENABLE_FUZZ` | `OFF` | Enable fuzzing instrumentation (sanitizers) |
+| `SOFAB_ENABLE_LTO` | `OFF` | Build with LTO and strict aliasing (`-O3 -flto -fstrict-aliasing`) across the C/C++ boundary — the one configuration where a compiler sees a C++ type and the C code reading it together. CI runs it on x86_64 for both GCC and Clang; no sanitizer covers this, as UBSan does not model strict aliasing |
 | `SOFAB_ENABLE_DOXYGEN` | `OFF` | Build the `doc` target (API documentation) |
 | `SOFAB_ENABLE_VECTORGEN` | `OFF` | Build the JSON test-vector generator (see `test/vectorgen`) |
 | `SOFAB_INSTALL` | `ON` | Generate the install and CMake package-config rules (turn off when embedding via `add_subdirectory`) |
