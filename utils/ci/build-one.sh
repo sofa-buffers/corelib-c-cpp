@@ -25,6 +25,9 @@
 #                      bare-metal targets build the test image for `full` only,
 #                      so naming the list beats guessing from the config name.
 #   SOFAB_CPP_FROM_CONFIG  1 to derive -DSOFAB_ENABLE_CPP from the configuration
+#   SOFAB_LTO          1 when the caller passed -DSOFAB_ENABLE_LTO=ON, which
+#                      makes the archive hold IR rather than code; only the
+#                      "library size" step below cares
 #   SOFAB_BUILD_TARGET     override the CMake target (riscv32 builds the library
 #                          alone, with SOFAB_BUILD_TESTS=OFF)
 #
@@ -55,7 +58,18 @@ cmake --build "$dir" --target "$target" --parallel "$(nproc)"
 echo "::endgroup::"
 
 echo "::group::library size ($config)"
-size "$dir/src/libsofabuffers.a"
+if [[ "${SOFAB_LTO:-0}" == 1 ]]; then
+  # Under LTO the archive members carry IR, not machine code, and code
+  # generation happens at the link instead. GNU size reads a GCC member as a
+  # near-empty ELF (32 bytes of .text for the whole file) and cannot read a
+  # Clang member at all -- it is LLVM bitcode, so size exits non-zero and takes
+  # the script's `set -e` with it. Neither number was ever the footprint, so
+  # this step has nothing to report in this configuration; the LTO leg is the
+  # aliasing check, and the footprint tables come from the -Os builds.
+  echo "LTO build: archive members hold IR, not code -- no archive size to report."
+else
+  size "$dir/src/libsofabuffers.a"
+fi
 echo "::endgroup::"
 
 # The test binaries only exist for the `full*` configurations; the reduced ones

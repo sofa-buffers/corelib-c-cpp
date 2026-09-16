@@ -66,12 +66,65 @@ if(SOFAB_ENABLE_FUZZ)
     endif()
 endif()
 
+# --- link-time optimization ---
+# Off by default; CI turns it on for one host leg per compiler (see the
+# "x86_64 (GCC, LTO)" / "x86_64 (Clang, LTO)" entries in .github/workflows/ci.yml).
+#
+# Why this exists at all: the C core and the C++ wrapper are separate
+# translation units, so ordinarily no compiler sees a C++ type and the C code
+# that reads it at the same time. LTO is the one configuration that does, and it
+# is not exotic for this library's audience -- it is a standard way to claw back
+# .text on the embedded targets this corelib exists for. Any type-based aliasing
+# assumption across that boundary is only exercised here, and no sanitizer
+# substitutes: UBSan does not model strict aliasing, so a green
+# -fsanitize=undefined run says nothing about it.
+#
+# -fstrict-aliasing is stated rather than inherited from the optimisation level.
+# Both -Os and -O3 already imply it on GCC and Clang, so the flag changes no
+# behaviour today; it is here so that this configuration keeps meaning what its
+# name says if the default flags below ever pick up a -fno-strict-aliasing.
+#
+# A raw -DCMAKE_C_FLAGS=-flto would not work: the per-target toolchain files
+# assign CMAKE_C_FLAGS with set(), which discards it (see utils/ci/build-config.sh).
+option(SOFAB_ENABLE_LTO "Build with LTO and strict aliasing across the C/C++ boundary" OFF)
+
 # --- compilation flags ---
 # GCC/Clang-only size flags; skipped on other toolchains (e.g. MSVC) so the
 # library still configures cleanly when built as a Conan package.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffunction-sections -fdata-sections)
     add_link_options(-Wl,--gc-sections -Wl,-Map=mapfile.map)
+
+    if(SOFAB_ENABLE_LTO)
+        # -O3 rather than the -Os above: this leg is not measuring footprint, it
+        # is trying to give the optimiser every reason to act on a type-based
+        # alias assumption. It lands after the -Os in add_compile_options order,
+        # so it is the -O that survives onto the command line.
+        add_compile_options(-O3 -flto -fstrict-aliasing)
+        add_link_options(-O3 -flto -fstrict-aliasing)
+
+        # With -fno-fat-lto-objects (the default since GCC 4.9, and always for
+        # Clang) an object file carries bytecode instead of symbols, so plain
+        # ar/ranlib write an archive index the linker cannot resolve against.
+        # The compiler-prefixed wrappers load the LTO plugin and index it
+        # properly. Not left to binutils plugin auto-loading, which is a
+        # distribution build option rather than something this build can assume.
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            find_program(SOFAB_LTO_AR NAMES gcc-ar)
+            find_program(SOFAB_LTO_RANLIB NAMES gcc-ranlib)
+        else()
+            find_program(SOFAB_LTO_AR NAMES llvm-ar)
+            find_program(SOFAB_LTO_RANLIB NAMES llvm-ranlib)
+        endif()
+        if(SOFAB_LTO_AR AND SOFAB_LTO_RANLIB)
+            set(CMAKE_AR "${SOFAB_LTO_AR}")
+            set(CMAKE_RANLIB "${SOFAB_LTO_RANLIB}")
+        else()
+            message(WARNING
+                "SOFAB_ENABLE_LTO: no LTO-aware ar/ranlib found; falling back to "
+                "${CMAKE_AR}, which needs binutils plugin auto-loading to link.")
+        endif()
+    endif()
 endif()
 
 # --- build SofaBuffers core library ---
