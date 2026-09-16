@@ -123,6 +123,29 @@ namespace sofab
     template <typename>
     inline constexpr bool always_false_v = false;
 
+    /*! @brief The integer type an element travels as on the wire: identity for an
+     *  integer, the declared underlying type for an enumeration.
+     *
+     *  An enum's declared width is what picks the signed or unsigned array wire
+     *  type and the zig-zag transform (MESSAGE_SPEC §1). The enumeration itself
+     *  cannot answer that: @c std::is_signed_v and @c std::is_unsigned_v are
+     *  both false for *every* enumeration type, so a rule keyed off the element
+     *  would call every enum array unsigned and quietly drop the transform from
+     *  each negative constant.
+     *
+     *  The partial specialization is what keeps it lazy. @c std::conditional_t
+     *  would instantiate @c std::underlying_type_t<E> for a plain integer too,
+     *  and that has no @c type — every existing integer array would stop
+     *  compiling. */
+    template <typename E, bool = std::is_enum_v<E>>
+    struct wire_int { using type = E; };
+    /*! @brief Enumeration case of @ref wire_int: the declared underlying type. */
+    template <typename E>
+    struct wire_int<E, true> { using type = std::underlying_type_t<E>; };
+    /*! @brief Alias for @ref wire_int. */
+    template <typename E>
+    using wire_int_t = typename wire_int<E>::type;
+
     /*! @brief Result/error code returned by the stream APIs (wraps @ref sofab_ret_t). */
     enum class Error
     {
@@ -1099,9 +1122,12 @@ namespace sofab
          *
          * Supports integers, @c bool, @c float, @c double, string-like types
          * (@c std::string / @c std::string_view / C strings), contiguous ranges
-         * (arrays/vectors/spans), and nested @ref OStreamMessage objects. Using
-         * a type whose capability was compiled out of the C core is a
-         * compile-time error (see the @c SOFAB_DISABLE_* notes at the top).
+         * (arrays/vectors/spans) of integers, enumerations or floats, and nested
+         * @ref OStreamMessage objects. An enumeration element travels as its
+         * declared underlying type, so a container of scoped enums needs no
+         * converted copy. Using a type whose capability was compiled out of the
+         * C core is a compile-time error (see the @c SOFAB_DISABLE_* notes at
+         * the top).
          *
          * @param id     Field identifier.
          * @param value  Value to encode.
@@ -1223,14 +1249,39 @@ namespace sofab
                 using Elem = typename T::value_type;
                 std::span<const Elem> span{value};
 
-                if constexpr (std::is_integral_v<Elem> && !std::is_same_v<Elem, bool>)
+                /* An enumeration rides the integer path at its declared width, so
+                 * a caller holding `std::vector<Gear>` (the shape the generator
+                 * stores an `enum` array in, MESSAGE_SPEC §1) needs no converted
+                 * copy. The element type changes nothing that leaves here: the
+                 * entry point and the element width are the same two facts as for
+                 * the integer behind it, `span.data()` reaches `const void *` by
+                 * the ordinary implicit conversion, and this side casts nothing.
+                 *
+                 * The C core then loads each element at element_size through a
+                 * typed lvalue (`_write_varint_array` in ostream.c) rather than
+                 * copying it out. For an enum array that load is formally covered
+                 * only at width 1, via `unsigned char`; wider elements rest on
+                 * `enum class E : U` having the size, alignment and value
+                 * representation of U, which the standard does guarantee. Written
+                 * down rather than glossed over, because the alternative is worse
+                 * on the axis this corelib exists for: making the C core copy out
+                 * with memcpy instead costs .text in the element loop of EVERY
+                 * array, integer ones included, and -mno-unaligned-access turns
+                 * that copy into byte loads on the ARMv6-M targets. */
+                if constexpr ((std::is_integral_v<Elem> || std::is_enum_v<Elem>) &&
+                              !std::is_same_v<Elem, bool>)
                 {
+                    /* What the elements travel as. Signedness comes from this and
+                     * never from Elem -- see @ref wire_int. sizeof is the same
+                     * either way, but element_size stays the ELEMENT's size: it is
+                     * what the C side strides the caller's array by. */
+                    using U = wire_int_t<Elem>;
 #if !SOFAB_CPP_HAVE_INT64
-                    static_assert(sizeof(Elem) <= 4,
+                    static_assert(sizeof(U) <= 4,
                         "64-bit integer arrays require INT64 support, disabled "
                         "via SOFAB_DISABLE_INT64_SUPPORT");
 #endif
-                    if constexpr (std::is_unsigned_v<Elem>)
+                    if constexpr (std::is_unsigned_v<U>)
                     {
                         ret = sofab_ostream_write_array_of_unsigned(
                             &ctx_, id,
