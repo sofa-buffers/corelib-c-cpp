@@ -2380,7 +2380,7 @@ namespace sofab
          * @return `true` when the value was refused, in which case the caller must
          *         return without touching the destination.
          */
-        [[nodiscard]] bool refuse(size_t n, long room) noexcept
+        [[nodiscard]] [[gnu::always_inline]] bool refuse(size_t n, long room) noexcept
         {
             if (room >= 0 && n > static_cast<size_t>(room))
             {
@@ -2411,7 +2411,7 @@ namespace sofab
          * @return `true` when the value was refused, in which case the caller
          *         must return without touching the destination.
          */
-        [[nodiscard]] bool refuseSchema(size_t n, long schemaBound) noexcept
+        [[nodiscard]] [[gnu::always_inline]] bool refuseSchema(size_t n, long schemaBound) noexcept
         {
             if (schemaBound >= 0 && n > static_cast<size_t>(schemaBound))
             {
@@ -2438,7 +2438,7 @@ namespace sofab
          * @param dynCap  The caller's cap. A maximum: `n > dynCap` is refused.
          * @return `true` when the value was refused.
          */
-        [[nodiscard]] bool refuseCap(size_t n, size_t dynCap) noexcept
+        [[nodiscard]] [[gnu::always_inline]] bool refuseCap(size_t n, size_t dynCap) noexcept
         {
             if (n > dynCap) { exceedLimit(); return true; }
             return false;
@@ -2472,7 +2472,7 @@ namespace sofab
          *                     growable one.
          * @return `true` when the read must not proceed.
          */
-        [[nodiscard]] bool refuseUnbounded(long schemaBound, long room) noexcept
+        [[nodiscard]] [[gnu::always_inline]] bool refuseUnbounded(long schemaBound, long room) noexcept
         {
             if (schemaBound < 0 && room < 0) { refuseArgument(); return true; }
             return false;
@@ -2500,7 +2500,7 @@ namespace sofab
          * @return `true` when the value was refused, in which case the caller
          *         must return without touching the destination.
          */
-        [[nodiscard]] bool refuseBound(size_t n, long schemaBound, DynCap dynCap) noexcept
+        [[nodiscard]] [[gnu::always_inline]] bool refuseBound(size_t n, long schemaBound, DynCap dynCap) noexcept
         {
             if (schemaBound >= 0)
             {
