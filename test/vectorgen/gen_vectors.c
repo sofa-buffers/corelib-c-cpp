@@ -1526,6 +1526,7 @@ static void emit_invalid_utf8(FILE *o)
     }
 }
 
+
 /* the tolerant-boolean cases ************************************************/
 
 /*
@@ -2016,6 +2017,157 @@ static void emit_header_limits(FILE *o)
     }
 }
 
+/* the nested header-ceiling cases ******************************************/
+
+/*
+ * `header_limits` one frame deeper. Every case in that block sits at field_id 0
+ * in the top-level scope, so one axis stays untested: the same over-ceiling
+ * header delivered INSIDE AN OPEN SEQUENCE.
+ *
+ * It is not obviously the same case. The field callback fires at a different
+ * depth, through the decoder chain rather than the top-level path, and the
+ * ceiling reaches the read from generated code one frame further in -- a port
+ * can wire the top-level path and miss the nested one. That is not a thought
+ * experiment: the same shape of gap was already found between a collector's leaf
+ * path and its framed element path, which is why `sequence_growth` carries its
+ * `..._struct` variants.
+ *
+ * The truncated cases sharpen it. The message ends with the sequence STILL OPEN,
+ * so a decoder that reaches end-of-input with unclosed frames has a second,
+ * independent reason to answer INCOMPLETE. The two reasons mask each other: a
+ * port that never checks the ceiling answers INCOMPLETE and looks right, because
+ * a frame really is open. The ceiling must still win, and terminally (S6.3) --
+ * which is exactly the confusion S6.2.1 imports S5.2.3's reasoning to prevent,
+ * one level down.
+ *
+ * A SEPARATE top-level block, not extra cases in `header_limits`, and
+ * deliberately so: these bytes begin with a sequence header, so a runner that
+ * does not know about `frames` would bind its ceiling at the top level, cap
+ * nothing, and answer INCOMPLETE where the case says LimitExceeded. Folding them
+ * into the existing block would turn every port red before it could act. An
+ * unknown block is ignored instead, so each port adopts when it is ready --
+ * which is how all four blocks before this one arrived.
+ */
+static void emit_header_limits_nested(FILE *o)
+{
+    static const struct {
+        const char *name;
+        const char *desc;
+        const char *requires;   /* verbatim JSON array */
+        uint32_t    frames[2];  /* sequence field ids, outermost first */
+        size_t      nframes;
+        int         kind;
+        uint32_t    id;
+        uint64_t    declared;
+        const char *bound_key;
+        long        bound;
+        int         schema;     /* 1 -> "schema" (S7.1), 0 -> "limits" (S6.2.1) */
+        const char *outcome;
+    } seeds[] = {
+        { "nested_string_over_cap",
+          "header_string_over_cap, one frame deeper: a 100-byte string declared at id 0 INSIDE a "
+          "sequence opened at id 7, and then the message ends with that sequence still open. The "
+          "ceiling is decided at the length word regardless of depth (S6.2.1), so the answer is "
+          "LimitExceeded and terminal (S6.3). INCOMPLETE is the trap here, and a more convincing one "
+          "than at the top level: a frame really is open, so a port that never checks the ceiling "
+          "produces a plausible-looking INCOMPLETE for the wrong reason.",
+          "[\"sequence\", \"fixlen\", \"receiver_caps\"]", {7, 0}, 1, HK_STRING, 0, 100,
+          "max_dyn_string_len", 16, 0, "limit_exceeded" },
+
+        { "nested_string_in_cap",
+          "THE CONTROL for nested_string_over_cap: the same shape at a length the cap admits. "
+          "INCOMPLETE -- and here that is the RIGHT answer for the right reason, which is what "
+          "separates a port that enforces the ceiling from one that rejects everything nested.",
+          "[\"sequence\", \"fixlen\", \"receiver_caps\"]", {7, 0}, 1, HK_STRING, 0, 8,
+          "max_dyn_string_len", 16, 0, "incomplete" },
+
+        { "nested_string_schema_bounded",
+          "The schema-bounded counterpart at the same nested length word: the declaration binds the "
+          "field, so breaching it is INVALID (MESSAGE_SPEC S7.1), not LimitExceeded. Pairing the two "
+          "at one depth is what shows the ceiling and the bound are separate machinery -- a port can "
+          "carry the schema bound into a sequence and leave the receiver cap at the top level.",
+          "[\"sequence\", \"fixlen\"]", {7, 0}, 1, HK_STRING, 0, 100,
+          "maxlen", 16, 1, "invalid" },
+
+        { "nested_string_schema_bounded_in_bound",
+          "THE CONTROL for nested_string_schema_bounded.",
+          "[\"sequence\", \"fixlen\"]", {7, 0}, 1, HK_STRING, 0, 8,
+          "maxlen", 16, 1, "incomplete" },
+
+        { "nested_array_count_over_cap",
+          "The nested case for a COUNT word rather than a length word: an unsigned varint array "
+          "declares 100 elements inside the open sequence. A port may reach the enforcement point "
+          "through a different path for counts than for lengths, so the axis is asserted on both.",
+          "[\"sequence\", \"array\", \"receiver_caps\"]", {7, 0}, 1, HK_ARRAY, 0, 100,
+          "max_dyn_array_count", 16, 0, "limit_exceeded" },
+
+        { "nested_array_count_in_cap",
+          "THE CONTROL for nested_array_count_over_cap.",
+          "[\"sequence\", \"array\", \"receiver_caps\"]", {7, 0}, 1, HK_ARRAY, 0, 8,
+          "max_dyn_array_count", 16, 0, "incomplete" },
+
+        { "nested_depth2_string_over_cap",
+          "Two frames deep, because one level may be special-cased: the outer sequence at id 7 holds "
+          "an inner one at id 3, and the over-cap string sits in that. Both frames are left open at "
+          "end-of-input, so the INCOMPLETE that must NOT be reported now has two independent reasons "
+          "behind it.",
+          "[\"sequence\", \"fixlen\", \"receiver_caps\"]", {7, 3}, 2, HK_STRING, 0, 100,
+          "max_dyn_string_len", 16, 0, "limit_exceeded" },
+
+        { "nested_depth2_string_in_cap",
+          "THE CONTROL for nested_depth2_string_over_cap.",
+          "[\"sequence\", \"fixlen\", \"receiver_caps\"]", {7, 3}, 2, HK_STRING, 0, 8,
+          "max_dyn_string_len", 16, 0, "incomplete" },
+    };
+
+    int first = 1;
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); ++i)
+    {
+        uint8_t hdr[32];
+        size_t  n = 0;
+
+        /* the open frames, outermost first ... */
+        for (size_t f = 0; f < seeds[i].nframes; ++f)
+        {
+            n += raw_varint(hdr + n,
+                    ((uint64_t)seeds[i].frames[f] << 3) | (uint64_t)SOFAB_TYPE_SEQUENCE_START);
+        }
+        /* ... then the same header-only field the flat block uses, and nothing
+         * else: no payload, and no sequence end. */
+        n += build_header_only(hdr + n, seeds[i].kind, seeds[i].id, seeds[i].declared);
+
+        if (!first) fputs(",\n", o);
+        first = 0;
+
+        fprintf(o, "    {\n");
+        fprintf(o, "      \"name\": ");        json_string(o, seeds[i].name); fputs(",\n", o);
+        fprintf(o, "      \"group\": \"limits/header-nested\",\n");
+        fprintf(o, "      \"description\": "); json_string(o, seeds[i].desc); fputs(",\n", o);
+        fprintf(o, "      \"requires\": %s,\n", seeds[i].requires);
+        fputs("      \"frames\": [", o);
+        for (size_t f = 0; f < seeds[i].nframes; ++f)
+        {
+            fprintf(o, "%s%u", f ? ", " : "", (unsigned)seeds[i].frames[f]);
+        }
+        fputs("],\n", o);
+        fprintf(o, "      \"field_id\": %u,\n", (unsigned)seeds[i].id);
+        fprintf(o, "      \"declared\": %llu,\n", (unsigned long long)seeds[i].declared);
+        fprintf(o, "      \"%s\": { \"%s\": %ld },\n",
+                seeds[i].schema ? "schema" : "limits", seeds[i].bound_key, seeds[i].bound);
+        fprintf(o, "      \"serialized\": ");  json_hex(o, hdr, n); fputs(",\n", o);
+        fprintf(o, "      \"expect\": {\n");
+        fprintf(o, "        \"outcome\": ");   json_string(o, seeds[i].outcome);
+        if (strcmp(seeds[i].outcome, "incomplete") != 0)
+        {
+            fputs(",\n        \"terminal\": true", o);
+        }
+        fputs("\n", o);
+        fprintf(o, "      }\n");
+        fprintf(o, "    }");
+    }
+}
+
+
 int main(void)
 {
     FILE *o = stdout;
@@ -2063,6 +2215,14 @@ int main(void)
                "unsatisfied 'requires' tag means SKIP. Expectations come from CORELIB_PLAN S6.2.1/S6.3 and "
                "MESSAGE_SPEC S5.2, NOT from the generating implementation. Backward-compatible: consumers that only "
                "read 'vectors' ignore this key. See test_vectors_README.md.\"\n");
+    fprintf(o, "    ,\"header_limits_nested\": \"The header_limits axis one frame deeper: the same over-ceiling "
+               "header delivered INSIDE a sequence that is still open when the bytes end. The ceiling is decided at "
+               "the length/count word regardless of depth (CORELIB_PLAN S6.2.1) and is terminal (S6.3). INCOMPLETE is "
+               "the trap: an open frame is an independent reason to report it, so a port that never checks the "
+               "ceiling produces a plausible INCOMPLETE for the wrong reason. Each case carries 'frames', the "
+               "sequence field ids it is nested in, outermost first; a runner must bind its ceiling to the field at "
+               "that depth. Backward-compatible: consumers that do not know this block ignore it. See "
+               "test_vectors_README.md.\"\n");
     fprintf(o, "    ,\"boolean_tolerant\": \"TOLERANT-DECODE cases: a boolean whose wire value is not the "
                "canonical 0/1. CORELIB_PLAN S4.4 is canonical on encode, tolerant on decode: an encoder MUST write "
                "true as 1, and a decoder MUST read EVERY value other than 0 as true, normalize it, and re-encode it "
@@ -2105,6 +2265,17 @@ int main(void)
     fprintf(o, "  \"header_limits\": [\n");
 
     emit_header_limits(o);
+
+    fprintf(o, "\n  ],\n");
+
+    /* The same ceiling one frame deeper: the field sits inside a sequence that
+     * is still open when the bytes end, so the INCOMPLETE that must NOT be
+     * reported has a second, independent reason behind it. A separate block, so
+     * a runner that does not know about `frames` ignores it rather than binding
+     * its ceiling at the wrong depth and going red. */
+    fprintf(o, "  \"header_limits_nested\": [\n");
+
+    emit_header_limits_nested(o);
 
     fprintf(o, "\n  ],\n");
 
