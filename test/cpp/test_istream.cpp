@@ -15,6 +15,7 @@
 #include <vector>
 #include <span>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <algorithm>
 
@@ -215,7 +216,7 @@ public:
         std::array<uint32_t, 5> u32Array{};
         std::array<int64_t, 5> i64Array{};
         std::array<uint64_t, 5> u64Array{};
-        // std::array<bool, 5> boolArray{};
+        std::array<bool, 5> boolArray{};
         std::array<float, 5> fp32Array{};
         std::array<double, 5> fp64Array{};
     } data_;
@@ -255,7 +256,7 @@ public:
             case 18: istream.read(data_.u32Array); break;
             case 19: istream.read(data_.i64Array); break;
             case 20: istream.read(data_.u64Array); break;
-            // case 21: istream.read(data_.boolArray); break;
+            case 21: istream.read(data_.boolArray); break;
             case 22: istream.read(data_.fp32Array); break;
             case 23: istream.read(data_.fp64Array); break;
         }
@@ -453,6 +454,7 @@ TEST_CASE("IStream: round-trip arrays of every type into object")
         std::numeric_limits<uint64_t>::max()};
     const std::array<float,    5> f32a = {1.0f, 2.0f, 3.0f, -4.5f, 5.5f};
     const std::array<double,   5> f64a = {1.0, 2.0, 3.0, -4.5, 5.5};
+    const std::array<bool,     5> boola = {false, true, true, false, true};
 
     ostream
         .write(14, u8a)
@@ -462,6 +464,7 @@ TEST_CASE("IStream: round-trip arrays of every type into object")
         .write(18, u32a)
         .write(19, i64a)
         .write(20, u64a)
+        .write(21, boola)
         .write(22, f32a)
         .write(23, f64a);
 
@@ -480,8 +483,44 @@ TEST_CASE("IStream: round-trip arrays of every type into object")
     REQUIRE(d.u32Array  == u32a);
     REQUIRE(d.i64Array  == i64a);
     REQUIRE(d.u64Array  == u64a);
+    REQUIRE(d.boolArray == boola);
     REQUIRE(d.fp32Array == f32a);
     REQUIRE(d.fp64Array == f64a);
+}
+
+// CORELIB_PLAN §4.4 one level down: every non-zero element of a boolean array is
+// `true`, is normalized on store, and is bounded by nothing -- an element wider
+// than its destination is `true`, not INVALID. The round-trip above cannot reach
+// this, because the encoder never writes a non-canonical boolean; only bytes from
+// a foreign encoder do.
+TEST_CASE("IStream: a boolean array reads every non-zero element as true")
+{
+    // id 21, VARINTARRAY_UNSIGNED, count 5: 0, 1, 2, 256, 2^64-1.
+    // The header (21 << 3) | 3 is 171 and does not fit one varint byte.
+    const uint8_t wire[] = {
+        0xAB, 0x01,
+        0x05,
+        0x00,
+        0x01,
+        0x02,
+        0x80, 0x02,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01
+    };
+
+    sofab::IStreamObject<FullObject> istream;
+    auto result = istream.feed(wire, sizeof(wire));
+
+    REQUIRE(result.code() == sofab::Error::None);
+
+    const std::array<bool, 5> expected = {false, true, true, true, true};
+    REQUIRE((*istream).data_.boolArray == expected);
+
+    // ... and each destination holds a representation a bool is allowed to have,
+    // which comparing bool lvalues could not have told us.
+    uint8_t stored[5];
+    std::memcpy(stored, (*istream).data_.boolArray.data(), sizeof(stored));
+    const std::array<uint8_t, 5> bytes = {0, 1, 1, 1, 1};
+    REQUIRE(std::memcmp(stored, bytes.data(), sizeof(stored)) == 0);
 }
 
 // An `enum` field's array is handed to write() as it is stored — a container of

@@ -755,6 +755,24 @@ TEST_CASE("OStream: write array of unsigned")
     REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
 }
 
+// A boolean array travels as an unsigned varint array, and CORELIB_PLAN §4.4 is
+// canonical on encode: `true` is `1`. No normalizing step is needed to get there
+// -- the elements are `bool` objects, which hold 0 or 1 and are that form
+// already; the tolerant half of §4.4 belongs to the decode side.
+TEST_CASE("OStream: write array of boolean")
+{
+    sofab::OStream ostream{16};
+    const std::array<bool, 5> array = {false, true, true, false, true};
+
+    auto result = ostream.write(0, array);
+    auto used = ostream.bytesUsed();
+
+    const uint8_t expected[] = {0x03, 0x05, 0x00, 0x01, 0x01, 0x00, 0x01};
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(used == sizeof(expected));
+    REQUIRE(std::memcmp(ostream.data(), expected, used) == 0);
+}
+
 TEST_CASE("OStream: write array of signed")
 {
     sofab::OStream ostream{16};

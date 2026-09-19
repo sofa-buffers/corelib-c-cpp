@@ -1298,6 +1298,19 @@ namespace sofab
                             sizeof(Elem));
                     }
                 }
+                else if constexpr (std::is_same_v<Elem, bool>)
+                {
+                    /* A boolean array travels as an unsigned varint array, and
+                     * needs no normalizing step of its own: §4.4 is canonical on
+                     * encode, and these elements are `bool` objects, which hold
+                     * 0 or 1 and are that form already. Only a decode sees
+                     * foreign bytes, which is why only the read normalizes. */
+                    ret = sofab_ostream_write_array_of_unsigned(
+                        &ctx_, id,
+                        span.data(),
+                        static_cast<int32_t>(span.size()),
+                        sizeof(bool));
+                }
                 else if constexpr (std::is_same_v<Elem, float>)
                 {
                     ret = sofab_ostream_write_array_of_fp32(
@@ -2681,6 +2694,20 @@ namespace sofab
                                 sizeof(Elem),
                                 SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED));
                         }
+                    }
+                    else if constexpr (std::is_same_v<Elem, bool>)
+                    {
+                        /* Excluded from the integral branch above on purpose: a
+                         * boolean rides the unsigned varint array form, but is
+                         * not an integer. Every non-zero element is `true` and
+                         * is normalized on store, and no element is bounded by
+                         * the width of its destination (CORELIB_PLAN §4.4) --
+                         * both of which the read below carries and the integer
+                         * path does not. */
+                        sofab_istream_read_array_of_bool(
+                            &ctx_,
+                            span.data(),
+                            static_cast<int32_t>(span.size()));
                     }
                     else if constexpr (std::is_same_v<Elem, float>)
                     {
