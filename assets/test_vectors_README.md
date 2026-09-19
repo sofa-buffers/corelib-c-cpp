@@ -228,6 +228,56 @@ it for free. `string_hex` / `serialized_hex` are lowercase hex, like
 `serialized.hex`; the payload is placed at field id `0` with the `string` (fixlen
 UTF-8) wire subtype.
 
+### Nested header-ceiling cases — `header_limits_nested`
+
+`header_limits` one frame deeper. Every case in that block sits at `field_id 0`
+in the top-level scope, so one axis stays untested: the same over-ceiling header
+delivered **inside an open sequence**.
+
+```jsonc
+{
+  "name": "nested_string_over_cap",
+  "group": "limits/header-nested",
+  "description": "...",
+  "requires": ["sequence", "fixlen", "receiver_caps"],
+  "frames": [7],                       // sequence field ids, OUTERMOST FIRST
+  "field_id": 0,                       // the field inside the innermost frame
+  "declared": 100,
+  "limits": { "max_dyn_string_len": 16 },
+  "serialized": "3e02a206",            // 3e opens the sequence; then the header; then EOF
+  "expect": { "outcome": "limit_exceeded", "terminal": true }
+}
+```
+
+Everything else matches `header_limits`; the one new key is **`frames`**, the
+chain of sequence field ids the target field is nested in. A runner binds its
+ceiling to the field at *that* depth, not at the top level.
+
+**Why the depth is its own axis.** The field callback fires through the decoder
+chain rather than the top-level path, and the ceiling reaches the read from
+generated code one frame further in — a port can wire the top-level path and miss
+the nested one. That is the same shape of gap already found between a collector's
+leaf path and its framed element path, which is why `sequence_growth` carries its
+`..._struct` variants.
+
+**The trap, and it is a better one here.** These messages end with the sequence
+**still open**, so a decoder that reaches end-of-input with unclosed frames has a
+*second, independent* reason to answer `INCOMPLETE`. A port that never checks the
+ceiling answers `INCOMPLETE` and looks right, because a frame really is open. The
+ceiling must still win, and terminally (§6.3) — exactly the confusion §6.2.1
+imports §5.2.3's reasoning to prevent, one level down.
+
+That is also why the **in-cap control of every pair matters more than usual**, and
+why a port should run the negative control: lift the ceiling, and a case that
+answered `limit_exceeded` or `invalid` must answer something else. If it does not,
+the rejection came from somewhere other than the guard under test.
+
+**A separate block, deliberately.** These bytes begin with a sequence header, so a
+runner that does not know `frames` would bind its ceiling at the top level, cap
+nothing, and answer `INCOMPLETE` where the case says `limit_exceeded`. Folding
+them into `header_limits` would turn every port red before it could act; an
+unknown top-level block is ignored instead, and each port adopts when it is ready.
+
 ### Tolerant-decode cases — `boolean_tolerant`
 
 A fifth top-level array, of booleans whose wire value is **not** the canonical

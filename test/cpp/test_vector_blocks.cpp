@@ -715,3 +715,179 @@ TEST_CASE("vectors: sequence_growth -- the index bound of a growing container")
 
     REQUIRE(ran == total);
 }
+
+/* ===========================================================================
+ * header_limits_nested -- the same ceiling, one frame deeper
+ * ========================================================================= */
+
+namespace {
+
+/*! One link of the frame chain: at depth d it binds the sequence the case names
+ *  at frames[d], and at the innermost depth it delegates to the same
+ *  HeaderLimitMessage the flat block uses -- so the two blocks differ in where
+ *  the field arrives and in nothing else. */
+struct NestedFrame final : sofab::IStreamMessage
+{
+    const std::vector<sofab::id> *frames = nullptr;
+    std::size_t                   depth  = 0;
+    NestedFrame                  *child  = nullptr;
+    HeaderLimitMessage           *leaf   = nullptr;
+
+    void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t count) noexcept override
+    {
+        if (depth < frames->size())
+        {
+            if (id == (*frames)[depth] && child != nullptr)
+            {
+                is.read(*child);
+            }
+            return;
+        }
+        leaf->deserialize(is, id, size, count);
+    }
+};
+
+} // namespace
+
+TEST_CASE("vectors: header_limits_nested -- the ceiling answers at any depth")
+{
+    REQUIRE(vectorFile().error().empty());
+    const sofab_json_t *block = sofab_json_get(vectorFile().root(), "header_limits_nested");
+    REQUIRE(block != nullptr);
+
+    const size_t total = sofab_json_array_size(block);
+    REQUIRE(total > 0);
+
+    size_t ran = 0;
+    for (size_t i = 0; i < total; i++)
+    {
+        const sofab_json_t *c = sofab_json_array_at(block, i);
+        const std::string name{jsonString(require(c, "name"))};
+
+        if (!satisfied(c))
+        {
+            continue;
+        }
+
+        INFO("header_limits_nested case: " << name);
+        ran++;
+
+        const sofab_json_t *framesJson = require(c, "frames");
+        std::vector<sofab::id> frames;
+        for (size_t k = 0; k < sofab_json_array_size(framesJson); k++)
+        {
+            frames.push_back(static_cast<sofab::id>(
+                sofab_json_u64(sofab_json_array_at(framesJson, k))));
+        }
+        REQUIRE(!frames.empty());
+
+        HeaderLimitMessage leaf;
+        leaf.field  = static_cast<sofab::id>(sofab_json_u64(require(c, "field_id")));
+        leaf.bound  = schemaBoundOf(c);
+        leaf.dynCap = dynCapOf(c);
+
+        /* One link per frame below the outermost, which the stream drives. */
+        std::vector<NestedFrame> deeper(frames.size());
+
+        sofab::IStreamObject<NestedFrame> in;
+        (*in).frames = &frames;
+        (*in).depth  = 0;
+        (*in).leaf   = &leaf;
+        (*in).child  = deeper.empty() ? nullptr : &deeper[0];
+        for (std::size_t d = 0; d < deeper.size(); d++)
+        {
+            deeper[d].frames = &frames;
+            deeper[d].depth  = d + 1;
+            deeper[d].leaf   = &leaf;
+            deeper[d].child  = (d + 1 < deeper.size()) ? &deeper[d + 1] : nullptr;
+        }
+
+        const sofab_json_t *expect = require(c, "expect");
+        const sofab::Error wanted  = outcomeOf(jsonString(require(expect, "outcome")));
+
+        const auto bytes = fromHex(jsonString(require(c, "serialized")));
+        const sofab::Error got = in.feed(bytes.data(), bytes.size()).code();
+        REQUIRE(got == wanted);
+
+        const sofab_json_t *terminal = sofab_json_get(expect, "terminal");
+        if (terminal != nullptr && sofab_json_bool(terminal))
+        {
+            const std::vector<uint8_t> more(8, 0x61);
+            REQUIRE(in.feed(more.data(), more.size()).code() == wanted);
+            REQUIRE(leaf.empty());
+        }
+    }
+
+    REQUIRE(ran == total);
+}
+
+/* The negative control, and it carries more weight here than in the flat block.
+ * Every case in this one ends with a frame still open, which is an INDEPENDENT
+ * reason to answer INCOMPLETE -- so a runner that never reached the ceiling at
+ * this depth would see INCOMPLETE and could not tell the two apart. Lifting the
+ * ceiling must therefore change the answer; if it does not, the rejection came
+ * from somewhere other than the guard under test. */
+TEST_CASE("vectors: header_limits_nested -- lifting the ceiling changes the answer")
+{
+    REQUIRE(vectorFile().error().empty());
+    const sofab_json_t *block = sofab_json_get(vectorFile().root(), "header_limits_nested");
+    REQUIRE(block != nullptr);
+
+    constexpr long kLifted = 1 << 16;
+
+    size_t checked = 0;
+    for (size_t i = 0; i < sofab_json_array_size(block); i++)
+    {
+        const sofab_json_t *c = sofab_json_array_at(block, i);
+        if (!satisfied(c))
+        {
+            continue;
+        }
+
+        const sofab::Error wanted =
+            outcomeOf(jsonString(require(sofab_json_get(c, "expect"), "outcome")));
+        if (wanted != sofab::Error::LimitExceeded && wanted != sofab::Error::InvalidMessage)
+        {
+            continue;
+        }
+
+        const std::string name{jsonString(require(c, "name"))};
+        INFO("header_limits_nested case, ceiling lifted: " << name);
+
+        const sofab_json_t *framesJson = require(c, "frames");
+        std::vector<sofab::id> frames;
+        for (size_t k = 0; k < sofab_json_array_size(framesJson); k++)
+        {
+            frames.push_back(static_cast<sofab::id>(
+                sofab_json_u64(sofab_json_array_at(framesJson, k))));
+        }
+
+        HeaderLimitMessage leaf;
+        leaf.field = static_cast<sofab::id>(sofab_json_u64(require(c, "field_id")));
+        if (sofab_json_get(c, "schema") != nullptr) leaf.bound = kLifted;
+        else                                        leaf.dynCap = kLifted;
+
+        std::vector<NestedFrame> deeper(frames.size());
+        sofab::IStreamObject<NestedFrame> in;
+        (*in).frames = &frames;
+        (*in).depth  = 0;
+        (*in).leaf   = &leaf;
+        (*in).child  = deeper.empty() ? nullptr : &deeper[0];
+        for (std::size_t d = 0; d < deeper.size(); d++)
+        {
+            deeper[d].frames = &frames;
+            deeper[d].depth  = d + 1;
+            deeper[d].leaf   = &leaf;
+            deeper[d].child  = (d + 1 < deeper.size()) ? &deeper[d + 1] : nullptr;
+        }
+
+        checked++;
+        const auto bytes = fromHex(jsonString(require(c, "serialized")));
+        REQUIRE(in.feed(bytes.data(), bytes.size()).code() != wanted);
+    }
+
+    /* Every rejection in this block is reachable with a lifted ceiling -- none
+     * of them declares a size too large to admit, unlike the flat block's
+     * amplification case. */
+    REQUIRE(checked == 4);
+}

@@ -72,6 +72,10 @@
  * The engine is plain C (linked into both the C/Unity and C++/Catch2 test
  * binaries). Both languages call sofab_test_vectors_run_all().
  *
+ * "header_limits_nested" is that same block one frame deeper and is NOT run here
+ * for the same reason -- it needs the receiver caps only the C++ wrapper has. It
+ * runs in test/cpp/test_vector_blocks.cpp beside the flat one.
+ *
  * The file's fifth top-level block, "boolean_tolerant", IS run here: a boolean
  * whose wire value is not the canonical 0/1 needs nothing beyond the plain
  * decode API, so it never waited on a C++ runner. See run_boolean_tolerant().
