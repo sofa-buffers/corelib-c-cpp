@@ -50,7 +50,8 @@
  * std::vector) DOES grow and does carry the max_dyn_array_count the block's
  * boundary cases are stated against — see test/cpp/test_receiver_limits.cpp,
  * which asserts that boundary directly. Running the JSON block through it needs a
- * C++ runner this shared C engine is not; that is the open half.
+ * C++ runner this shared C engine is not: test/cpp/test_vector_blocks.cpp, which
+ * runs it, and closes what used to be the open half.
  *
  * The file's fourth top-level block, "header_limits", is NOT run here either,
  * and the reason is worth stating precisely because the obvious one is wrong.
@@ -63,13 +64,17 @@
  * length header, before the allocation"). What excludes the block here is this
  * engine, not the library: it is plain C, and the plain-C API carries no §6.2.1
  * receiver cap at all — SOFAB_FIXLEN_MAX is a FORMAT ceiling whose breach is
- * INVALID, which is a different question. So the block waits on the same missing
- * C++ runner as sequence_growth. Its `schema`-bounded pair, which needs no cap,
- * would be the first part to become runnable. Do not "fix" a case to match what
- * this C engine answers; the expectations come from the specs.
+ * INVALID, which is a different question. So the block runs in the same C++ runner
+ * as sequence_growth -- test/cpp/test_vector_blocks.cpp -- and not here. Do not
+ * "fix" a case to match what this C engine answers; the expectations come from
+ * the specs.
  *
  * The engine is plain C (linked into both the C/Unity and C++/Catch2 test
  * binaries). Both languages call sofab_test_vectors_run_all().
+ *
+ * The file's fifth top-level block, "boolean_tolerant", IS run here: a boolean
+ * whose wire value is not the canonical 0/1 needs nothing beyond the plain
+ * decode API, so it never waited on a C++ runner. See run_boolean_tolerant().
  *
  * SPDX-License-Identifier: MIT
  */
@@ -93,6 +98,8 @@ typedef struct
     int  failures;          /*!< number of failed checks (positive + negative) */
     int  invalid_vectors;   /*!< number of negative (invalid-UTF-8) vectors found */
     int  invalid_checks;    /*!< negative-vector checks run (0 in a non-strict build) */
+    int  boolean_vectors;   /*!< number of tolerant-boolean cases found (S4.4) */
+    int  boolean_checks;    /*!< tolerant-boolean checks run (decode + re-encode per case) */
     char first_error[256];  /*!< description of the first failure (or load error) */
 } sofab_test_vectors_result_t;
 

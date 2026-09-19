@@ -769,6 +769,177 @@ static int run_roundtrip(const vector_t *v, char *err, size_t errlen)
     return decode_bytes(v->ops, v->nops, out, used, 0, NULL, 0, err, errlen);
 }
 
+/* tolerant-boolean cases ****************************************************
+ *
+ * CORELIB_PLAN S4.4 is canonical on encode, tolerant on decode: an encoder MUST
+ * write `true` as `1`, and a decoder MUST read EVERY value other than `0` as
+ * `true`, normalize it, and re-encode it as `1`. A boolean carries NO width
+ * bound, so a value wider than its destination is `true`, never INVALID.
+ *
+ * The block is hand-authored because no encoder run can produce its bytes -- but
+ * unlike `sequence_growth` and `header_limits` it needs nothing beyond the plain
+ * decode API, which is why it runs here rather than waiting on a C++ runner.
+ *
+ * The destination is compared through a character type on purpose: a `bool`
+ * object may hold only 0 or 1, so what is being asserted is that it ends up
+ * holding a representation it is ALLOWED to have -- a comparison against `true`
+ * could not have told us that.
+ */
+/* Defined with the positive-vector machinery below; the reduced-build rejection
+ * is the same assertion there and here, so it has one implementation. */
+static int expect_rejected(const uint8_t *bytes, size_t nbytes, int one_byte,
+                           char *err, size_t errlen);
+
+static void bool_scalar_cb(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usr)
+{
+    (void)id; (void)size; (void)count;
+    sofab_istream_read_bool(ctx, (bool *)usr);
+}
+
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+#define BOOLMAX 8
+static void bool_array_cb(sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usr)
+{
+    (void)id; (void)size;
+    sofab_istream_read_array_of_bool(ctx, (bool *)usr, count < BOOLMAX ? count : BOOLMAX);
+}
+#endif
+
+static void run_boolean_tolerant(const sofab_json_t *root, sofab_test_vectors_result_t *out)
+{
+    const sofab_json_t *arr = sofab_json_get(root, "boolean_tolerant");
+    size_t n = sofab_json_array_size(arr);
+    out->boolean_vectors = (int)n;
+
+    for (size_t i = 0; i < n; i++)
+    {
+        const sofab_json_t *vj = sofab_json_array_at(arr, i);
+        size_t nl; const char *name = sofab_json_string(sofab_json_get(vj, "name"), &nl);
+        if (!name) name = "?";
+
+        const sofab_json_t *expect = sofab_json_get(vj, "expect");
+        const sofab_json_t *values = sofab_json_get(expect, "values");
+        size_t nvalues = sofab_json_array_size(values);
+
+        const sofab_json_t *req = sofab_json_get(vj, "requires");
+        uint32_t need = 0;
+        for (size_t k = 0; k < sofab_json_array_size(req); k++)
+        {
+            size_t tl; const char *t = sofab_json_string(sofab_json_array_at(req, k), &tl);
+            if (t) need |= cap_from_name(t, tl);
+        }
+
+        size_t shl; const char *shex = sofab_json_string(sofab_json_get(vj, "serialized_hex"), &shl);
+        size_t rhl; const char *rhex = sofab_json_string(sofab_json_get(expect, "reencoded_hex"), &rhl);
+
+        uint8_t *msg = NULL, *want = NULL;
+        size_t   msglen = 0, wantlen = 0;
+        if (!shex || hex2bin(shex, shl, &msg, &msglen) ||
+            !rhex || hex2bin(rhex, rhl, &want, &wantlen) ||
+            nvalues == 0 || nvalues > 8)
+        {
+            out->failures++;
+            if (!out->first_error[0])
+                snprintf(out->first_error, sizeof(out->first_error),
+                         "boolean_tolerant[%zu]: malformed case", i);
+            free(msg); free(want);
+            continue;
+        }
+
+        /* A case needing a capability this build lacks is a message this build
+         * must REJECT, exactly as a positive vector is -- not one to drop on the
+         * floor. S4.4 lifts the width bound the TYPE carries, not the one the
+         * BUILD's varint accumulator has: under SOFAB_DISABLE_INT64_SUPPORT a
+         * boolean carrying 2^64-1 overflows the accumulator before any boolean
+         * rule applies, and S6.2.2's narrowed scalar width makes rejecting it the
+         * conformant answer. Asserting that is stronger than skipping, and it is
+         * what keeps a reduced build from quietly answering `true` by truncation. */
+        if ((need & build_caps()) != need)
+        {
+            char rerr[160];
+            out->boolean_checks++;
+            if (expect_rejected(msg, msglen, 0, rerr, sizeof(rerr)))
+            {
+                out->failures++;
+                if (!out->first_error[0])
+                    snprintf(out->first_error, sizeof(out->first_error),
+                             "%s/reject: %s", name, rerr);
+            }
+            free(msg);
+            free(want);
+            continue;
+        }
+
+        bool got[8];
+        uint8_t stored[8];
+        for (size_t k = 0; k < 8; k++) got[k] = false;
+
+        /* decode */
+        out->boolean_checks++;
+        {
+            sofab_istream_t is;
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+            if (nvalues > 1) sofab_istream_init(&is, bool_array_cb, got);
+            else
+#endif
+                             sofab_istream_init(&is, bool_scalar_cb, got);
+
+            sofab_ret_t r = sofab_istream_feed(&is, msg, msglen);
+            memcpy(stored, got, nvalues);
+
+            int bad = (r != SOFAB_RET_OK);
+            for (size_t k = 0; !bad && k < nvalues; k++)
+            {
+                const uint8_t wantByte =
+                    (uint8_t)(sofab_json_bool(sofab_json_array_at(values, k)) ? 1 : 0);
+                bad = (stored[k] != wantByte);
+            }
+            if (bad)
+            {
+                out->failures++;
+                if (!out->first_error[0])
+                    snprintf(out->first_error, sizeof(out->first_error),
+                             "%s/decode: ret=%d byte0=0x%02x", name, (int)r, stored[0]);
+            }
+        }
+
+        /* re-encode: the normalized value must go back out canonical (S4.4) */
+        out->boolean_checks++;
+        {
+            uint8_t buf[64];
+            sofab_ostream_t os;
+            sofab_ostream_init(&os, buf, sizeof(buf), 0, NULL, NULL);
+
+            sofab_ret_t w;
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+            if (nvalues > 1)
+            {
+                uint8_t elems[8];
+                for (size_t k = 0; k < nvalues; k++) elems[k] = stored[k];
+                w = sofab_ostream_write_array_of_unsigned(&os, 0, elems,
+                        (int32_t)nvalues, (int32_t)sizeof(elems[0]));
+            }
+            else
+#endif
+            {
+                w = sofab_ostream_write_boolean(&os, 0, got[0]);
+            }
+
+            size_t used = sofab_ostream_flush(&os);
+            if (w != SOFAB_RET_OK || used != wantlen || memcmp(buf, want, used) != 0)
+            {
+                out->failures++;
+                if (!out->first_error[0])
+                    snprintf(out->first_error, sizeof(out->first_error),
+                             "%s/reencode: ret=%d len=%zu want=%zu", name, (int)w, used, wantlen);
+            }
+        }
+
+        free(msg);
+        free(want);
+    }
+}
+
 /* negative (invalid-UTF-8) vectors ******************************************
  *
  * The top-level "invalid_utf8" array holds `string` fields (id 0) whose bytes
@@ -1062,6 +1233,9 @@ int sofab_test_vectors_run_all(const char *path, sofab_test_vectors_result_t *ou
 
     /* negative (invalid-UTF-8) conformance vectors */
     run_invalid_utf8(root, out);
+
+    /* tolerant-boolean cases (S4.4) */
+    run_boolean_tolerant(root, out);
 
     sofab_json_free(root);
     return out->failures ? -1 : 0;
