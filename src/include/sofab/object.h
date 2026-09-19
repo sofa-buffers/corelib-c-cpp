@@ -65,7 +65,18 @@ extern "C" {
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32     	0x8 /*!< Array of 32-bit floats (sized variant as above). */
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9 /*!< Array of 64-bit doubles (sized variant as above). */
 #define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA /*!< Nested object (encoded as a sequence). */
+#define SOFAB_OBJECT_FIELDTYPE_BOOLEAN        	0xB /*!< Boolean. Rides the unsigned varint wire type, but every non-zero value decodes to @c true and is normalized (CORELIB_PLAN §4.4). */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_BOOLEAN  	0xC /*!< Array of booleans (sized variant as above); each element follows the §4.4 rule. */
 /*! @} */
+
+/*
+ * A note for whoever adds the fourteenth tag: the values above carry no meaning
+ * beyond being distinct. Nothing derives "this is an array" from a tag being
+ * numerically high — the transcoder asks @ref _expected_opt what wire form the
+ * type takes and reads the answer off that. That was not always true, and the
+ * boolean tags are why: a scalar cannot be appended after the array tags while
+ * a numeric test decides the two apart.
+ */
 
 /* macros *********************************************************************/
 /*!
@@ -392,7 +403,7 @@ typedef struct
     const sofab_object_descr_offset_t offset;	/*!< Offset within the object structure (width per profile) */
     const sofab_object_descr_size_t size;		/*!< Size of the field in bytes (width per profile) */
     const uint8_t nested_idx;		/*!< SEQUENCE: index into the nested object descriptor list. BLOB/ARRAY: byte width of the companion length member (0 = not sized), see @ref SOFAB_OBJECT_FIELD_BLOB_SIZED / @ref SOFAB_OBJECT_FIELD_ARRAY_SIZED */
-    const uint8_t type : 4;			/*!< Field type (4bit for types: 0x0..0xA) */
+    const uint8_t type : 4;			/*!< Field type (4bit for types: 0x0..0xC) */
     const uint8_t element_size : 4;	/*!< Size of individual elements for arrays (4bit for type length: 1..8)*/
 } sofab_object_descr_field_t;
 

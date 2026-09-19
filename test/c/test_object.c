@@ -1571,6 +1571,101 @@ static sofab_ret_t _overidx_decode (
 }
 
 /* id 200 SEQUENCE_START (0xC6 0x0C), then one string element ... , SEQUENCE_END */
+//
+
+/* CORELIB_PLAN §4.4 through the descriptor route: the transcoder has to reach
+ * the same normalizing read the hand-written sofab_istream_read_bool() reaches.
+ * Before SOFAB_OBJECT_FIELDTYPE_BOOLEAN existed a descriptor could only call a
+ * boolean UNSIGNED, which stored the wire value raw and rejected anything wider
+ * than its destination. */
+
+typedef struct
+{
+    bool flag;
+    bool flags[5];
+} boolmsg_t;
+
+const sofab_object_descr_field_t _info_fields_boolmsg[] =
+{
+    SOFAB_OBJECT_FIELD(0, boolmsg_t, flag, SOFAB_OBJECT_FIELDTYPE_BOOLEAN),
+    SOFAB_OBJECT_FIELD_ARRAY(1, boolmsg_t, flags, SOFAB_OBJECT_FIELDTYPE_ARRAY_BOOLEAN),
+};
+
+const sofab_object_descr_t _info_boolmsg =
+    SOFAB_OBJECT_DESCR(_info_fields_boolmsg, 2, NULL, 0);
+
+static sofab_ret_t boolmsg_decode (boolmsg_t *msg, const uint8_t *buf, size_t len)
+{
+    sofab_istream_t ctx;
+    sofab_object_decoder_t dec[2];
+    memset(dec, 0, sizeof(dec));
+    dec[0].info = &_info_boolmsg;
+    dec[0].dst = (uint8_t *)msg;
+    dec[0].depth = (uint8_t)(sizeof(dec) / sizeof(dec[0]) - 1);
+    sofab_istream_init(&ctx, sofab_object_field_cb, (void *)&dec[0]);
+    return sofab_istream_feed(&ctx, buf, len);
+}
+
+static void test_object_boolean_tolerant_decode (void)
+{
+    /* id 0 boolean = 256 (two varint bytes, wider than the destination);
+     * id 1 boolean[5] = 0, 1, 2, 256, 2^64-1 */
+    const uint8_t buffer[] = {
+        0x00, 0x80, 0x02,
+        0x0B, 0x05,
+            0x00,
+            0x01,
+            0x02,
+            0x80, 0x02,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01
+    };
+
+    boolmsg_t msg;
+    memset(&msg, 0, sizeof(msg));
+
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, boolmsg_decode(&msg, buffer, sizeof(buffer)),
+        "a boolean carries no width bound: 256 is true, not INVALID (S4.4)");
+
+    /* Read back through a character type: the assertion is that the bool objects
+     * hold a representation they are allowed to have, which a bool lvalue could
+     * not have told us. */
+    uint8_t stored[1 + 5];
+    memcpy(&stored[0], &msg.flag, 1);
+    memcpy(&stored[1], msg.flags, 5);
+
+    const uint8_t expected[] = { 1, 0, 1, 1, 1, 1 };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, stored, sizeof(expected),
+        "every non-zero value is normalized to 1 on store (S4.4)");
+}
+
+static void test_object_boolean_roundtrip (void)
+{
+    uint8_t buffer[32];
+
+    boolmsg_t in;
+    memset(&in, 0, sizeof(in));
+    in.flag = true;
+    in.flags[1] = true;
+    in.flags[4] = true;
+
+    sofab_ostream_t octx;
+    sofab_ostream_init(&octx, buffer, sizeof(buffer), 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, &_info_boolmsg, &in), "encode failed");
+    size_t used = sofab_ostream_flush(&octx);
+
+    /* canonical on encode: true is 1, and the array rides the unsigned varint
+     * array form -- id 1, type 0b011 -> 0x0B */
+    const uint8_t expected[] = { 0x00, 0x01, 0x0B, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01 };
+    TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buffer, used);
+
+    boolmsg_t out;
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, boolmsg_decode(&out, buffer, used));
+    TEST_ASSERT_EQUAL(0, memcmp(&in, &out, sizeof(in)));
+}
+
 static void test_object_overindex_string_rejected (void)
 {
     _overidx_str_msg_t msg;
@@ -3144,6 +3239,8 @@ int test_object_main (void)
     RUN_TEST(test_object_string_default_omission);
     RUN_TEST(test_object_blob_sized);
 
+    RUN_TEST(test_object_boolean_tolerant_decode);
+    RUN_TEST(test_object_boolean_roundtrip);
     RUN_TEST(test_object_overindex_string_rejected);
     RUN_TEST(test_object_overindex_string_in_range_ok);
     RUN_TEST(test_object_overindex_blob_rejected);

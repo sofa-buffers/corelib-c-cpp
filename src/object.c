@@ -122,6 +122,7 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
         case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
         case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
         case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
+        case SOFAB_OBJECT_FIELDTYPE_ARRAY_BOOLEAN:
             return field->nested_idx;
         default:
             return 0;
@@ -253,63 +254,80 @@ static void _seq_len_observe (const sofab_object_descr_t *info,
  */
 static int _expected_opt (uint8_t type)
 {
-    switch (type)
+    /* A table, not a switch. The thirteen arms are all constant returns, so the
+     * compiler builds a lookup table for them anyway once there are enough --
+     * and which side of "enough" a build lands on shifts with every tag added
+     * and with every SOFAB_DISABLE_* that removes one. Writing the table out
+     * makes the cost the same 16 bytes in every profile instead of a compare
+     * chain here and a compiler-invented table there.
+     *
+     * Each entry holds its option word @b plus @b one, so the entry a disabled
+     * or unassigned tag leaves at 0 reads as "no such type in this build" -- no
+     * sentinel value to pick, and no risk of it colliding with a real option
+     * word (VARINT_UNSIGNED is 0). */
+    static const uint8_t opt_plus_one[16] =
     {
-        case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED);
+        [SOFAB_OBJECT_FIELDTYPE_UNSIGNED] = 1 +
+            SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED),
+        [SOFAB_OBJECT_FIELDTYPE_SIGNED] = 1 +
+            SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED),
 
-        case SOFAB_OBJECT_FIELDTYPE_SIGNED:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED);
+        /* A boolean is an unsigned varint on the wire (§4.4), so the §7.3 tag
+         * test must see exactly that; the BOOLEAN flag sits outside the 0x3F
+         * mask and only tells the istream how to store what it decoded. */
+        [SOFAB_OBJECT_FIELDTYPE_BOOLEAN] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED)
+             | SOFAB_ISTREAM_OPT_BOOLEAN),
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
-        case SOFAB_OBJECT_FIELDTYPE_FP32:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32);
-
+        [SOFAB_OBJECT_FIELDTYPE_FP32] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+             | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32)),
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
-        case SOFAB_OBJECT_FIELDTYPE_FP64:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64);
+        [SOFAB_OBJECT_FIELDTYPE_FP64] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+             | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64)),
 #endif
-
-        case SOFAB_OBJECT_FIELDTYPE_STRING:
-            /* the reader also sets STRINGTERM (0x40); it is outside the 0x3F mask */
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING);
-
-        case SOFAB_OBJECT_FIELDTYPE_BLOB:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
-                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB);
+        /* the reader also sets STRINGTERM (0x40); it is outside the 0x3F mask */
+        [SOFAB_OBJECT_FIELDTYPE_STRING] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+             | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_STRING)),
+        [SOFAB_OBJECT_FIELDTYPE_BLOB] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+             | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_BLOB)),
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-        case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED);
-
-        case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED);
-
+        [SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED] = 1 +
+            SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED),
+        [SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED] = 1 +
+            SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_SIGNED),
+        [SOFAB_OBJECT_FIELDTYPE_ARRAY_BOOLEAN] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED)
+             | SOFAB_ISTREAM_OPT_BOOLEAN),
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
-        case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
-                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32);
-
+        [SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+             | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32)),
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
-        case SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
-                 | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64);
+        [SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64] = 1 +
+            (SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLENARRAY)
+             | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64)),
 #endif
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 #endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-        case SOFAB_OBJECT_FIELDTYPE_SEQUENCE:
-            return SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START);
+        [SOFAB_OBJECT_FIELDTYPE_SEQUENCE] = 1 +
+            SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_SEQUENCE_START),
 #endif
+    };
 
-        default:
-            return -1;
-    }
+    /* One entry per value a four-bit field can hold, so the index cannot leave
+     * the table and there is no bounds check to pay for. That is why the table
+     * is 16 long and not 13: the three unassigned tags cost three bytes and buy
+     * the branch away. */
+    return (int)opt_plus_one[type] - 1;
 }
 
 
@@ -681,6 +699,13 @@ extern sofab_ret_t sofab_object_encode (
         {
             case SOFAB_OBJECT_FIELDTYPE_UNSIGNED:
             case SOFAB_OBJECT_FIELDTYPE_SIGNED:
+            /* A boolean joins the unsigned arm unchanged, with no normalizing
+             * step of its own: §4.4 is canonical on encode, and the source of an
+             * encode is the caller's own `bool`, which holds 0 or 1 and is that
+             * canonical form already. Only a decode sees foreign bytes, which is
+             * why only the decode side normalizes. A runtime `!= 0` here would
+             * buy nothing and cost a compare on every unsigned field. */
+            case SOFAB_OBJECT_FIELDTYPE_BOOLEAN:
             {
                 // Both types read the same bytes and differ only in how they are
                 // re-signed, so they share one width dispatch (_load_uint, which
@@ -757,6 +782,7 @@ extern sofab_ret_t sofab_object_encode (
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED:
             case SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED:
+            case SOFAB_OBJECT_FIELDTYPE_ARRAY_BOOLEAN:
             {
                 // Both writers share a signature and differ only in the element
                 // interpretation; select via pointer so the element-count math
@@ -766,6 +792,10 @@ extern sofab_ret_t sofab_object_encode (
                     (field->type == SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED)
                         ? sofab_ostream_write_array_of_signed
                         : sofab_ostream_write_array_of_unsigned;
+                /* A boolean array takes the unsigned writer unchanged: its
+                 * elements are `bool` objects, which hold 0 or 1 and are already
+                 * the canonical form §4.4 asks for. Only the decode side needs
+                 * the normalizing store, because only it sees foreign bytes. */
                 ret = write_array(ctx, field->id,
                     CAST_TO(const void *, src, field->offset),
                     _array_count(field, src),
@@ -881,7 +911,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                  * the value already there. A plain bind only binds, which the
                  * istream rolls back on its own. */
                 const uint8_t sized = _sized_width(field);
-                if (sized != 0 && (ctx->target_opt & 0x3F) != opt)
+                if (sized != 0 && (ctx->target_opt & 0x3F) != (opt & 0x3F))
                 {
                     break;
                 }
@@ -900,7 +930,13 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 #if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
-                if (field->type >= SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED)
+                /* Read the array-ness off the wire form _expected_opt already
+                 * tabulated, not off the tag's numeric value: the three array
+                 * wire types are the top of that enum, and SEQUENCE has its own
+                 * case above and never arrives here. A test on the tag number
+                 * instead would silently mis-route every scalar tag added after
+                 * the array tags -- BOOLEAN was the first. */
+                if (SOFAB_ISTREAM_OPT_FIELDTYPE(opt) >= SOFAB_TYPE_VARINTARRAY_UNSIGNED)
                 {
                     sofab_istream_read_array(ctx, decoder->dst + field->offset,
                         width != 0 ? field->size / width : 0, width, opt);
