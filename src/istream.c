@@ -572,6 +572,24 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
         {
             case _DECODER_STATE_IDLE:
             {
+                // A field callback may have condemned the message earlier in
+                // this same feed. That verdict is terminal (§6.3), so no further
+                // field is decoded from these bytes -- and in particular none is
+                // dispatched, which is what keeps a caller who was told the
+                // message was refused from finding a destination that kept
+                // growing past the refusal (§6.2.1, "rejected, never clamped").
+                //
+                // Here, and not at the three sites that dispatch a callback: a
+                // field begins in this state and nowhere else, so one test does
+                // what three did, for a third of the .text. Not at the top of
+                // the byte loop either, tempting as that is -- the payload
+                // states run one byte per iteration, and a test there costs ~20%
+                // of blob and skip throughput to save two more bytes.
+                if (ctx->invalid)
+                {
+                    goto invalid;
+                }
+
                 sofab_unsigned_t id = decoded;
 
                 // extract type from id
