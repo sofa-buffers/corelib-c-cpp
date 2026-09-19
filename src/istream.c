@@ -716,6 +716,16 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
 
                 if (ctx->target_ptr)
                 {
+                    // a boolean rides this wire type, but is not an integer:
+                    // every non-zero value is `true` and is normalized here, so
+                    // the destination only ever holds 0 or 1 (§4.4). That is the
+                    // conversion a plain assignment would have performed; the
+                    // generic store below writes bytes and cannot do it itself.
+                    if (ctx->target_opt & SOFAB_ISTREAM_OPT_BOOLEAN)
+                    {
+                        unsigned_value = (unsigned_value != 0);
+                    }
+
                     // store unsigned value in target buffer
                     if (_store_scalar(ctx->target_ptr, ctx->target_len, unsigned_value) != 0)
                     {
@@ -723,7 +733,10 @@ extern sofab_ret_t sofab_istream_feed (sofab_istream_t *ctx, const void *data, s
                         return SOFAB_RET_E_ARGUMENT;
                     }
 
-                    // optional: check integer overflow
+                    // optional: check integer overflow. A boolean needs no
+                    // exemption from it although §4.4 grants it one: normalized
+                    // to 0 or 1 above, it fits every destination width there is,
+                    // so the check can never fire on it and costs no branch.
                     _FITS_UNSIGNED_CHECK(unsigned_value, ctx->target_len * 8);
                 }
 

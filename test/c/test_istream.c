@@ -45,6 +45,7 @@ typedef enum
     FIELD_TYPE_ARRAY_INT32U,
     FIELD_TYPE_ARRAY_INT64,
     FIELD_TYPE_ARRAY_INT64U,
+    FIELD_TYPE_ARRAY_BOOLEAN,
     FIELD_TYPE_ARRAY_FP32,
 #if !defined(SOFAB_DISABLE_FP64_SUPPORT)
     FIELD_TYPE_ARRAY_FP64,
@@ -124,6 +125,9 @@ static void _single_field_callback(sofab_istream_t *ctx, sofab_id_t id, size_t s
             break;
         case FIELD_TYPE_BOOLEAN:
             sofab_istream_read_bool(ctx, (bool *)test->target_ptr);
+            break;
+        case FIELD_TYPE_ARRAY_BOOLEAN:
+            sofab_istream_read_array_of_bool(ctx, (bool *)test->target_ptr, test->target_size);
             break;
         case FIELD_TYPE_ARRAY_INT8:
             sofab_istream_read_array_of_i8(ctx, (int8_t *)test->target_ptr, test->target_size);
@@ -1891,6 +1895,104 @@ static void test_read_boolean (void)
     TEST_ASSERT_EQUAL(0, test.field_count);
     TEST_ASSERT_EQUAL(1, test.calls);
 }
+
+/*
+ * CORELIB_PLAN §4.4: a decoder reads *every* value other than 0 as true, the
+ * value is normalized away, and a boolean carries no width bound -- so a value
+ * that does not fit one byte is true, never INVALID.
+ *
+ * The destination is inspected through a character type on purpose. The point of
+ * the normalization is that the bool object ends up holding a representation it
+ * is allowed to have: a bool carrying the byte 2 has no value in C, and reading
+ * it as a bool would be undefined -- which is exactly the state this asserts
+ * against.
+ */
+static void test_read_boolean_tolerant (void)
+{
+    static const struct
+    {
+        const char *name;
+        uint8_t buffer[12];
+        size_t length;
+        uint8_t expected;
+    } cases[] =
+    {
+        { "0",      {0x00, 0x00}, 2, 0 },
+        { "1",      {0x00, 0x01}, 2, 1 },
+        { "2",      {0x00, 0x02}, 2, 1 },
+        { "255",    {0x00, 0xFF, 0x01}, 3, 1 },
+        { "256",    {0x00, 0x80, 0x02}, 3, 1 },
+        { "2^64-1", {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                     0xFF, 0xFF, 0xFF, 0xFF, 0x01}, 11, 1 },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        sofab_istream_t ctx;
+        sofab_ret_t ret;
+        uint8_t stored;
+
+        bool value = !cases[i].expected;
+        test_single_field_t test =
+        {
+            .expected_id = 0,
+            .target_type = FIELD_TYPE_BOOLEAN,
+            .target_ptr = &value,
+            .target_size = sizeof(value),
+            .calls = 0
+        };
+
+        sofab_istream_init(&ctx, _single_field_callback, &test);
+        ret = sofab_istream_feed(&ctx, cases[i].buffer, cases[i].length);
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, ret, cases[i].name);
+
+        memcpy(&stored, &value, 1);
+        TEST_ASSERT_EQUAL_UINT8_MESSAGE(cases[i].expected, stored, cases[i].name);
+        TEST_ASSERT_EQUAL(1, test.calls);
+    }
+}
+
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+/* The array elements follow the same rule one level down (§4.4). */
+static void test_read_array_of_boolean_tolerant (void)
+{
+    sofab_istream_t ctx;
+    sofab_ret_t ret;
+    /* id 0, VARINTARRAY_UNSIGNED, count 5: 0, 1, 2, 256, 2^64-1 */
+    const uint8_t buffer[] =
+    {
+        0x03, 0x05,
+        0x00,
+        0x01,
+        0x02,
+        0x80, 0x02,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01
+    };
+
+    bool value[5] = { true, false, false, false, false };
+    uint8_t stored[5];
+    test_single_field_t test =
+    {
+        .expected_id = 0,
+        .target_type = FIELD_TYPE_ARRAY_BOOLEAN,
+        .target_ptr = &value,
+        .target_size = sizeof(value) / sizeof(value[0]),
+        .calls = 0
+    };
+
+    sofab_istream_init(&ctx, _single_field_callback, &test);
+    ret = sofab_istream_feed(&ctx, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+
+    memcpy(stored, value, sizeof(stored));
+    const uint8_t expected[] = { 0, 1, 1, 1, 1 };
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, stored, sizeof(expected));
+
+    TEST_ASSERT_EQUAL(0, test.field_size);
+    TEST_ASSERT_EQUAL(test.target_size, test.field_count);
+    TEST_ASSERT_EQUAL(1, test.calls);
+}
+#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
 
 static void test_read_fp32 (void)
 {
@@ -3766,6 +3868,10 @@ int test_istream_main (void)
     RUN_TEST(test_read_fp32);
     RUN_TEST(test_read_fp64);
     RUN_TEST(test_read_boolean);
+    RUN_TEST(test_read_boolean_tolerant);
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+    RUN_TEST(test_read_array_of_boolean_tolerant);
+#endif
     RUN_TEST(test_read_fp32);
     RUN_TEST(test_read_fp64);
     RUN_TEST(test_read_string);
