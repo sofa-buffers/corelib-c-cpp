@@ -30,6 +30,8 @@ int main(void)
            r.vectors, r.vectors - r.rejected, r.rejected, r.checks, r.failures);
     printf("[invalid_utf8] %d negative vectors, %d checks\n",
            r.invalid_vectors, r.invalid_checks);
+    printf("[boolean_tolerant] %d cases, %d checks\n",
+           r.boolean_vectors, r.boolean_checks);
 
     if (!r.loaded)
     {
