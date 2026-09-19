@@ -47,9 +47,25 @@ extern "C" {
 #include "sofab/sofab.h"
 
 /* macros *********************************************************************/
+/*
+ * Layout of @ref sofab_istream_t::target_opt (one byte):
+ *
+ *   bits 0-2  field type      (@ref sofab_type_t)
+ *   bits 3-5  fixlen subtype  (@ref sofab_fixlentype_t)
+ *   bit  6    STRINGTERM      — NUL-terminate the string written to the target
+ *   bit  7    BOOLEAN         — the target is a boolean, not an integer
+ *
+ * The low six bits are what the §7.3 tag test compares against the wire, so the
+ * two flags deliberately sit outside that 0x3F mask: neither changes which wire
+ * type the field must have, only what the decoder does with the value.
+ */
 #define SOFAB_ISTREAM_OPT_FIELDTYPE(type)      ((type) & 0x07)
 #define SOFAB_ISTREAM_OPT_FIXLENTYPE(type)     (((type) & 0x07) << 3)
 #define SOFAB_ISTREAM_OPT_STRINGTERM           (0x40)
+/*! Store the decoded value as a boolean: `value != 0`, and no width bound.
+ *  A boolean rides the unsigned varint wire type (CORELIB_PLAN §4.4), so this
+ *  flag accompanies SOFAB_TYPE_VARINT_UNSIGNED / _VARINTARRAY_UNSIGNED. */
+#define SOFAB_ISTREAM_OPT_BOOLEAN              (0x80)
 
 /* types **********************************************************************/
 
@@ -395,15 +411,23 @@ static inline void sofab_istream_read_u64 (sofab_istream_t *ctx, uint64_t *var)
 #endif /* !defined(SOFAB_DISABLE_INT64_SUPPORT) */
 
 /*!
- * @brief Reads a boolean value (1 byte).
+ * @brief Reads a boolean value.
+ *
+ * Canonical on encode, tolerant on decode (CORELIB_PLAN §4.4): the wire carries
+ * a plain unsigned varint, and **every** value other than `0` reads as `true`.
+ * The value is normalized on store, so the destination always ends up holding
+ * `0` or `1` — the only two states a @c bool object may have — and a re-encode
+ * emits `1`. A boolean carries no width bound, so a value that does not fit one
+ * byte is `true`, not `INVALID`.
  *
  * @param ctx   Pointer to the input stream context.
  * @param var   Pointer to destination variable.
  */
 static inline void sofab_istream_read_bool (sofab_istream_t *ctx, bool *var)
 {
-    sofab_istream_read_field(ctx, var, 1,
-        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED));
+    sofab_istream_read_field(ctx, var, sizeof(bool),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED)
+        | SOFAB_ISTREAM_OPT_BOOLEAN);
 }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
@@ -584,6 +608,24 @@ static inline void sofab_istream_read_array_of_u32 (
 {
     sofab_istream_read_array(ctx, var, element_count, sizeof(uint32_t),
         SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED));
+}
+
+/*!
+ * @brief Reads an array of booleans.
+ *
+ * The elements ride the unsigned varint array wire form; each is normalized on
+ * store exactly as @ref sofab_istream_read_bool normalizes a scalar (§4.4).
+ *
+ * @param ctx            Pointer to the input stream context.
+ * @param var            Destination array.
+ * @param element_count  Number of elements to read.
+ */
+static inline void sofab_istream_read_array_of_bool (
+    sofab_istream_t *ctx, bool *var, size_t element_count)
+{
+    sofab_istream_read_array(ctx, var, element_count, sizeof(bool),
+        SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINTARRAY_UNSIGNED)
+        | SOFAB_ISTREAM_OPT_BOOLEAN);
 }
 
 #if !defined(SOFAB_DISABLE_INT64_SUPPORT)
