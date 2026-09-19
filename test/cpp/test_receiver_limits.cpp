@@ -717,6 +717,49 @@ TEST_CASE("limits: the capped reads take the cap and refuse past it")
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * a refusal ends the decode, in the feed that saw it (§6.3, §6.2.1)
+ * ------------------------------------------------------------------------- */
+
+TEST_CASE("limits: nothing is placed after the element that was refused")
+{
+    // §6.3 makes a receiver-cap rejection TERMINAL, and §6.2.1's "rejected,
+    // never clamped" says what that has to look like from the caller's side: a
+    // caller told the message was refused must not find a container that kept
+    // growing past the refusal.
+    //
+    // The elements arrive in wire order 0, cap, 1. The one AT the cap is refused
+    // -- and the one after it, although its own index is well inside the cap, is
+    // no longer part of a decode at all.
+    //
+    // This used to leave ["a", "b"]: the refusal was latched and reported, but
+    // the decode ran on to the end of the buffer and the collector kept placing.
+    sofab::OStream os{256};
+    os.sequenceBeginLazy(1);
+    writeElement(os, 0, "a");
+    writeElement(os, static_cast<uint32_t>(kDynArrayCount), "x");   // refused here
+    writeElement(os, 1, "b");                                       // must not be placed
+    os.sequenceEnd();
+    os.flush();
+
+    sofab::IStreamObject<StringArrayMessage> in;
+    (*in).seq.dynCap     = sofab::DynCap{std::size_t(kDynArrayCount)};
+    (*in).seq.dynElemMax = sofab::DynCap{std::size_t(kDynStringLen)};
+
+    auto r = in.feed(os.data(), os.bytesUsed());
+
+    REQUIRE(r.code() == sofab::Error::LimitExceeded);
+    REQUIRE(r.limitExceeded());
+    REQUIRE_FALSE(r.invalid());           // the bytes are well-formed
+    REQUIRE((*in).out.size() == 1);       // only what legitimately arrived first
+    REQUIRE((*in).out[0] == "a");
+
+    // ... and terminal: a further feed cannot lift it.
+    const uint8_t more[] = {0x00, 0x01};
+    REQUIRE(in.feed(more, sizeof(more)).code() == sofab::Error::LimitExceeded);
+    REQUIRE((*in).out.size() == 1);
+}
+
 TEST_CASE("limits: a growable ROW states its own ceiling too")
 {
     // MessageSeq's row read was the last uncapped path: a growable row publishes
