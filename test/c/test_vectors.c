@@ -29,6 +29,7 @@ static void test_shared_test_vectors(void)
 
     printf("  [vectors] %d vectors, %d checks, %d failures\n", r.vectors, r.checks, r.failures);
     printf("  [invalid_utf8] %d negative vectors, %d checks\n", r.invalid_vectors, r.invalid_checks);
+    printf("  [boolean_tolerant] %d cases, %d checks\n", r.boolean_vectors, r.boolean_checks);
 
     TEST_ASSERT_TRUE_MESSAGE(r.loaded, r.first_error);
     TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, r.vectors, "no vectors found in test_vectors.json");
