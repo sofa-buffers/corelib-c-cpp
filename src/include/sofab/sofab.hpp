@@ -3183,7 +3183,12 @@ namespace sofab
         static void field_callback_(
             sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
         {
-            (void)ctx;
+            /* A message already condemned gets no further fields. See
+             * @ref IStreamImpl::condemned. */
+            if (ctx->invalid)
+            {
+                return;
+            }
 
             auto *self = static_cast<IStreamInline*>(usrptr);
             self->callback_(id, size, count);
@@ -3228,7 +3233,31 @@ namespace sofab
         static void field_callback_(
             sofab_istream_t *ctx, sofab_id_t id, size_t size, size_t count, void *usrptr)
         {
-            (void)ctx;
+            /* A refusal is terminal (CORELIB_PLAN §6.3), so a handler that has
+             * already refused this message is not asked to take another field.
+             *
+             * Without this, a decode that had been condemned mid-buffer kept
+             * running to the end of that buffer and kept filling the caller's
+             * destination: a growable collector refused an element past its cap
+             * and then still placed the elements that followed it, so a caller
+             * told the message was rejected found a container that had grown
+             * past the refusal. That is §6.2.1's "rejected, never clamped" read
+             * the other way round, and `growth_no_partial_extension` in the
+             * shared vectors pins it.
+             *
+             * The guard sits here rather than in the C decoder on purpose. The
+             * C core's contract for sofab_istream_invalidate is the sticky
+             * return code and nothing more, its destinations are statically
+             * bound and cannot grow, and the growth cases are reachable only
+             * through this wrapper (they are tagged `dynamic_arrays`). Putting
+             * it here therefore costs the C library nothing at all -- the same
+             * check inside _call_field_callback cost 34 bytes of .text on
+             * ARMv6-m, on every build, for a property only this side can
+             * exhibit. */
+            if (ctx->invalid)
+            {
+                return;
+            }
 
             auto context = static_cast<Context*>(usrptr);
             context->message->deserialize(*context->istream, id, size, count);

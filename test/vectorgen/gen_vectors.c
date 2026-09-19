@@ -1526,6 +1526,110 @@ static void emit_invalid_utf8(FILE *o)
     }
 }
 
+/* the tolerant-boolean cases ************************************************/
+
+/*
+ * CORELIB_PLAN §4.4: canonical on encode, tolerant on decode. An encoder MUST
+ * write `true` as `1`; a decoder MUST read EVERY value other than `0` as `true`,
+ * normalize it away, and re-encode it as `1`. A boolean carries no width bound
+ * at all -- a value that does not fit its destination is `true`, never INVALID,
+ * which is exactly what separates it from an `enum` or a `bitfield`
+ * (MESSAGE_SPEC §1).
+ *
+ * These cannot be vectors, for the same reason the three blocks above cannot: a
+ * vector's bytes come from replaying its ops through the real encoder, and a
+ * conformant encoder never emits a non-canonical boolean. The tolerant half of
+ * §4.4 is only reachable from bytes some OTHER encoder wrote, so the block is a
+ * hand-authored seed table and its expectations come from the spec.
+ *
+ * Unlike `header_limits` and `sequence_growth`, this block needs nothing beyond
+ * the plain decode API, so the shared C engine runs it -- this repo executes what
+ * it authors here.
+ */
+static void emit_boolean_tolerant(FILE *o)
+{
+    static const struct {
+        const char *name;
+        const char *desc;
+        const char *requires;
+        uint8_t     wire[20];
+        size_t      wirelen;
+        int         is_array;
+        int         values[8];
+        size_t      nvalues;
+        uint8_t     reenc[16];
+        size_t      reenclen;
+    } seeds[] = {
+        { "boolean_tolerant_zero",
+          "0 is the only value that reads as false.",
+          "[]", {0x00, 0x00}, 2, 0, {0}, 1, {0x00, 0x00}, 2 },
+        { "boolean_tolerant_one",
+          "1 is the canonical true, and re-encodes unchanged.",
+          "[]", {0x00, 0x01}, 2, 0, {1}, 1, {0x00, 0x01}, 2 },
+        { "boolean_tolerant_two",
+          "2 reads as true and is normalized away: the re-encode emits 1, not 2.",
+          "[]", {0x00, 0x02}, 2, 0, {1}, 1, {0x00, 0x01}, 2 },
+        { "boolean_tolerant_255",
+          "255, the largest value that still fits one byte, reads as true.",
+          "[]", {0x00, 0xFF, 0x01}, 3, 0, {1}, 1, {0x00, 0x01}, 2 },
+        { "boolean_tolerant_256",
+          "256 does not fit one byte. A boolean has no width bound (CORELIB_PLAN S4.4), "
+          "so this is true -- not INVALID, and not a truncation to false.",
+          "[]", {0x00, 0x80, 0x02}, 3, 0, {1}, 1, {0x00, 0x01}, 2 },
+        { "boolean_tolerant_u64_max",
+          "2^64-1, the widest value the format admits, is still just true. Tagged "
+          "int64: S4.4 lifts the width bound the TYPE carries, not the one the "
+          "BUILD's varint accumulator has (S6.2.2 narrowed scalar width), so a "
+          "32-bit build rejects this message rather than reading it as true.",
+          "[\"int64\"]",
+          {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01}, 11,
+          0, {1}, 1, {0x00, 0x01}, 2 },
+        { "boolean_tolerant_array",
+          "The same rule one level down: every non-zero element of a boolean array "
+          "is true and is normalized, including one wider than its destination.",
+          "[\"array\"]",
+          {0x03, 0x05, 0x00, 0x01, 0x02, 0x80, 0x02, 0xFF, 0xFF, 0x03}, 10,
+          1, {0, 1, 1, 1, 1}, 5,
+          {0x03, 0x05, 0x00, 0x01, 0x01, 0x01, 0x01}, 7 },
+        { "boolean_tolerant_array_u64_max",
+          "A boolean array element at the format's widest value. Split from the "
+          "case above so the array rule still has positive coverage in a build "
+          "whose accumulator cannot hold this element.",
+          "[\"array\", \"int64\"]",
+          {0x03, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01}, 13,
+          1, {0, 1}, 2,
+          {0x03, 0x02, 0x00, 0x01}, 4 },
+    };
+
+    int first = 1;
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); ++i)
+    {
+        if (!first) fputs(",\n", o);
+        first = 0;
+
+        fprintf(o, "    {\n");
+        fprintf(o, "      \"name\": ");        json_string(o, seeds[i].name); fputs(",\n", o);
+        fprintf(o, "      \"group\": \"boolean/tolerant\",\n");
+        fprintf(o, "      \"description\": "); json_string(o, seeds[i].desc); fputs(",\n", o);
+        fprintf(o, "      \"requires\": %s,\n", seeds[i].requires);
+        fprintf(o, "      \"id\": 0,\n");
+        fprintf(o, "      \"serialized_hex\": ");
+        json_hex(o, seeds[i].wire, seeds[i].wirelen); fputs(",\n", o);
+        fprintf(o, "      \"expect\": {\n");
+        fprintf(o, "        \"outcome\": \"complete\",\n");
+        fprintf(o, "        \"values\": [");
+        for (size_t k = 0; k < seeds[i].nvalues; ++k)
+        {
+            fprintf(o, "%s%s", k ? ", " : "", seeds[i].values[k] ? "true" : "false");
+        }
+        fputs("],\n", o);
+        fprintf(o, "        \"reencoded_hex\": ");
+        json_hex(o, seeds[i].reenc, seeds[i].reenclen); fputs("\n", o);
+        fprintf(o, "      }\n");
+        fprintf(o, "    }");
+    }
+}
+
 /* the sequence-array growth cases ******************************************/
 
 /*
@@ -1959,6 +2063,13 @@ int main(void)
                "unsatisfied 'requires' tag means SKIP. Expectations come from CORELIB_PLAN S6.2.1/S6.3 and "
                "MESSAGE_SPEC S5.2, NOT from the generating implementation. Backward-compatible: consumers that only "
                "read 'vectors' ignore this key. See test_vectors_README.md.\"\n");
+    fprintf(o, "    ,\"boolean_tolerant\": \"TOLERANT-DECODE cases: a boolean whose wire value is not the "
+               "canonical 0/1. CORELIB_PLAN S4.4 is canonical on encode, tolerant on decode: an encoder MUST write "
+               "true as 1, and a decoder MUST read EVERY value other than 0 as true, normalize it, and re-encode it "
+               "as 1. A boolean carries NO width bound, so 256 and 2^64-1 are true, never INVALID and never truncated "
+               "to false. No encoder run can produce these bytes, so the block is hand-authored and its expectations "
+               "come from the spec. Needs nothing beyond the plain decode API. Backward-compatible: consumers that "
+               "only read 'vectors' ignore this key. See test_vectors_README.md.\"\n");
     fprintf(o, "  },\n");
     fprintf(o, "  \"vectors\": [\n");
 
@@ -1994,6 +2105,18 @@ int main(void)
     fprintf(o, "  \"header_limits\": [\n");
 
     emit_header_limits(o);
+
+    fprintf(o, "\n  ],\n");
+
+    /* Tolerant-boolean cases: a boolean whose wire value is not the canonical
+     * 0/1. No encoder run can produce them (CORELIB_PLAN §4.4 makes an encoder
+     * canonical), so they are a seed table like the three above -- but unlike
+     * those they need nothing beyond the plain decode API, so the shared C
+     * engine runs them. Fifth dedicated top-level array, same
+     * backward-compatibility reason. */
+    fprintf(o, "  \"boolean_tolerant\": [\n");
+
+    emit_boolean_tolerant(o);
 
     fprintf(o, "\n  ]\n");
     fprintf(o, "}\n");

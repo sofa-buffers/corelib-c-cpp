@@ -19,9 +19,10 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(Catch2)
 
 # --- test executable ---
-# The conformance vectors validate the C core; the C++ layer is only a thin
-# wrapper over it, so there is no separate C++ vector runner. These are the
-# hand-written tests that exercise the C++ API (sofab.hpp) directly.
+# Most of these are hand-written tests that exercise the C++ API (sofab.hpp)
+# directly. test_vector_blocks.cpp is the exception: it runs the two
+# test_vectors.json blocks the shared C engine cannot, because they need the
+# receiver caps and the growable containers only this wrapper has.
 add_executable(sofabpptest
     main.cpp
     test_ostream.cpp
@@ -29,6 +30,13 @@ add_executable(sofabpptest
     test_seq.cpp
     test_receiver_limits.cpp
     test_allocation.cpp
+    test_vector_blocks.cpp
+    ../shared/sofab_test_json.c
+)
+
+target_include_directories(sofabpptest PRIVATE ../shared)
+target_compile_definitions(sofabpptest PRIVATE
+    SOFAB_TEST_VECTORS_PATH="${CMAKE_SOURCE_DIR}/assets/test_vectors.json"
 )
 
 target_compile_options(sofabpptest

@@ -228,6 +228,69 @@ it for free. `string_hex` / `serialized_hex` are lowercase hex, like
 `serialized.hex`; the payload is placed at field id `0` with the `string` (fixlen
 UTF-8) wire subtype.
 
+### Tolerant-decode cases — `boolean_tolerant`
+
+A fifth top-level array, of booleans whose wire value is **not** the canonical
+`0`/`1`.
+
+CORELIB_PLAN §4.4 is *canonical on encode, tolerant on decode*: an encoder
+**MUST** write `true` as `1`, and a decoder **MUST** read **every** value other
+than `0` as `true`, normalize it away, and re-encode it as `1`. A boolean carries
+**no width bound at all** — `256` and `2^64-1` are `true`, never `INVALID` and
+never truncated to `false`. That is what separates it from an `enum` or a
+`bitfield`, which are bound by their declaration (MESSAGE_SPEC §1).
+
+The positive `vectors` cannot reach this half. Their bytes come from replaying
+their ops through the real encoder, and a conformant encoder never emits a
+non-canonical boolean — these bytes only ever arrive from *someone else's*
+encoder.
+
+```jsonc
+{
+  "name": "boolean_tolerant_256",
+  "group": "boolean/tolerant",
+  "description": "...",
+  "requires": [],                        // ["array"] for the array case
+  "id": 0,                               // the field id on the wire
+  "serialized_hex": "008002",            // what arrives: a boolean carrying 256
+  "expect": {
+    "outcome": "complete",
+    "values": [true],                    // one entry per element; scalars have one
+    "reencoded_hex": "0001"              // what a re-encode must emit (dense)
+  }
+}
+```
+
+| key | meaning |
+|---|---|
+| `id` | the field id the case's bytes carry |
+| `serialized_hex` | the bytes to feed |
+| `expect.outcome` | always `complete` — a tolerated value is not a rejected one |
+| `expect.values` | the normalized result, one entry per element (a scalar has exactly one) |
+| `expect.reencoded_hex` | the **dense** re-encode of `values`; the normalization is only observable here |
+
+Assert **both halves**. A decoder that stores the raw value passes an
+outcome-only check and still fails §4.4, and one that answers `INVALID` for `256`
+fails only the first. Read the destination back as **bytes**, not as a boolean: a
+`bool` object may hold only `0` or `1`, so what the case asserts is that it ends
+up holding a representation it is *allowed* to have — comparing it against `true`
+cannot tell you that, and in C and C++ reading a `bool` that holds `2` is
+undefined behaviour in the first place.
+
+**`requires` works as it does for a positive vector: an unsatisfied tag means the
+message must be REJECTED, not skipped.** §4.4 lifts the width bound the *type*
+carries, not the one a *build* has. Under a narrowed scalar width (CORELIB_PLAN
+§6.2.2 — `SOFAB_DISABLE_INT64_SUPPORT` and its equivalents) a boolean carrying
+`2^64-1` overflows the varint accumulator before any boolean rule can apply, and
+rejecting it is the conformant answer there; reading it as `true` by truncation
+is not. The two cases that need the full width are tagged `int64` for exactly
+that reason, and the array rule keeps positive coverage in a narrowed build
+because `boolean_tolerant_array` stays inside 32 bits.
+
+Unlike `sequence_growth` and `header_limits`, this block needs nothing beyond the
+plain decode API, so every port can run it with the same engine it already runs
+`vectors` with.
+
 ### Growth cases — `sequence_growth`
 
 A third top-level block, beside `vectors` and `invalid_utf8`. It carries the
