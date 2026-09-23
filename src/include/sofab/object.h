@@ -64,18 +64,25 @@ extern "C" {
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_SIGNED   	0x7 /*!< Array of signed integers (sized variant as above). */
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32     	0x8 /*!< Array of 32-bit floats (sized variant as above). */
 #define SOFAB_OBJECT_FIELDTYPE_ARRAY_FP64     	0x9 /*!< Array of 64-bit doubles (sized variant as above). */
-#define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xA /*!< Nested object (encoded as a sequence). */
-#define SOFAB_OBJECT_FIELDTYPE_BOOLEAN        	0xB /*!< Boolean. Rides the unsigned varint wire type, but every non-zero value decodes to @c true and is normalized (CORELIB_PLAN §4.4). */
-#define SOFAB_OBJECT_FIELDTYPE_ARRAY_BOOLEAN  	0xC /*!< Array of booleans (sized variant as above); each element follows the §4.4 rule. */
+#define SOFAB_OBJECT_FIELDTYPE_ARRAY_BOOLEAN  	0xA /*!< Array of booleans (sized variant as above); each element follows the §4.4 rule. */
+#define SOFAB_OBJECT_FIELDTYPE_SEQUENCE       	0xB /*!< Nested object (encoded as a sequence). */
+#define SOFAB_OBJECT_FIELDTYPE_BOOLEAN        	0xC /*!< Boolean. Rides the unsigned varint wire type, but every non-zero value decodes to @c true and is normalized (CORELIB_PLAN §4.4). */
 /*! @} */
 
 /*
- * A note for whoever adds the fourteenth tag: the values above carry no meaning
- * beyond being distinct. Nothing derives "this is an array" from a tag being
- * numerically high — the transcoder asks @ref _expected_opt what wire form the
- * type takes and reads the answer off that. That was not always true, and the
- * boolean tags are why: a scalar cannot be appended after the array tags while
- * a numeric test decides the two apart.
+ * A note for whoever adds the fourteenth tag: no *semantics* hang off a tag's
+ * value. Nothing derives "this is an array" from a tag being numerically high —
+ * the transcoder asks @ref _expected_opt what wire form the type takes and reads
+ * the answer off that. The boolean tags are why: a scalar cannot be appended
+ * after the array tags while a numeric test decides the two apart.
+ *
+ * Their *order*, though, is not free. The tags carrying a companion length in
+ * @c nested_idx — BLOB and every ARRAY_* — are deliberately contiguous (0x5..0xA)
+ * so @ref _sized_width is one range check. Scatter them and it becomes a compare
+ * chain that -Os declines to inline at its five call sites, which costs ~600
+ * instructions per message on a 434 B one. So: a sized tag goes at the end of
+ * that run, an unsized one after it. Measured, not assumed — see the PR that
+ * moved ARRAY_BOOLEAN out of 0xC.
  */
 
 /* macros *********************************************************************/
