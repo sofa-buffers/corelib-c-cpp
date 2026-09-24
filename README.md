@@ -717,10 +717,10 @@ until the test image links again.
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.7KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.8KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~3.8KB | 0.0KB | 0.0KB |
-| RV32IMC | ~4.8KB | 0.0KB | 0.0KB |
-| atmega8 | ~8.1KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.9KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.2KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — the only rows where the validator
 (`utf8.c`) is compiled in. The delta over *Full* above is its entire
@@ -736,7 +736,7 @@ until the test image links again.
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
 those *Full* rows: 276&nbsp;B on ARMv6-m, 512&nbsp;B on atmega8. A pure-C consumer
 encoding only through `sofab_object_encode()` takes it back out with
-`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3551&nbsp;B, `sofab_ostream_t`
+`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3592&nbsp;B, `sofab_ostream_t`
 shrinks from 56&nbsp;B to 20&nbsp;B per stream, and a typical encode drops
 6&nbsp;Ir/op. The *Minimal* rows below disable sequences outright and are
 unaffected.
@@ -747,10 +747,10 @@ unaffected.
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~1.0KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~1.1KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~1.1KB | 0.0KB | 0.0KB |
 | RV32IMC | ~1.4KB | 0.0KB | 0.0KB |
-| atmega8 | ~2.7KB | 0.0KB | 0.0KB |
+| atmega8 | ~2.8KB | 0.0KB | 0.0KB |
 
 Same minimal configuration, additionally without `object.c`
 (`SOFAB_DISABLE_OBJECT_API`):
@@ -760,7 +760,7 @@ Same minimal configuration, additionally without `object.c`
 | ARMv6-m | ~0.7KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~0.7KB | 0.0KB | 0.0KB |
 | RV32IMC | ~0.9KB | 0.0KB | 0.0KB |
-| atmega8 | ~1.8KB | 0.0KB | 0.0KB |
+| atmega8 | ~1.9KB | 0.0KB | 0.0KB |
 
 #### What each switch is worth
 
@@ -773,19 +773,19 @@ same [`tools/footprint.sh`](tools/footprint.sh):
 
 | Switch | `.text` | delta |
 | - | -: | -: |
-| *(full, the baseline)* | 3827&nbsp;B | — |
-| `SOFAB_DISABLE_OBJECT_API` | 2254&nbsp;B | **−1573&nbsp;B** |
-| `SOFAB_DISABLE_ARRAY_SUPPORT` | 2801&nbsp;B | **−1026&nbsp;B** |
-| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 2984&nbsp;B | −843&nbsp;B |
-| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3023&nbsp;B | −804&nbsp;B |
-| `SOFAB_DISABLE_INT64_SUPPORT` | 3519&nbsp;B | −308&nbsp;B |
-| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3551&nbsp;B | −276&nbsp;B |
-| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3755&nbsp;B | −72&nbsp;B |
-| `SOFAB_DISABLE_FP64_SUPPORT` | 3781&nbsp;B | −46&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3831&nbsp;B | +4&nbsp;B |
-| `SOFAB_ENABLE_SKIP_COUNTER` | 3845&nbsp;B | +18&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3847&nbsp;B | +20&nbsp;B |
-| `SOFAB_ENABLE_STRICT_UTF8` | 4073&nbsp;B | +246&nbsp;B |
+| *(full, the baseline)* | 3868&nbsp;B | — |
+| `SOFAB_DISABLE_OBJECT_API` | 2282&nbsp;B | **−1586&nbsp;B** |
+| `SOFAB_DISABLE_ARRAY_SUPPORT` | 2828&nbsp;B | **−1040&nbsp;B** |
+| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 3026&nbsp;B | −842&nbsp;B |
+| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3060&nbsp;B | −808&nbsp;B |
+| `SOFAB_DISABLE_INT64_SUPPORT` | 3554&nbsp;B | −314&nbsp;B |
+| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3592&nbsp;B | −276&nbsp;B |
+| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3794&nbsp;B | −74&nbsp;B |
+| `SOFAB_DISABLE_FP64_SUPPORT` | 3826&nbsp;B | −42&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3872&nbsp;B | +4&nbsp;B |
+| `SOFAB_ENABLE_SKIP_COUNTER` | 3886&nbsp;B | +18&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3888&nbsp;B | +20&nbsp;B |
+| `SOFAB_ENABLE_STRICT_UTF8` | 4114&nbsp;B | +246&nbsp;B |
 
 Three rows need a word:
 
@@ -797,7 +797,7 @@ Three rows need a word:
   slightly bigger.** The profile sizes the descriptor members in **your** tables,
   which is where the saving lands; narrower members cost the library a few
   widening instructions. Choose it for the descriptors, not the corelib.
-- **`SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` buys 72&nbsp;B** by giving up a decode
+- **`SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` buys 74&nbsp;B** by giving up a decode
   safety check. It is in *Minimal* because that profile targets trusted,
   schema-bounded links; it is a poor trade on untrusted input.
 
