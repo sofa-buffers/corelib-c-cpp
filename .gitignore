@@ -7,5 +7,9 @@
 # Local secrets — never commit
 .env
 
-# Claude Code tooling (worktrees, local settings)
-.claude/
+# Claude Code tooling. The pattern matches the direct children rather than
+# ".claude/" itself: an excluded *directory* is never descended into, so a later
+# "!.claude/skills/" would have no file to re-include. Worktrees and local
+# settings stay out; the shared skills are part of the repository.
+.claude/*
+!.claude/skills/
