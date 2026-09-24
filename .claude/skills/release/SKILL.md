@@ -130,6 +130,18 @@ Wait for CI to go green, then merge. Beware: merging a base branch with
 
 ## 6. Tag main
 
+**The tag name is `vX.Y.Z` — lowercase `v`, then the three-part version, nothing
+else.** `v1.2.3`, never `V1.2.3`, `1.2.3` or `release-1.2.3`.
+
+This is not cosmetic. `Version consistency` triggers on `tags: ['v*']`, and ref
+patterns are case-sensitive: a tag named `V1.2.3` matches nothing, so the gate
+never runs and the release *looks* verified while nothing checked the manifests.
+The workflow then derives the reference version with `${GITHUB_REF_NAME#v}`,
+which strips a lowercase `v` only — so a stray capital would also compare
+`V1.2.3` against a manifest reading `1.2.3` and fail on every one of them.
+
+The manifests themselves carry the bare version, with no `v` (step 3).
+
 Tag **the commit on `main`** that the release PR produced, never the branch tip.
 
 ```bash
@@ -174,6 +186,6 @@ and Doxygen picks up the new `PROJECT_NUMBER` from CMake automatically.
 - [ ] all four manifests bumped — **including `library.properties`**
 - [ ] step 4 checks all `ok`, cmake configures
 - [ ] `chore(release):` PR based on main, CI green, merged
-- [ ] annotated `vX.Y.Z` tag on the main merge commit, pushed
+- [ ] tag named `vX.Y.Z` — lowercase `v`, annotated, on the main merge commit, pushed
 - [ ] `Version consistency` workflow green on the tag
 - [ ] GitHub release published with family + breaking-change notes
