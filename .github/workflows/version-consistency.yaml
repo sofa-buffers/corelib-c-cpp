@@ -1,16 +1,28 @@
 name: "Version consistency"
 
-# The git tag is the source of truth for the version: every package manifest
-# and the CMake project() version must match it. Each config is checked in its
-# own step.
+# The git tag is the source of truth for the released version: every package
+# manifest and the CMake project() version must match it.
 #
-# Tags only: the comparison is only meaningful when there is a tag to compare
-# against. Between releases a manifest may legitimately sit ahead of the newest
-# tag, so running this on every push and pull request produced noise, not signal
-# — and cost a runner slot per run.
+# The check has two halves, and they do not have the same trigger:
+#
+#   * Cross-manifest consistency -- the four manifests agree with each other,
+#     and every name/license matches conanfile.py. True at all times, so it runs
+#     on pull requests and on main, where it can still block a mistake.
+#   * Tag comparison -- the agreed version equals the tag. Only meaningful when
+#     there is a tag, and between releases a manifest may legitimately sit ahead
+#     of the newest tag, so this half runs on v* tags only.
+#
+# Splitting them is the point. Comparing against "the newest tag" on every push
+# produced noise, not signal, and the whole workflow was narrowed to tags to
+# stop it -- which left nothing at all guarding a pull request, and made the
+# workflow a post-mortem rather than a gate. v0.9.0 shipped with
+# library.properties reading 0.8.0 (c590a55) and only the tag run found it.
 on:
   push:
+    branches: [ main ]
     tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,55 +40,53 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0   # need tags for the reference version
+          fetch-depth: 0   # need tags and main for the reference version and tag provenance
 
-      - name: Reference version (git tag)
+      # Every extraction below asserts that it read something. An extraction
+      # that silently yields "" is worse than a wrong value: the comparison it
+      # feeds is written to skip when its reference is empty, so a pattern that
+      # stops matching turns the check off instead of failing it. That is not
+      # hypothetical -- with conanfile.py reformatted to single quotes, the
+      # name/license comparisons passed while library.json claimed a different
+      # name and a different license.
+      - name: Reference name, license and version (conanfile.py)
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            ref_version=${GITHUB_REF_NAME#v}
-          else
-            # Latest tag on branch/PR runs; empty if the repo has no tags yet,
-            # in which case the version comparison is skipped (name/license only).
-            ref_version=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)
-            [[ -n "$ref_version" ]] || echo "::notice::no git tag found; skipping version comparison"
-          fi
+          need() { [[ -n "$2" ]] || { echo "::error::conanfile.py: cannot read '$1' -- the extraction pattern no longer matches (quoting changed, or the value moved into a set_$1() method)"; exit 1; }; }
+          get() { grep -oP "^\s*$1\s*=\s*[\"']\K[^\"']+" conanfile.py | head -1 || true; }
+          name=$(get name);       need name    "$name"
+          license=$(get license); need license "$license"
+          version=$(get version); need version "$version"
+          # conanfile.py is the reference every other manifest is compared against.
           {
-            echo "REF_VERSION=$ref_version"
+            echo "REF_NAME=$name"
+            echo "REF_LICENSE=$license"
+            echo "REF_VERSION=$version"
           } >> "$GITHUB_ENV"
-
-      - name: Check Conan (conanfile.py)
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          get() { grep -oP "^\s*$1\s*=\s*\"\K[^\"]+" conanfile.py | head -1; }
-          version=$(get version)
-          [[ -z "$REF_VERSION" || "$version" == "$REF_VERSION" ]] || { echo "::error::conanfile.py version: '$version' != '$REF_VERSION'"; exit 1; }
-          # conanfile.py is the source of truth for name/license; publish for later steps.
-          {
-            echo "REF_NAME=$(get name)"
-            echo "REF_LICENSE=$(get license)"
-          } >> "$GITHUB_ENV"
+          echo "reference: $name $version ($license)"
 
       - name: Check PlatformIO (library.json)
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
-          check() { [[ -z "$3" || "$2" == "$3" ]] || { echo "::error::library.json $1: '$2' != '$3'"; exit 1; }; }
-          check version "$(jq -r .version library.json)"  "$REF_VERSION"
-          check name    "$(jq -r .name library.json)"     "$REF_NAME"
-          check license "$(jq -r .license library.json)"  "$REF_LICENSE"
+          check() { [[ -n "$2" ]] || { echo "::error::library.json: '$1' is missing"; exit 1; }
+                    [[ "$2" == "$3" ]] || { echo "::error::library.json $1: '$2' != '$3'"; exit 1; }; }
+          check version "$(jq -r '.version // ""' library.json)"  "$REF_VERSION"
+          check name    "$(jq -r '.name // ""' library.json)"     "$REF_NAME"
+          check license "$(jq -r '.license // ""' library.json)"  "$REF_LICENSE"
 
+      # No file extension, so a survey by glob (*.json, *.toml, ...) walks past
+      # it -- which is exactly how the 0.9.0 bump missed it.
       - name: Check Arduino (library.properties)
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
-          get() { grep -oP "^$1=\K.*" library.properties; }
-          check() { [[ -z "$3" || "$2" == "$3" ]] || { echo "::error::library.properties $1: '$2' != '$3'"; exit 1; }; }
+          get() { grep -oP "^$1=\K.*" library.properties | head -1 || true; }
+          check() { [[ -n "$2" ]] || { echo "::error::library.properties: '$1' is missing"; exit 1; }
+                    [[ "$2" == "$3" ]] || { echo "::error::library.properties $1: '$2' != '$3'"; exit 1; }; }
           check version "$(get version)"  "$REF_VERSION"
           check name    "$(get name)"     "$REF_NAME"
           check license "$(get license)"  "$REF_LICENSE"
@@ -87,7 +97,38 @@ jobs:
         run: |
           set -euo pipefail
           # project() VERSION lives on its own line; feeds the install config's
-          # package-version file, so it must always be present and in lockstep.
-          version=$(grep -oP '^\s*VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | head -1)
-          [[ -n "$version" ]] || { echo "::error::CMakeLists.txt: no project() VERSION found"; exit 1; }
-          [[ -z "$REF_VERSION" || "$version" == "$REF_VERSION" ]] || { echo "::error::CMakeLists.txt version: '$version' != '$REF_VERSION'"; exit 1; }
+          # package-version file (cmake/sofab_install.cmake uses PROJECT_VERSION),
+          # so it must always be present and in lockstep.
+          version=$(grep -oP '^\s*VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | head -1 || true)
+          [[ -n "$version" ]] || { echo "::error::CMakeLists.txt: no project() VERSION found on its own line"; exit 1; }
+          [[ "$version" == "$REF_VERSION" ]] || { echo "::error::CMakeLists.txt version: '$version' != '$REF_VERSION'"; exit 1; }
+
+      # Tags only: everything above holds between releases too, this does not.
+      - name: Check the tag matches, and where it points
+        if: ${{ !cancelled() && github.ref_type == 'tag' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$GITHUB_REF_NAME
+
+          # Lowercase "v" is load-bearing: the push trigger above is 'v*' and ref
+          # patterns are case-sensitive, so a "V1.2.3" would not run this
+          # workflow at all and the release would look verified while nothing had
+          # checked it. Assert the shape anyway -- a tag reaching here with any
+          # other shape means the trigger was widened without updating this.
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag '$tag' is not vX.Y.Z with a lowercase v"; exit 1; }
+
+          [[ "${tag#v}" == "$REF_VERSION" ]] || { echo "::error::tag '$tag' does not match the manifest version '$REF_VERSION'"; exit 1; }
+
+          # An annotated tag carries the tagger and a message; a lightweight one
+          # is just a ref. The release procedure requires annotated, and v0.10.0
+          # is lightweight -- so this has already drifted once.
+          [[ "$(git cat-file -t "$tag")" == "tag" ]] || { echo "::error::tag '$tag' is lightweight; release tags must be annotated (git tag -a)"; exit 1; }
+
+          # A release must be a commit that is on main. Nothing checked this
+          # before, so a tag pushed from a feature branch would have passed.
+          git fetch --no-tags --quiet origin main
+          git merge-base --is-ancestor "$tag^{commit}" origin/main \
+            || { echo "::error::tag '$tag' points at a commit that is not on origin/main"; exit 1; }
+
+          echo "tag $tag: annotated, on main, matches $REF_VERSION"

@@ -9,10 +9,17 @@ The **git tag is the source of truth** for the version. Everything else — four
 package manifests — is brought into line with it, and a CI workflow enforces
 that they match once the tag exists.
 
-That last part is the trap this skill exists to avoid: `.github/workflows/version-consistency.yaml`
-runs **only on `push: tags: ['v*']`**. It cannot catch a mistake before the tag,
-and it did not: `v0.9.0` shipped with `library.properties` still saying `0.8.0`
-(fixed in `c590a55`). So run the checks in step 4 **locally, before tagging**.
+`.github/workflows/version-consistency.yaml` has two halves. The
+**cross-manifest** half — all four manifests agree, every name and license
+matches `conanfile.py` — runs on pull requests and on `main`, so it blocks a
+mistake before the tag. The **tag** half — the agreed version equals the tag,
+and the tag is well-formed, annotated and on `main` — runs on `v*` tags only.
+
+It was tags-only, and that is how `v0.9.0` shipped with `library.properties`
+still saying `0.8.0` (`c590a55`): nothing checked the release PR. Step 4 below is
+now a fast local pre-check rather than the only thing standing between you and a
+bad tag — but run it anyway, because a red release PR costs a round trip and a
+bad tag costs a re-tag.
 
 ## 1. Preconditions
 
@@ -67,7 +74,7 @@ Do **not** hand-edit these — they are already correct and derive the version:
 - `src/**` — there is no `SOFAB_VERSION` macro in this library
 - there is no CHANGELOG in this repo
 
-## 4. Verify locally — mirrors the CI gate exactly
+## 4. Verify locally — same comparisons the CI gate makes
 
 ```bash
 cd /workspace
@@ -141,6 +148,11 @@ which strips a lowercase `v` only — so a stray capital would also compare
 `V1.2.3` against a manifest reading `1.2.3` and fail on every one of them.
 
 The manifests themselves carry the bare version, with no `v` (step 3).
+
+The gate now asserts this on every tag it sees, along with two things nothing
+checked before: that the tag is **annotated**, and that it points at a commit on
+`origin/main`. All three are hard errors, so getting any of them wrong means
+deleting the tag and re-tagging.
 
 Tag **the commit on `main`** that the release PR produced, never the branch tip.
 
