@@ -453,7 +453,7 @@ with `-DSOFAB_DISABLE_LAZY_SEQ_SUPPORT=ON`:
 | encode: typical message | 966 Ir/op | 960 Ir/op | **+6 Ir/op (+0.6 %)** |
 | encode: composite | 16 164 Ir/op | 16 069 Ir/op | +95 Ir/op (+0.6 %) |
 | encode: u64 array (1000) | 125 999 Ir/op | 125 998 Ir/op | +1 Ir/op (+0.001 %) |
-| decode: typical message | 2 109 Ir/op | 2 109 Ir/op | none |
+| decode: typical message | 2 165 Ir/op | 2 165 Ir/op | none |
 
 The cost is per *field header*, so a message of many small fields feels it and one
 of few wide ones does not; decoding is untouched. With the 276&nbsp;B of ARMv6-m
@@ -864,18 +864,18 @@ column is the reading published in
 
 | Workload | C (this) | C++ wrapper (this) | `corelib-cpp` |
 | - | -: | -: | -: |
-| encode: u64 array (1000) | 125 999 | 126 028 | **35 046** |
-| encode: typical message | 966 | 1 063 | **226** |
+| encode: u64 array (1000) | 125 999 | 126 028 | **35 033** |
+| encode: typical message | 966 | 1 063 | **204** |
 | encode: blob 1MB one-shot | 10 000 162 | 10 000 191 | **1 000 026** |
-| encode: blob 1MB streaming | **10 004 819** | 10 009 790 | 13 009 127 |
-| encode: composite | 16 164 | 16 501 | **11 514** |
-| decode: u64 array (1000) | 300 432 | 300 438 | **43 839** |
-| decode: typical message | 2 109 | 2 113 | **1 275** |
-| decode: blob 1MB | 25 011 323 | 25 011 331 | **3 654 639** |
-| decode: composite | 32 168 | 36 538 | **22 417** |
-| decode: composite skip-all | 25 411 | 25 416 | **7 671** |
+| encode: blob 1MB streaming | **10 004 819** | 10 009 790 | 13 009 117 |
+| encode: composite | 16 164 | 16 501 | **11 494** |
+| decode: u64 array (1000) | 303 434 | 303 438 | **41 852** |
+| decode: typical message | 2 165 | 2 167 | **1 425** |
+| decode: blob 1MB | 25 011 325 | 25 011 332 | **284 314** |
+| decode: composite | 32 340 | 36 708 | **25 159** |
+| decode: composite skip-all | 25 570 | 25 573 | **8 373** |
 
-`corelib-cpp` runs **1.4× to 10× fewer instructions**, widest where a payload
+`corelib-cpp` runs **1.3× to 88× fewer instructions**, widest where a payload
 moves in bulk: it establishes a varint window once and then moves whole 64-bit
 words, and its one-shot `blob` write is a `memcpy` at one instruction per byte,
 where this core pushes every payload byte through the same bounds-checked path
@@ -895,8 +895,8 @@ only within a language):
 
 | Use case | Library | vs. | Throughput | Bare-metal Cortex-M flash |
 | - | - | - | - | - |
-| Embedded **C** | `corelib-c-cpp` (C API) | nanopb | ~2.1× | ~3.6&nbsp;KB vs ~6.6&nbsp;KB |
-| Embedded **C++** | `corelib-c-cpp` (C++ wrapper) | EmbeddedProto | ~2.3× | ~6.5&nbsp;KB vs ~9.3&nbsp;KB |
+| Embedded **C** | `corelib-c-cpp` (C API) | nanopb | ~2.1× | ~4.7&nbsp;KB vs ~6.6&nbsp;KB |
+| Embedded **C++** | `corelib-c-cpp` (C++ wrapper) | EmbeddedProto | ~2.3× | ~7.3&nbsp;KB vs ~9.3&nbsp;KB |
 | Throughput **C++** | `corelib-cpp` (pure C++20) | protobuf | ~1.3× (434 vs 494-byte wire) | — (desktop/server) |
 
 The `corelib-cpp` arena row predates several rounds of varint and hot-path work
