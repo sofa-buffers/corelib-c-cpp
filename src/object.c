@@ -143,7 +143,7 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
  */
 static uint8_t _seq_len_width (const sofab_object_descr_t *info)
 {
-    return (uint8_t)(info->fixed_seq >> SOFAB_OBJECT_SEQ_LEN_SHIFT);
+    return (uint8_t)((info->fixed_seq >> SOFAB_OBJECT_SEQ_LEN_SHIFT) & 0x0Fu);
 }
 
 /*!
@@ -232,6 +232,32 @@ static void _seq_len_observe (const sofab_object_descr_t *info,
 }
 
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
+/*!
+ * @name Tagged union (@ref SOFAB_OBJECT_DESCR_UNION)
+ *
+ * A union descriptor is a plain struct descriptor whose option fields all
+ * overlay the same storage. The tag at offset 0 of the object holds the id of
+ * the option received LAST (MESSAGE_SPEC §4.2: at most one child; a repeated
+ * option id or a second option is resolved by "last wins"), the way a sized
+ * holder's count at offset 0 holds its length. Every walk treats an option that
+ * is not the held one as absent: init seeds only the held option, the ≠-default
+ * test and encode look at nothing else, and decode records the tag at the same
+ * "was bound" point where a holder records its length — so an option skipped
+ * under §7.3 never switches the union.
+ * @{
+ */
+#if defined(SOFAB_DISABLE_UNION_SUPPORT) || defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+#  define _IS_UNION(info) 0
+#else
+#  define _IS_UNION(info) ((info)->fixed_seq & SOFAB_OBJECT_UNION)
+#endif
+/*! The tag: the id of the held option, typed like a descriptor field id. */
+#define _TAG(obj) (*(sofab_object_descr_id_t *)(uintptr_t)(const void *)(obj))
+/*! A field of a union that is not the held option is skipped, as if absent. */
+#define _NOT_HELD(info, obj, field) (_IS_UNION(info) \
+       && _TAG(obj) != (field)->id)
+/*! @} */
 
 /*!
  * @brief The wire opt a field of descriptor type @p type would install.
@@ -465,6 +491,7 @@ static int _field_is_default (
 
         for (size_t i = 0; i < ninfo->field_count; i++)
         {
+            if (_NOT_HELD(ninfo, nsrc, &ninfo->field_list[i])) continue;
             if (!_field_is_default(ninfo, &ninfo->field_list[i], nsrc))
                 return 0;
         }
@@ -554,9 +581,14 @@ extern sofab_ret_t sofab_object_init (
     }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
+    if (_IS_UNION(info))
+        _TAG(obj) = *(const sofab_object_descr_id_t *)info->default_values;
+
     for (size_t i = 0; i < info->field_count; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
+
+        if (_NOT_HELD(info, obj, field)) continue;
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
         /* A nested object is seeded field by field, not as a byte image: its own
@@ -654,7 +686,7 @@ extern sofab_ret_t sofab_object_encode (
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     count = info->field_count;
     last  = (size_t)-1;
-    if (info->fixed_seq)
+    if (info->fixed_seq & SOFAB_OBJECT_SEQ_HOLDER)
     {
         count = _seq_len(info, src);
         last  = count - 1u;   /* count == 0 -> SIZE_MAX, and the loop never runs */
@@ -689,6 +721,7 @@ extern sofab_ret_t sofab_object_encode (
          * either, both leaving an id gap the decoder refills from the element
          * default.
          */
+        if (_NOT_HELD(info, src, field)) continue;
         if (!_SOFAB_ELEMENT_HELD(i) && _field_is_default(info, field, src))
         {
             // Field value matches its default, skip serialization
@@ -1009,7 +1042,8 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 // held stays. Re-using a destination across messages therefore
                 // requires sofab_object_init() between decodes, exactly as it
                 // always has for an omitted leaf field (see object.h).
-                if (nested->info->fixed_seq)
+                if ((nested->info->fixed_seq & SOFAB_OBJECT_SEQ_HOLDER)
+                    || _NOT_HELD(info, decoder->dst, field))
                 {
                     sofab_object_init(nested->info, nested->dst);
                 }
@@ -1059,6 +1093,8 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
             && ((unsigned)(ctx->target_opt ^ wire_opt) & 0x3Fu) == 0u)
         {
             _seq_len_observe(info, decoder->dst, id);
+            if (_IS_UNION(info))
+                _TAG(decoder->dst) = (sofab_object_descr_id_t)id;
         }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
@@ -1105,7 +1141,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
     // in the istream, before or independently of this callback. §7.3 subordinates
     // the SCHEMA bound only (CORELIB_PLAN §4.8: "the format ceiling still fires on
     // the count word whatever the subtype turns out to be").
-    if (info->fixed_seq && info->field_count != 0)
+    if ((info->fixed_seq & SOFAB_OBJECT_SEQ_HOLDER) && info->field_count != 0)
     {
         /* field_count == 0 above: a holder with no slot has no element type to
          * contradict, so §7.3 cannot be settled -- skip, never reject.

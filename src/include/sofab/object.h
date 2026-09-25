@@ -290,6 +290,7 @@ extern "C" {
  */
 #define SOFAB_OBJECT_SEQ_HOLDER    0x01u /*!< Bit 0: this descriptor is a wrapper-array holder. */
 #define SOFAB_OBJECT_SEQ_LEN_SHIFT 1     /*!< Shift of the length member's byte width (0 = unsized). */
+#define SOFAB_OBJECT_UNION         0x80u /*!< Bit 7: a union; its tag is a sofab_object_descr_id_t at offset 0. */
 /*! @} */
 
 /*!
@@ -399,6 +400,41 @@ extern "C" {
       (uint8_t)(SOFAB_OBJECT_SEQ_HOLDER \
                 | (sizeof(((obj *)0)->lfield) << SOFAB_OBJECT_SEQ_LEN_SHIFT) \
                 | SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, lfield)) }
+
+/*!
+ * @brief Build a tagged-union object descriptor.
+ *
+ * Like @ref SOFAB_OBJECT_DESCR — one field descriptor per `oneof` option — but
+ * every option overlays the same storage (a C `union` inside @p obj), and the
+ * tag member @p tfield, a @c sofab_object_descr_id_t at offset 0 of @p obj,
+ * holds the id of the option the object currently holds. Only that option is
+ * initialised, compared against its default and encoded (MESSAGE_SPEC §4.2: a
+ * union frame carries at most one child); on decode the option received last
+ * wins, and switching to a sequence option starts it from its default.
+ *
+ * @p default_struct is the object's default image: its tag names `default_id`,
+ * and its storage holds that option's default.
+ *
+ * @warning PROTOTYPE LIMITATION — one default image for all options. The
+ * options overlay each other, so the single image can only carry ONE option's
+ * default, the `default_id` option's. A different option that declares a
+ * non-zero default is handled wrongly in two places: a decode that switches to
+ * it does not seed it from its default (a leaf option is fully overwritten by
+ * the incoming value, so this only bites a partially written option), and the
+ * ≠-default test compares it against the `default_id` option's bytes, so the
+ * §2 degenerate case (held option equal to its own default -> omitted) is
+ * missed or mis-detected. Options whose default is zero — the common case, and
+ * every option of a union whose `default_id` option also defaults to zero —
+ * are exact.
+ *
+ * Built with @c SOFAB_DISABLE_UNION_SUPPORT (or without sequence support) the
+ * union walk compiles out and such a descriptor behaves as a plain struct.
+ */
+#define SOFAB_OBJECT_DESCR_UNION(field_list, field_count, nested_list, nested_count, default_struct, obj, tfield) \
+    { (field_list), (nested_list), (const void *)&(default_struct), (field_count), (nested_count), \
+      (uint8_t)(SOFAB_OBJECT_UNION \
+                | 0u * sizeof(char[sizeof(((obj *)0)->tfield) == sizeof(sofab_object_descr_id_t) ? 1 : -1]) \
+                | SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, tfield)) }
 
 /* types **********************************************************************/
 /*!
