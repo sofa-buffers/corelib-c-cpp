@@ -3206,6 +3206,12 @@ namespace sofab
          *        selecting @ref readString overload, for a tagged union's array
          *        option.
          *
+         * Where the destination type fixes its room (a heap-free container, or
+         * one that resizes), @p select is also called only behind the count
+         * refusals, as in the selecting @ref readString. A fixed-size view
+         * publishes its room per object and is selected before them; a refusal
+         * is terminal either way.
+         *
          * @param select     Callable returning the destination array by reference.
          * @param wireCount  Element count delivered to the field callback.
          * @param cap        Schema `count`, or -1 when the schema declares none.
@@ -3222,15 +3228,36 @@ namespace sofab
                 return;
             }
 
-            C &out = select();
-            const long room = arrayRoom_(out, wireCount);
-
-            if (refuseUnbounded(cap, room) || refuseSchema(wireCount, cap))
+            if constexpr (fixed_capacity_v<C> >= 0 ||
+                          requires(C &c, size_t n) { c.resize(n); })
             {
-                return;
-            }
+                // The room follows from the type: refuse before selecting, as
+                // the selecting readString/readBlob do.
+                const long room = fixed_capacity_v<C>;
 
-            bindArray_(out, wireCount, room);
+                if (refuseUnbounded(cap, room) || refuseSchema(wireCount, cap))
+                {
+                    return;
+                }
+
+                bindArray_(select(), wireCount, room);
+            }
+            else
+            {
+                // A fixed-size view publishes its room per object, so it is
+                // selected first: a refused array may already have switched the
+                // option. Both refusals are terminal, so the destination's
+                // value is unspecified either way.
+                C &out = select();
+                const long room = arrayRoom_(out, wireCount);
+
+                if (refuseUnbounded(cap, room) || refuseSchema(wireCount, cap))
+                {
+                    return;
+                }
+
+                bindArray_(out, wireCount, room);
+            }
         }
 
         /*!
