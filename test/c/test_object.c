@@ -3216,11 +3216,13 @@ static void test_object_sized_wrapper_init_clears_length (void)
 //
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_UNION_SUPPORT) \
-    && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /* ---- tagged union (SOFAB_OBJECT_DESCR_UNION) ----------------------------------
- * shape: union { num u16 @0, name string[16] @1, pt struct{x,y i32} @2 },
+ * shape: union { num u16 @0, name string[16] @1, pt struct{x=7,y i32} @2 },
  * default_id 2 -- a SEQUENCE option, so init has to seed it through its own
- * descriptor. list: array<union { a u8 @0, b fp32 @1 }, count 4>. */
+ * descriptor, and the image is the tag alone (a prefix, never a full image).
+ * list: array<union { a u8 @0, b fp32 @1 }, count 4>, default_id 0 with an
+ * all-zero option: no image at all (NULL = tag 0). */
 typedef struct { int32_t x; int32_t y; } _un_pt_t;
 typedef struct {
     sofab_object_descr_id_t which;
@@ -3234,23 +3236,27 @@ static const sofab_object_descr_field_t _un_pt_fields[] = {
     SOFAB_OBJECT_FIELD(0, _un_pt_t, x, SOFAB_OBJECT_FIELDTYPE_SIGNED),
     SOFAB_OBJECT_FIELD(1, _un_pt_t, y, SOFAB_OBJECT_FIELDTYPE_SIGNED),
 };
-static const sofab_object_descr_t _un_pt = SOFAB_OBJECT_DESCR(_un_pt_fields, 2, NULL, 0);
+static const _un_pt_t _un_pt_default = { .x = 7 };
+static const sofab_object_descr_t _un_pt = SOFAB_OBJECT_DESCR_WITH_DEFAULTS(
+    _un_pt_fields, 2, NULL, 0, &_un_pt_default);
 static const sofab_object_descr_field_t _un_shape_fields[] = {
     SOFAB_OBJECT_FIELD(0, _un_shape_t, u.num, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
     SOFAB_OBJECT_FIELD(1, _un_shape_t, u.name, SOFAB_OBJECT_FIELDTYPE_STRING),
     SOFAB_OBJECT_FIELD_SEQUENCE(2, _un_shape_t, u.pt, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
 };
 static const sofab_object_descr_t *const _un_shape_nested[] = { &_un_pt };
-static const _un_shape_t _un_shape_default = { .which = 2 };
+/* the tag-only prefix image: default_id names a sequence option */
+static const struct { sofab_object_descr_id_t which; } _un_shape_default = { 2 };
 static const sofab_object_descr_t _un_shape = SOFAB_OBJECT_DESCR_UNION(
-    _un_shape_fields, 3, _un_shape_nested, 1, _un_shape_default, _un_shape_t, which);
+    _un_shape_fields, 3, _un_shape_nested, 1, &_un_shape_default, _un_shape_t, which);
 static const sofab_object_descr_field_t _un_le_fields[] = {
     SOFAB_OBJECT_FIELD(0, _un_le_t, u.a, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
     SOFAB_OBJECT_FIELD(1, _un_le_t, u.b, SOFAB_OBJECT_FIELDTYPE_FP32),
 };
-static const _un_le_t _un_le_default = { .which = 0 };
+/* NULL image, through the macro: default_id 0 and an all-zero option. A
+ * regression of the macro to an address-of form fails to compile here. */
 static const sofab_object_descr_t _un_le = SOFAB_OBJECT_DESCR_UNION(
-    _un_le_fields, 2, NULL, 0, _un_le_default, _un_le_t, which);
+    _un_le_fields, 2, NULL, 0, NULL, _un_le_t, which);
 static const sofab_object_descr_field_t _un_list_fields[] = {
     SOFAB_OBJECT_FIELD_SEQUENCE(0, _un_list_t, e[0], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
     SOFAB_OBJECT_FIELD_SEQUENCE(1, _un_list_t, e[1], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
@@ -3267,28 +3273,41 @@ static const sofab_object_descr_field_t _un_msg_fields[] = {
 static const sofab_object_descr_t *const _un_msg_nested[] = { &_un_shape, &_un_list };
 static const sofab_object_descr_t _un_msg = SOFAB_OBJECT_DESCR(_un_msg_fields, 2, _un_msg_nested, 2);
 
-static size_t _un_encode (const _un_msg_t *m, uint8_t *out, size_t cap)
+static size_t _un_encode_any (const sofab_object_descr_t *info, const void *m,
+                              uint8_t *out, size_t cap)
 {
     sofab_ostream_t o;
     sofab_ostream_init(&o, out, cap, 0, NULL, NULL);
-    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_object_encode(&o, &_un_msg, m),
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_object_encode(&o, info, m),
                               "union encode failed");
     return sofab_ostream_flush(&o);
 }
 
-/* msg -> list -> element union, or msg -> shape -> pt: three levels, four handles */
-static sofab_ret_t _un_decode (_un_msg_t *m, const uint8_t *buf, size_t len)
+/* init + decode into a destination scribbled first, so nothing survives from
+ * before init; `levels` decoder handles below the root */
+static sofab_ret_t _un_decode_any (const sofab_object_descr_t *info, void *m, size_t size,
+                                   const uint8_t *buf, size_t len)
 {
     sofab_istream_t is;
-    sofab_object_decoder_t d[4];
+    sofab_object_decoder_t d[5];
     memset(d, 0, sizeof(d));
-    memset(m, 0xA5, sizeof(*m));   /* nothing may survive from before init */
-    sofab_object_init(&_un_msg, m);
-    d[0].info = &_un_msg;
+    memset(m, 0xA5, size);
+    sofab_object_init(info, m);
+    d[0].info = info;
     d[0].dst = (uint8_t *)m;
-    d[0].depth = 3;
+    d[0].depth = 4;
     sofab_istream_init(&is, sofab_object_field_cb, &d[0]);
     return sofab_istream_feed(&is, buf, len);
+}
+
+static size_t _un_encode (const _un_msg_t *m, uint8_t *out, size_t cap)
+{
+    return _un_encode_any(&_un_msg, m, out, cap);
+}
+
+static sofab_ret_t _un_decode (_un_msg_t *m, const uint8_t *buf, size_t len)
+{
+    return _un_decode_any(&_un_msg, m, sizeof(*m), buf, len);
 }
 
 static void test_object_union_init_holds_default_id (void)
@@ -3298,10 +3317,29 @@ static void test_object_union_init_holds_default_id (void)
     memset(&m, 0xA5, sizeof(m));
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_un_msg, &m));
     TEST_ASSERT_EQUAL_UINT_MESSAGE(2, m.shape.which, "init must hold default_id");
-    TEST_ASSERT_EQUAL_INT32(0, m.shape.u.pt.x);
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(7, m.shape.u.pt.x,
+        "a sequence default_id option is seeded through its own descriptor");
     TEST_ASSERT_EQUAL_INT32(0, m.shape.u.pt.y);
     TEST_ASSERT_EQUAL_size_t_MESSAGE(0, _un_encode(&m, out, sizeof(out)),
         "an all-default message is zero bytes (§2)");
+}
+
+static void test_object_union_null_image_holds_id_0 (void)
+{
+    _un_le_t e;
+    uint8_t out[16];
+    TEST_ASSERT_NULL(_un_le.default_values);
+    memset(&e, 0xA5, sizeof(e));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_un_le, &e));
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, e.which, "a NULL image means tag 0");
+    TEST_ASSERT_EQUAL_UINT8(0, e.u.a);
+    TEST_ASSERT_EQUAL_size_t(0, _un_encode_any(&_un_le, &e, out, sizeof(out)));
+
+    /* option 1 held at its own (zero) default: forced, written as its value */
+    e.which = 1; e.u.b = 0.0f;
+    static const uint8_t b0[] = { 0x0A, 0x20, 0x00, 0x00, 0x00, 0x00 };
+    TEST_ASSERT_EQUAL_size_t(sizeof(b0), _un_encode_any(&_un_le, &e, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(b0, out, sizeof(b0));
 }
 
 static void test_object_union_encodes_only_the_held_option (void)
@@ -3321,9 +3359,12 @@ static void test_object_union_encodes_only_the_held_option (void)
     TEST_ASSERT_EQUAL_size_t(sizeof(namex), _un_encode(&m, out, sizeof(out)));
     TEST_ASSERT_EQUAL_HEX8_ARRAY(namex, out, sizeof(namex));
 
-    /* §2 degenerate case: the held option equals its own default -> omitted */
+    /* the held option is not default_id, so at its own default (the empty
+     * string) it is still WRITTEN: omitting it would read back as default_id */
     m.shape.u.name[0] = '\0';
-    TEST_ASSERT_EQUAL_size_t(0, _un_encode(&m, out, sizeof(out)));
+    static const uint8_t name0[] = { 0x06, 0x0A, 0x02, 0x07 };
+    TEST_ASSERT_EQUAL_size_t(sizeof(name0), _un_encode(&m, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(name0, out, sizeof(name0));
 }
 
 static void test_object_union_last_option_wins (void)
@@ -3335,17 +3376,21 @@ static void test_object_union_last_option_wins (void)
                                      0x16, 0x01, 0x02, 0x07, 0x07 };
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode(&m, three, sizeof(three)));
     TEST_ASSERT_EQUAL_UINT(2, m.shape.which);
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(1, m.shape.u.pt.x, "the pt option must start from its default");
-    TEST_ASSERT_EQUAL_INT32(0, m.shape.u.pt.y);
+    TEST_ASSERT_EQUAL_INT32(1, m.shape.u.pt.x);
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(0, m.shape.u.pt.y, "the pt option must start from its default");
     static const uint8_t canon[] = { 0x06, 0x16, 0x01, 0x02, 0x07, 0x07 };
     TEST_ASSERT_EQUAL_size_t(sizeof(canon), _un_encode(&m, out, sizeof(out)));
     TEST_ASSERT_EQUAL_HEX8_ARRAY(canon, out, sizeof(canon));
 
-    /* a re-opened union frame with a different option replaces it */
+    /* a re-opened union frame with a different option replaces it, and the
+     * canonical re-encode carries that one option only */
     static const uint8_t reopen[] = { 0x06, 0x00, 0x07, 0x07, 0x06, 0x0A, 0x0A, 0x78, 0x07 };
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode(&m, reopen, sizeof(reopen)));
     TEST_ASSERT_EQUAL_UINT(1, m.shape.which);
     TEST_ASSERT_EQUAL_STRING("x", m.shape.u.name);
+    static const uint8_t canonx[] = { 0x06, 0x0A, 0x0A, 0x78, 0x07 };
+    TEST_ASSERT_EQUAL_size_t(sizeof(canonx), _un_encode(&m, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(canonx, out, sizeof(canonx));
 }
 
 static void test_object_union_same_option_merges (void)
@@ -3363,6 +3408,20 @@ static void test_object_union_same_option_merges (void)
     TEST_ASSERT_EQUAL_INT32(3, m.shape.u.pt.y);
 }
 
+static void test_object_union_away_and_back_starts_from_default (void)
+{
+    _un_msg_t m;
+    /* pt{x=1}, then num=5, then pt{y=2} in three frames: coming back to pt must
+     * start it from ITS default (x=7), not from what it held before the switch */
+    static const uint8_t bytes[] = { 0x06, 0x16, 0x01, 0x02, 0x07, 0x07,
+                                     0x06, 0x00, 0x05, 0x07,
+                                     0x06, 0x16, 0x09, 0x04, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode(&m, bytes, sizeof(bytes)));
+    TEST_ASSERT_EQUAL_UINT(2, m.shape.which);
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(7, m.shape.u.pt.x, "discarded state must not survive");
+    TEST_ASSERT_EQUAL_INT32(2, m.shape.u.pt.y);
+}
+
 static void test_object_union_skipped_option_does_not_switch (void)
 {
     _un_msg_t m;
@@ -3372,6 +3431,20 @@ static void test_object_union_skipped_option_does_not_switch (void)
     TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode(&m, bytes, sizeof(bytes)));
     TEST_ASSERT_EQUAL_UINT(0, m.shape.which);
     TEST_ASSERT_EQUAL_UINT16(7, m.shape.u.num);
+
+    /* name="ab", then a BLOB at the string option's id: the subtype contradicts
+     * (§7.3), so neither a switch nor a write into the held string happens */
+    static const uint8_t blob_at_string[] = { 0x06, 0x0A, 0x12, 0x61, 0x62,
+                                              0x0A, 0x0B, 0x01, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode(&m, blob_at_string, sizeof(blob_at_string)));
+    TEST_ASSERT_EQUAL_UINT(1, m.shape.which);
+    TEST_ASSERT_EQUAL_STRING("ab", m.shape.u.name);
+
+    /* an unknown id inside the frame does not switch either */
+    static const uint8_t unknown[] = { 0x06, 0x00, 0x09, 0x98, 0x06, 0x01, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode(&m, unknown, sizeof(unknown)));
+    TEST_ASSERT_EQUAL_UINT(0, m.shape.which);
+    TEST_ASSERT_EQUAL_UINT16(9, m.shape.u.num);
 }
 
 static void test_object_union_array_elements_roundtrip (void)
@@ -3392,20 +3465,384 @@ static void test_object_union_array_elements_roundtrip (void)
     TEST_ASSERT_EQUAL_UINT(0, d.list.e[2].which);
     TEST_ASSERT_EQUAL_UINT8(0, d.list.e[2].u.a);
 }
-#endif /* sequence && union && fixlen support */
+
+/* ---- forced write: every option kind held at its own default ------------------
+ * uf: union { num u16 = 5 @0 (default_id), s string[8] @1, bl blob[4] @2,
+ *             arr u16[4] @3, fa fp32[2] @4, box struct{z=3} @5,
+ *             strs string[4][2] @6, inner union{a u8 @0, b i8 = -2 @1} @7,
+ *             f fp32 @8 }
+ * default_id 0 with a NON-ZERO leaf default: the image is the tag plus that one
+ * option (a prefix, never sizeof(_uf_t)) -- run under ASan, a read past it is a
+ * global-buffer-overflow. r: union { nu = the inner union @0 (default_id),
+ * ar u8[2] @1 }: default_id 0 on a sequence option, so no image. */
+typedef struct { uint8_t z; } _uf_box_t;
+typedef struct { sofab_object_descr_id_t which; union { uint8_t a; int8_t b; } u; } _uf_inner_t;
+typedef struct { uint8_t len; char items[2][5]; } _uf_strs_t;
+typedef struct {
+    sofab_object_descr_id_t which;
+    union {
+        uint16_t num;
+        char s[9];
+        struct { uint8_t len; uint8_t data[4]; } bl;
+        struct { uint16_t len; uint16_t items[4]; } arr;
+        struct { uint32_t len; float items[2]; } fa;
+        _uf_box_t box;
+        _uf_strs_t strs;
+        _uf_inner_t inner;
+        float f;
+    } u;
+} _uf_t;
+typedef struct {
+    sofab_object_descr_id_t which;
+    union { _uf_inner_t nu; struct { uint8_t len; uint8_t items[2]; } ar; } u;
+} _ur_t;
+typedef struct { _uf_t f; _ur_t r; uint8_t w; } _uf_msg_t;
+
+static const sofab_object_descr_field_t _uf_box_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _uf_box_t, z, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+static const _uf_box_t _uf_box_default = { .z = 3 };
+static const sofab_object_descr_t _uf_box = SOFAB_OBJECT_DESCR_WITH_DEFAULTS(
+    _uf_box_fields, 1, NULL, 0, &_uf_box_default);
+static const sofab_object_descr_field_t _uf_inner_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _uf_inner_t, u.a, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+    SOFAB_OBJECT_FIELD(1, _uf_inner_t, u.b, SOFAB_OBJECT_FIELDTYPE_SIGNED),
+};
+typedef struct { sofab_object_descr_id_t which; union { int8_t b; uint8_t _align; } u; } _uf_inner_img_t;
+typedef char _uf_inner_img_ok[(offsetof(_uf_inner_img_t, u) == offsetof(_uf_inner_t, u)) ? 1 : -1];
+static const _uf_inner_img_t _uf_inner_default = { .which = 1, .u.b = -2 };
+static const sofab_object_descr_t _uf_inner = SOFAB_OBJECT_DESCR_UNION(
+    _uf_inner_fields, 2, NULL, 0, &_uf_inner_default, _uf_inner_t, which);
+static const sofab_object_descr_field_t _uf_strs_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _uf_strs_t, items[0], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(1, _uf_strs_t, items[1], SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+static const sofab_object_descr_t _uf_strs = SOFAB_OBJECT_DESCR_SEQ_SIZED(
+    _uf_strs_fields, 2, NULL, 0, _uf_strs_t, len);
+static const sofab_object_descr_field_t _uf_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _uf_t, u.num, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+    SOFAB_OBJECT_FIELD(1, _uf_t, u.s, SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(2, _uf_t, u.bl.data, u.bl.len),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(3, _uf_t, u.arr.items, u.arr.len, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(4, _uf_t, u.fa.items, u.fa.len, SOFAB_OBJECT_FIELDTYPE_ARRAY_FP32),
+    SOFAB_OBJECT_FIELD_SEQUENCE(5, _uf_t, u.box, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(6, _uf_t, u.strs, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 1),
+    SOFAB_OBJECT_FIELD_SEQUENCE(7, _uf_t, u.inner, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 2),
+    SOFAB_OBJECT_FIELD(8, _uf_t, u.f, SOFAB_OBJECT_FIELDTYPE_FP32),
+};
+static const sofab_object_descr_t *const _uf_nested[] = { &_uf_box, &_uf_strs, &_uf_inner };
+/* the tag + default-option prefix image: _align gives its union the alignment
+ * of _uf_t's option union, so the option sits at the same offset in both */
+typedef struct { sofab_object_descr_id_t which; union { uint16_t num; uint32_t _align; } u; } _uf_img_t;
+typedef char _uf_img_ok[(offsetof(_uf_img_t, u) == offsetof(_uf_t, u)) ? 1 : -1];
+static const _uf_img_t _uf_default = { .which = 0, .u.num = 5 };
+static const sofab_object_descr_t _uf = SOFAB_OBJECT_DESCR_UNION(
+    _uf_fields, 9, _uf_nested, 3, &_uf_default, _uf_t, which);
+static const sofab_object_descr_field_t _ur_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(0, _ur_t, u.nu, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_ARRAY_SIZED(1, _ur_t, u.ar.items, u.ar.len, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+static const sofab_object_descr_t *const _ur_nested[] = { &_uf_inner };
+static const sofab_object_descr_t _ur = SOFAB_OBJECT_DESCR_UNION(
+    _ur_fields, 2, _ur_nested, 1, NULL, _ur_t, which);
+static const sofab_object_descr_field_t _uf_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(0, _uf_msg_t, f, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(1, _uf_msg_t, r, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 1),
+    SOFAB_OBJECT_FIELD(2, _uf_msg_t, w, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+static const sofab_object_descr_t *const _uf_msg_nested[] = { &_uf, &_ur };
+static const sofab_object_descr_t _uf_msg = SOFAB_OBJECT_DESCR(_uf_msg_fields, 3, _uf_msg_nested, 2);
+
+/* Select option `id` of m->f at its own default, the way a caller does: the tag,
+ * then the value (a sequence option through its own descriptor). */
+static void _uf_select (_uf_msg_t *m, sofab_object_descr_id_t id)
+{
+    m->f.which = id;
+    memset(&m->f.u, 0xA5, sizeof(m->f.u));   /* the previous option's bytes */
+    switch (id)
+    {
+        case 0: m->f.u.num = 5; break;
+        case 1: m->f.u.s[0] = '\0'; break;
+        case 2: m->f.u.bl.len = 0; break;
+        case 3: m->f.u.arr.len = 0; break;
+        case 4: m->f.u.fa.len = 0; break;
+        case 5: sofab_object_init(&_uf_box, &m->f.u.box); break;
+        case 6: sofab_object_init(&_uf_strs, &m->f.u.strs); break;
+        case 7: sofab_object_init(&_uf_inner, &m->f.u.inner); break;
+        default: m->f.u.f = 0.0f; break;
+    }
+}
+
+/* encode m, compare, then decode (one-shot and one byte per feed) and re-encode:
+ * the forced form must come back as the SAME option and re-encode byte-exact */
+static void _uf_check (const _uf_msg_t *m, const uint8_t *want, size_t want_len, const char *what)
+{
+    uint8_t out[64], again[64];
+    _uf_msg_t d;
+    size_t n = _un_encode_any(&_uf_msg, m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(want_len, n, what);
+    if (n) TEST_ASSERT_EQUAL_HEX8_ARRAY_MESSAGE(want, out, want_len, what);
+
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        _un_decode_any(&_uf_msg, &d, sizeof(d), out, n), what);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(m->f.which, d.f.which, what);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(m->r.which, d.r.which, what);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(n, _un_encode_any(&_uf_msg, &d, again, sizeof(again)), what);
+    if (n) TEST_ASSERT_EQUAL_HEX8_ARRAY_MESSAGE(out, again, n, what);
+
+    {
+        sofab_istream_t is;
+        sofab_object_decoder_t dd[5];
+        memset(dd, 0, sizeof(dd));
+        memset(&d, 0xA5, sizeof(d));
+        sofab_object_init(&_uf_msg, &d);
+        dd[0].info = &_uf_msg; dd[0].dst = (uint8_t *)&d; dd[0].depth = 4;
+        sofab_istream_init(&is, sofab_object_field_cb, &dd[0]);
+        for (size_t i = 0; i < n; i++) (void)sofab_istream_feed(&is, out + i, 1);
+        TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_istream_feed(&is, NULL, 0), what);
+        TEST_ASSERT_EQUAL_UINT_MESSAGE(m->f.which, d.f.which, what);
+        TEST_ASSERT_EQUAL_size_t_MESSAGE(n, _un_encode_any(&_uf_msg, &d, again, sizeof(again)), what);
+        if (n) TEST_ASSERT_EQUAL_HEX8_ARRAY_MESSAGE(out, again, n, what);
+    }
+}
+
+static void test_object_union_held_option_at_own_default_is_written (void)
+{
+    _uf_msg_t m;
+    memset(&m, 0xA5, sizeof(m));
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_init(&_uf_msg, &m));
+    TEST_ASSERT_EQUAL_UINT(0, m.f.which);
+    TEST_ASSERT_EQUAL_UINT16(5, m.f.u.num);
+
+    /* default_id at its default: the union is default, the message is empty */
+    _uf_check(&m, NULL, 0, "default_id at its default is omitted");
+
+    static const uint8_t num6[] = { 0x06, 0x00, 0x06, 0x07 };
+    m.f.u.num = 6;
+    _uf_check(&m, num6, sizeof(num6), "default_id set is framed normally");
+
+    static const uint8_t s0[] = { 0x06, 0x0A, 0x02, 0x07 };
+    _uf_select(&m, 1);
+    _uf_check(&m, s0, sizeof(s0), "empty string option is written");
+
+    static const uint8_t bl0[] = { 0x06, 0x12, 0x03, 0x07 };
+    _uf_select(&m, 2);
+    _uf_check(&m, bl0, sizeof(bl0), "empty sized blob option is written");
+
+    static const uint8_t arr0[] = { 0x06, 0x1B, 0x00, 0x07 };
+    _uf_select(&m, 3);
+    _uf_check(&m, arr0, sizeof(arr0), "count-0 sized array option is written");
+
+    /* a count-0 fp array keeps its fixlen_word (CORELIB_PLAN §4.8) */
+    static const uint8_t fa0[] = { 0x06, 0x25, 0x00, 0x20, 0x07 };
+    _uf_select(&m, 4);
+    _uf_check(&m, fa0, sizeof(fa0), "count-0 fp32 array option keeps its fixlen_word");
+
+    /* a struct option at its default (z=3, non-zero): a present, EMPTY frame */
+    static const uint8_t box0[] = { 0x06, 0x2E, 0x07, 0x07 };
+    _uf_select(&m, 5);
+    TEST_ASSERT_EQUAL_UINT8(3, m.f.u.box.z);
+    _uf_check(&m, box0, sizeof(box0), "struct option at its default is an empty frame");
+
+    static const uint8_t strs0[] = { 0x06, 0x36, 0x07, 0x07 };
+    _uf_select(&m, 6);
+    _uf_check(&m, strs0, sizeof(strs0), "empty wrapper option is an empty frame");
+
+    /* a union option holding ITS default_id at its default: an empty frame */
+    static const uint8_t inner0[] = { 0x06, 0x3E, 0x07, 0x07 };
+    _uf_select(&m, 7);
+    TEST_ASSERT_EQUAL_UINT(1, m.f.u.inner.which);
+    TEST_ASSERT_EQUAL_INT8(-2, m.f.u.inner.u.b);
+    _uf_check(&m, inner0, sizeof(inner0), "union option at its default is an empty frame");
+
+    /* ... and holding its non-default option at 0: forced one level down too */
+    static const uint8_t innera[] = { 0x06, 0x3E, 0x00, 0x00, 0x07, 0x07 };
+    m.f.u.inner.which = 0; m.f.u.inner.u.a = 0;
+    _uf_check(&m, innera, sizeof(innera), "inner non-default option at 0 is written");
+
+    static const uint8_t f0[] = { 0x06, 0x42, 0x20, 0x00, 0x00, 0x00, 0x00, 0x07 };
+    _uf_select(&m, 8);
+    _uf_check(&m, f0, sizeof(f0), "fp32 option at 0 is written");
+}
+
+static void test_object_union_nested_union_not_default_when_forced (void)
+{
+    _uf_msg_t m;
+    uint8_t out[32];
+    sofab_object_init(&_uf_msg, &m);
+    TEST_ASSERT_EQUAL_UINT(0, m.r.which);
+    TEST_ASSERT_EQUAL_UINT(1, m.r.u.nu.which);
+    TEST_ASSERT_EQUAL_INT8(-2, m.r.u.nu.u.b);
+    TEST_ASSERT_EQUAL_size_t(0, _un_encode_any(&_uf_msg, &m, out, sizeof(out)));
+
+    /* r holds its default_id nu, but nu holds its NON-default option a = 0: r is
+     * therefore not default although the value it holds is all zeros, and r must
+     * be framed -- omitting it decodes as nu = {b: -2} */
+    m.r.u.nu.which = 0; m.r.u.nu.u.a = 0;
+    static const uint8_t want[] = { 0x0E, 0x06, 0x00, 0x00, 0x07, 0x07 };
+    _uf_check(&m, want, sizeof(want), "union D holding its non-D option at 0");
+
+    /* the same with a = 254: its bytes equal b's default (-2) in the overlay, so
+     * a test that compared the held option against the image instead of asking
+     * "is it default_id?" would call it default and drop r */
+    m.r.u.nu.u.a = 0xFE;
+    static const uint8_t want254[] = { 0x0E, 0x06, 0x00, 0xFE, 0x01, 0x07, 0x07 };
+    _uf_check(&m, want254, sizeof(want254), "union D holding its non-D option at D's bytes");
+
+    /* the empty frame of nu is nu at ITS default (b=-2), not its first option */
+    _uf_msg_t d;
+    static const uint8_t empty_nu[] = { 0x0E, 0x06, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode_any(&_uf_msg, &d, sizeof(d), empty_nu, sizeof(empty_nu)));
+    TEST_ASSERT_EQUAL_UINT(0, d.r.which);
+    TEST_ASSERT_EQUAL_UINT(1, d.r.u.nu.which);
+    TEST_ASSERT_EQUAL_INT8(-2, d.r.u.nu.u.b);
+    TEST_ASSERT_EQUAL_size_t(0, _un_encode_any(&_uf_msg, &d, out, sizeof(out)));
+
+    /* the other option, a count-0 array, beside a union default_id */
+    m.r.which = 1; m.r.u.ar.len = 0;
+    static const uint8_t ar0[] = { 0x0E, 0x0B, 0x00, 0x07 };
+    _uf_check(&m, ar0, sizeof(ar0), "array option at count 0 beside a union D");
+}
+
+static void test_object_union_prefix_image (void)
+{
+    _uf_msg_t m, d;
+    uint8_t out[32];
+    /* the image covers the tag and the default option only */
+    TEST_ASSERT_TRUE(sizeof(_uf_img_t) < sizeof(_uf_t));
+    TEST_ASSERT_TRUE(sizeof(_un_shape_default) < sizeof(_un_shape_t));
+
+    /* every read of the image happens here: init seeds num=5, the ≠-default test
+     * compares a held num against it, and a decode switching back to num reads
+     * nothing from it (a leaf is overwritten whole) */
+    memset(&m, 0xA5, sizeof(m));
+    sofab_object_init(&_uf_msg, &m);
+    TEST_ASSERT_EQUAL_UINT16(5, m.f.u.num);
+    TEST_ASSERT_EQUAL_size_t(0, _un_encode_any(&_uf_msg, &m, out, sizeof(out)));
+    m.f.u.num = 0;
+    static const uint8_t num0[] = { 0x06, 0x00, 0x00, 0x07 };
+    TEST_ASSERT_EQUAL_size_t(sizeof(num0), _un_encode_any(&_uf_msg, &m, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(num0, out, sizeof(num0));
+
+    /* s="ab", then num=5 in one frame: the switch back to default_id at its
+     * default decodes, and re-encodes as nothing */
+    static const uint8_t bytes[] = { 0x06, 0x0A, 0x12, 0x61, 0x62, 0x00, 0x05, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode_any(&_uf_msg, &d, sizeof(d), bytes, sizeof(bytes)));
+    TEST_ASSERT_EQUAL_UINT(0, d.f.which);
+    TEST_ASSERT_EQUAL_UINT16(5, d.f.u.num);
+    TEST_ASSERT_EQUAL_size_t(0, _un_encode_any(&_uf_msg, &d, out, sizeof(out)));
+
+    /* the tag-only image of shape (default_id 2, a struct option) */
+    _un_msg_t s;
+    memset(&s, 0xA5, sizeof(s));
+    sofab_object_init(&_un_msg, &s);
+    TEST_ASSERT_EQUAL_UINT(2, s.shape.which);
+    TEST_ASSERT_EQUAL_size_t(0, _un_encode(&s, out, sizeof(out)));
+}
+
+/* ---- array of unions, default_id on the NON-first option ----------------------
+ * v: array<union { i i32 @0, s string[8] @1 }, count 4>, default_id 1: every
+ * element gap is `s` at "" -- not `i` at 0. */
+typedef struct { sofab_object_descr_id_t which; union { int32_t i; char s[9]; } u; } _uv_e_t;
+typedef struct { uint8_t len; _uv_e_t e[4]; } _uv_list_t;
+typedef struct { _uv_list_t v; uint8_t w; } _uv_msg_t;
+static const sofab_object_descr_field_t _uv_e_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _uv_e_t, u.i, SOFAB_OBJECT_FIELDTYPE_SIGNED),
+    SOFAB_OBJECT_FIELD(1, _uv_e_t, u.s, SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+typedef struct { sofab_object_descr_id_t which; union { char s[9]; uint32_t _align; } u; } _uv_e_img_t;
+typedef char _uv_e_img_ok[(offsetof(_uv_e_img_t, u) == offsetof(_uv_e_t, u)) ? 1 : -1];
+static const _uv_e_img_t _uv_e_default = { .which = 1 };
+static const sofab_object_descr_t _uv_e = SOFAB_OBJECT_DESCR_UNION(
+    _uv_e_fields, 2, NULL, 0, &_uv_e_default, _uv_e_t, which);
+static const sofab_object_descr_field_t _uv_list_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(0, _uv_list_t, e[0], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(1, _uv_list_t, e[1], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(2, _uv_list_t, e[2], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD_SEQUENCE(3, _uv_list_t, e[3], SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _uv_list_nested[] = { &_uv_e };
+static const sofab_object_descr_t _uv_list = SOFAB_OBJECT_DESCR_SEQ_SIZED(
+    _uv_list_fields, 4, _uv_list_nested, 1, _uv_list_t, len);
+static const sofab_object_descr_field_t _uv_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(1, _uv_msg_t, v, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+    SOFAB_OBJECT_FIELD(2, _uv_msg_t, w, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+static const sofab_object_descr_t *const _uv_msg_nested[] = { &_uv_list };
+static const sofab_object_descr_t _uv_msg = SOFAB_OBJECT_DESCR(_uv_msg_fields, 2, _uv_msg_nested, 1);
+
+static void test_object_union_array_default_id_not_first (void)
+{
+    _uv_msg_t m, d;
+    uint8_t out[64];
+    memset(&m, 0xA5, sizeof(m));
+    sofab_object_init(&_uv_msg, &m);
+    TEST_ASSERT_EQUAL_UINT8(0, m.v.len);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(1, m.v.e[2].which, "an element slot holds default_id");
+
+    /* [{i:4}, {s:""}, {i:0}, {s:"z"}]: element 1 is the element default (a gap),
+     * element 2 is a non-default_id option at its own default (framed, forced) */
+    m.v.len = 4;
+    m.v.e[0].which = 0; m.v.e[0].u.i = 4;
+    m.v.e[1].which = 1; m.v.e[1].u.s[0] = '\0';
+    m.v.e[2].which = 0; m.v.e[2].u.i = 0;
+    m.v.e[3].which = 1; strcpy(m.v.e[3].u.s, "z");
+    static const uint8_t want[] = { 0x0E,
+                                    0x06, 0x01, 0x08, 0x07,
+                                    0x16, 0x01, 0x00, 0x07,
+                                    0x1E, 0x0A, 0x0A, 0x7A, 0x07,
+                                    0x07 };
+    size_t n = _un_encode_any(&_uv_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(want), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(want, out, sizeof(want));
+
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode_any(&_uv_msg, &d, sizeof(d), out, n));
+    TEST_ASSERT_EQUAL_UINT8(4, d.v.len);
+    TEST_ASSERT_EQUAL_UINT(0, d.v.e[0].which);
+    TEST_ASSERT_EQUAL_INT32(4, d.v.e[0].u.i);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(1, d.v.e[1].which, "the gap is default_id, not the first option");
+    TEST_ASSERT_EQUAL_STRING("", d.v.e[1].u.s);
+    TEST_ASSERT_EQUAL_UINT(0, d.v.e[2].which);
+    TEST_ASSERT_EQUAL_INT32(0, d.v.e[2].u.i);
+    TEST_ASSERT_EQUAL_UINT(1, d.v.e[3].which);
+    TEST_ASSERT_EQUAL_STRING("z", d.v.e[3].u.s);
+
+    /* the last element all-default: framed empty (it carries the length) */
+    m.v.len = 2;
+    m.v.e[0].which = 0; m.v.e[0].u.i = 1;
+    m.v.e[1].which = 1; m.v.e[1].u.s[0] = '\0';
+    static const uint8_t last[] = { 0x0E, 0x06, 0x01, 0x02, 0x07, 0x0E, 0x07, 0x07 };
+    n = _un_encode_any(&_uv_msg, &m, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(last), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(last, out, sizeof(last));
+
+    /* an element frame re-opened with the other option switches it (§7.4 + §7.4.1) */
+    static const uint8_t reopen[] = { 0x0E, 0x06, 0x01, 0x08, 0x07, 0x06, 0x0A, 0x0A, 0x7A, 0x07, 0x07 };
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _un_decode_any(&_uv_msg, &d, sizeof(d), reopen, sizeof(reopen)));
+    TEST_ASSERT_EQUAL_UINT8(1, d.v.len);
+    TEST_ASSERT_EQUAL_UINT(1, d.v.e[0].which);
+    TEST_ASSERT_EQUAL_STRING("z", d.v.e[0].u.s);
+}
+#endif /* sequence && union && fixlen && array support */
 
 int test_object_main (void)
 {
     UNITY_BEGIN();
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_UNION_SUPPORT) \
-    && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+    && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
     RUN_TEST(test_object_union_init_holds_default_id);
+    RUN_TEST(test_object_union_null_image_holds_id_0);
     RUN_TEST(test_object_union_encodes_only_the_held_option);
     RUN_TEST(test_object_union_last_option_wins);
     RUN_TEST(test_object_union_same_option_merges);
+    RUN_TEST(test_object_union_away_and_back_starts_from_default);
     RUN_TEST(test_object_union_skipped_option_does_not_switch);
     RUN_TEST(test_object_union_array_elements_roundtrip);
+    RUN_TEST(test_object_union_held_option_at_own_default_is_written);
+    RUN_TEST(test_object_union_nested_union_not_default_when_forced);
+    RUN_TEST(test_object_union_prefix_image);
+    RUN_TEST(test_object_union_array_default_id_not_first);
 #endif
 
     RUN_TEST(test_object_serialize);
