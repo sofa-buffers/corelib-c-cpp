@@ -2058,6 +2058,31 @@ namespace sofab
 #endif
         }
 
+        // sofab_istream_read_field's bind, returning the MESSAGE_SPEC §7.3 tag
+        // test the stream applies to it after the callback: on entry target_opt
+        // still holds the DELIVERED wire type (bits 0-2) and fixlen subtype
+        // (bits 3-5), and this is _call_field_callback_masked's own 0x3F
+        // comparison, taken before the bind overwrites it. A contradicting bind
+        // is unbound again, and counted, by the stream -- as for any read.
+        //
+        // Out of line on purpose, and here rather than in istream.c: every
+        // readMatch call shares this one copy of the comparison, and a program
+        // that never calls readMatch -- every one without a tagged union, and
+        // every pure-C one -- carries none of it, not even in the library.
+        // `(diff << 26) == 0` is `(diff & 0x3F) == 0`, 2-4 bytes smaller on
+        // ARMv6-m/ARMv7-m.
+        [[gnu::noinline]] bool bindMatch_(void *var, size_t len, uint8_t opt) noexcept
+        {
+            uint8_t *const target_opt = &ctx_.target_opt;
+            const uint32_t diff = static_cast<uint32_t>(*target_opt ^ opt);
+
+            ctx_.target_ptr = static_cast<uint8_t *>(var);
+            ctx_.target_len = len;
+            *target_opt = opt;
+
+            return (diff << 26) == 0u;
+        }
+
         // ---- the bodies the capped and uncapped read entry points share ------
         //
         // §6.2.1 asks for ONE implementation of the rule wherever it runs, and the
@@ -2565,6 +2590,97 @@ namespace sofab
         }
 
         /*!
+         * @brief Whether the field currently being delivered has wire type @p w.
+         *
+         * The §7.3 tag test for a field whose type has no fixlen subtype (varint,
+         * integer array, sequence) as ONE comparison. Valid, like @ref wire, only
+         * before @ref read binds a destination. A @ref Wire::Fixlen /
+         * @ref Wire::ArrayFixlen field is tested with the two-argument form: its
+         * subtype is part of the test, and this form would read it as
+         * @ref Fix::Fp32 (subtype 0).
+         */
+        [[nodiscard]] bool delivered(Wire w) const noexcept
+        {
+            return (ctx_.target_opt & 0x3F) == static_cast<uint8_t>(w);
+        }
+
+        /*!
+         * @brief Whether the field currently being delivered has wire type @p w
+         *        and fixlen subtype @p f.
+         *
+         * `wire() == w && fixType() == f` as ONE comparison: the type and the
+         * subtype share one byte of the stream state, bits 0-2 and 3-5. Valid,
+         * like @ref wire, only before @ref read binds a destination.
+         */
+        [[nodiscard]] bool delivered(Wire w, Fix f) const noexcept
+        {
+            return (ctx_.target_opt & 0x3F)
+                == static_cast<uint8_t>(static_cast<uint8_t>(w) | (static_cast<uint8_t>(f) << 3));
+        }
+
+        /*!
+         * @brief @ref read for a scalar, reporting whether the field will be
+         *        decoded into @p value.
+         *
+         * Binds exactly as @ref read does and returns the §7.3 tag test the
+         * stream applies to that bind once the callback returns: on @c false
+         * the field is skipped and @p value is never written. The value
+         * itself arrives after the callback returns, so the caller may act on
+         * the result -- a tagged union selects the option here -- before it is
+         * written. Integers, @c bool, @c float and @c double; must be the first
+         * read of the field.
+         *
+         * @param value  Destination to decode into.
+         * @return @c true when the delivered field has the type @p T maps to.
+         */
+        template <typename T>
+        [[nodiscard]] bool readMatch(T &value) noexcept
+        {
+            static_assert(std::is_arithmetic_v<T>,
+                "readMatch binds a scalar: an integer, bool, float or double");
+            if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
+            {
+#if !SOFAB_CPP_HAVE_INT64
+                static_assert(sizeof(T) <= 4,
+                    "64-bit integer fields require INT64 support, disabled "
+                    "via SOFAB_DISABLE_INT64_SUPPORT");
+#endif
+                return bindMatch_(
+                    reinterpret_cast<void*>(&value), sizeof(T),
+                    std::is_unsigned_v<T>
+                        ? SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED)
+                        : SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_SIGNED));
+            }
+            else if constexpr (std::is_same_v<T, bool>)
+            {
+                return bindMatch_(&value, sizeof(bool),
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_VARINT_UNSIGNED)
+                    | SOFAB_ISTREAM_OPT_BOOLEAN);
+            }
+            else if constexpr (std::is_same_v<T, float>)
+            {
+                return bindMatch_(&value, sizeof(float),
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                    | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP32));
+            }
+            else
+            {
+                static_assert(std::is_same_v<T, double>,
+                    "readMatch binds a scalar: an integer, bool, float or double");
+#if SOFAB_CPP_HAVE_FP64
+                return bindMatch_(&value, sizeof(double),
+                    SOFAB_ISTREAM_OPT_FIELDTYPE(SOFAB_TYPE_FIXLEN)
+                    | SOFAB_ISTREAM_OPT_FIXLENTYPE(SOFAB_FIXLENTYPE_FP64));
+#else
+                static_assert(always_false_v<T>,
+                    "double (FP64) fields require FP64 support, disabled "
+                    "via SOFAB_DISABLE_FP64_SUPPORT");
+                return false;
+#endif
+            }
+        }
+
+        /*!
          * @brief Bind the current field to a typed destination, deducing the
          *        wire type from @p T.
          *
@@ -2863,6 +2979,45 @@ namespace sofab
         }
 
         /*!
+         * @brief @ref readString into a destination that comes into existence only
+         *        once the field matched: @p select is called behind the §7.3 test
+         *        and the two refusals, and returns the destination.
+         *
+         * For a tagged union's string option. Selecting the option -- ending the
+         * held one and constructing this one's storage -- is a change a skipped
+         * or refused field must not make, so it cannot happen before the call;
+         * and spelling the test in front of the call makes it twice, since the
+         * construction in between is a store the compiler cannot prove leaves
+         * the stream's state alone. Here the test is made once:
+         * ```cpp
+         * is.readString([this]() -> auto & { return mutable_s(); }, _size, 8);
+         * ```
+         *
+         * @param select  Callable returning the destination string by reference.
+         * @param size    Field length, as delivered to the field callback.
+         * @param maxlen  Schema `maxlen`, or -1 when the schema declares none.
+         */
+        template <typename Select,
+                  std::enable_if_t<std::is_invocable_v<Select &>, int> = 0>
+        void readString(Select &&select, size_t size, long maxlen = -1) noexcept
+        {
+            using T = std::remove_reference_t<std::invoke_result_t<Select &>>;
+
+            if (!delivered(Wire::Fixlen, Fix::String))
+            {
+                noteSkip_();
+                return;
+            }
+
+            if (refuseUnbounded(maxlen, fixed_capacity_v<T>) || refuseSchema(size, maxlen))
+            {
+                return;
+            }
+
+            bindString_(select(), size);
+        }
+
+        /*!
          * @brief @ref readString for a **schema-unbounded** `string`, bounded by the
          *        receiver cap the caller supplies (§6.2.1).
          *
@@ -2944,6 +3099,35 @@ namespace sofab
         }
 
         /*!
+         * @brief @ref readBlob into a destination that comes into existence only
+         *        once the field matched -- the blob counterpart of the selecting
+         *        @ref readString overload, for a tagged union's blob option.
+         *
+         * @param select  Callable returning the destination buffer by reference.
+         * @param size    Field length, as delivered to the field callback.
+         * @param maxlen  Schema `maxlen`, or -1 when the schema declares none.
+         */
+        template <typename Select,
+                  std::enable_if_t<std::is_invocable_v<Select &>, int> = 0>
+        void readBlob(Select &&select, size_t size, long maxlen = -1) noexcept
+        {
+            using T = std::remove_reference_t<std::invoke_result_t<Select &>>;
+
+            if (!delivered(Wire::Fixlen, Fix::Blob))
+            {
+                noteSkip_();
+                return;
+            }
+
+            if (refuseUnbounded(maxlen, fixed_capacity_v<T>) || refuseSchema(size, maxlen))
+            {
+                return;
+            }
+
+            bindBlob_(select(), size);
+        }
+
+        /*!
          * @brief @ref readBlob for a **schema-unbounded** `blob`, bounded by the
          *        receiver cap the caller supplies (§6.2.1).
          *
@@ -3016,6 +3200,40 @@ namespace sofab
         }
 
         /*!
+         * @brief @ref readArray into a destination that comes into existence only
+         *        once the field matched: @p select is called behind the §7.3 test
+         *        and returns the destination -- the array counterpart of the
+         *        selecting @ref readString overload, for a tagged union's array
+         *        option.
+         *
+         * @param select     Callable returning the destination array by reference.
+         * @param wireCount  Element count delivered to the field callback.
+         * @param cap        Schema `count`, or -1 when the schema declares none.
+         */
+        template <typename Select,
+                  std::enable_if_t<std::is_invocable_v<Select &>, int> = 0>
+        void readArray(Select &&select, size_t wireCount = 0, long cap = -1) noexcept
+        {
+            using C = std::remove_reference_t<std::invoke_result_t<Select &>>;
+
+            if (!arrayTagOk_<C>())
+            {
+                noteSkip_();
+                return;
+            }
+
+            C &out = select();
+            const long room = arrayRoom_(out, wireCount);
+
+            if (refuseUnbounded(cap, room) || refuseSchema(wireCount, cap))
+            {
+                return;
+            }
+
+            bindArray_(out, wireCount, room);
+        }
+
+        /*!
          * @brief @ref readArray for a **schema-unbounded** array, bounded by the
          *        receiver cap the caller supplies (§6.2.1).
          *
@@ -3067,6 +3285,32 @@ namespace sofab
                 return;
             }
 
+            out.clear();
+            collector.out = &out;
+            read(collector);
+        }
+
+        /*!
+         * @brief @ref readSequence into a destination that comes into existence
+         *        only once the field matched: @p select is called behind the §7.3
+         *        test and returns the destination -- for a tagged union's
+         *        wrapper-array option.
+         *
+         * @param collector  Collector for the element type (e.g. @ref FixedStringSeq).
+         * @param select     Callable returning the destination container by
+         *                   reference; it must outlive decoding.
+         */
+        template <typename C, typename Select,
+                  std::enable_if_t<std::is_invocable_v<Select &>, int> = 0>
+        void readSequence(C &collector, Select &&select) noexcept
+        {
+            if (!delivered(Wire::SequenceStart))
+            {
+                noteSkip_();
+                return;
+            }
+
+            auto &out = select();
             out.clear();
             collector.out = &out;
             read(collector);

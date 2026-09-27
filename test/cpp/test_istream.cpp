@@ -773,6 +773,154 @@ TEST_CASE("IStream: fixType() reports the delivered fixlen subtype")
     REQUIRE(fix6  == sofab::Fix::String);
 }
 
+// delivered(w) / delivered(w, f): the §7.3 tag test as one comparison, which a
+// tagged union runs before it selects a non-scalar option.
+TEST_CASE("IStream: delivered() matches wire type and fixlen subtype together")
+{
+    sofab::OStream ostream{64};
+    ostream
+        .write(1, uint32_t{7})                    // Unsigned
+        .write(2, 3.1415f)                        // Fixlen / Fp32
+        .write(3, std::string_view{"hi"});        // Fixlen / String
+    const auto used = ostream.bytesUsed();
+
+    bool u_unsigned = false, u_signed = true;
+    bool f_fp32 = false, f_fp64 = true, f_string = true;
+    bool s_string = false, s_blob = true;
+
+    sofab::IStreamInline istream{
+        [&](sofab::id id, size_t, size_t) noexcept
+        {
+            if (id == 1)
+            {
+                u_unsigned = istream.delivered(sofab::Wire::Unsigned);
+                u_signed = istream.delivered(sofab::Wire::Signed);
+            }
+            if (id == 2)
+            {
+                f_fp32 = istream.delivered(sofab::Wire::Fixlen, sofab::Fix::Fp32);
+                f_fp64 = istream.delivered(sofab::Wire::Fixlen, sofab::Fix::Fp64);
+                f_string = istream.delivered(sofab::Wire::Fixlen, sofab::Fix::String);
+            }
+            if (id == 3)
+            {
+                s_string = istream.delivered(sofab::Wire::Fixlen, sofab::Fix::String);
+                s_blob = istream.delivered(sofab::Wire::Fixlen, sofab::Fix::Blob);
+            }
+        }
+    };
+
+    auto result = istream.feed(ostream.data(), used);
+
+    REQUIRE(result.code() == sofab::Error::None);
+    REQUIRE(u_unsigned);
+    REQUIRE_FALSE(u_signed);
+    REQUIRE(f_fp32);
+    REQUIRE_FALSE(f_fp64);
+    REQUIRE_FALSE(f_string);
+    REQUIRE(s_string);
+    REQUIRE_FALSE(s_blob);
+}
+
+// readMatch: the bind read() makes, plus the §7.3 outcome of that bind -- true
+// exactly when the value will be written, which is after the callback returns.
+TEST_CASE("IStream: readMatch() reports the §7.3 outcome of its bind")
+{
+    SECTION("matching varint binds and reports true; the value arrives later")
+    {
+        uint8_t v = 3;
+        bool m = false, written_in_cb = true;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept
+            {
+                m = istream.readMatch(v);
+                written_in_cb = (v != 3);         // deferred: not yet written
+            }
+        };
+        const uint8_t buffer[] = {0x00, 0x09};    // id 0, Unsigned, 9
+        auto result = istream.feed(buffer, sizeof(buffer));
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(m);
+        REQUIRE_FALSE(written_in_cb);
+        REQUIRE(v == 9);
+    }
+
+    SECTION("wire-type mismatch reports false and the field is skipped")
+    {
+        uint8_t v = 3;
+        bool m = true;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { m = istream.readMatch(v); }
+        };
+        const uint8_t buffer[] = {0x01, 0x06};    // id 0, Signed, zig-zag 06
+        auto result = istream.feed(buffer, sizeof(buffer));
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE_FALSE(m);
+        REQUIRE(v == 3);
+    }
+
+    SECTION("signed varint matches a signed destination")
+    {
+        int16_t v = 0;
+        bool m = false;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { m = istream.readMatch(v); }
+        };
+        const uint8_t buffer[] = {0x01, 0x05};    // id 0, Signed, zig-zag 05 = -3
+        auto result = istream.feed(buffer, sizeof(buffer));
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(m);
+        REQUIRE(v == -3);
+    }
+
+    SECTION("fixlen subtype mismatch (fp64 into fp32) reports false")
+    {
+        sofab::OStream ostream{32};
+        ostream.write(4, 2.5).write(5, 1.5f);     // Fp64, then Fp32
+        float a = 7.0f, b = 7.0f;
+        bool ma = true, mb = false;
+        sofab::IStreamInline istream{
+            [&](sofab::id id, size_t, size_t) noexcept
+            {
+                if (id == 4) ma = istream.readMatch(a);
+                if (id == 5) mb = istream.readMatch(b);
+            }
+        };
+        auto result = istream.feed(ostream.data(), ostream.bytesUsed());
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE_FALSE(ma);
+        REQUIRE(a == 7.0f);
+        REQUIRE(mb);
+        REQUIRE(b == 1.5f);
+    }
+
+    SECTION("bool: the BOOLEAN flag is not part of the test")
+    {
+        bool v = false, m = false;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { m = istream.readMatch(v); }
+        };
+        const uint8_t buffer[] = {0x00, 0x05};    // id 0, Unsigned, 5 -> true
+        auto result = istream.feed(buffer, sizeof(buffer));
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE(m);
+        REQUIRE(v);
+    }
+
+    SECTION("bool: a signed varint is a mismatch")
+    {
+        bool v = false, m = true;
+        sofab::IStreamInline istream{
+            [&](sofab::id, size_t, size_t) noexcept { m = istream.readMatch(v); }
+        };
+        const uint8_t buffer[] = {0x01, 0x02};    // id 0, Signed
+        auto result = istream.feed(buffer, sizeof(buffer));
+        REQUIRE(result.code() == sofab::Error::None);
+        REQUIRE_FALSE(m);
+        REQUIRE_FALSE(v);
+    }
+}
+
 TEST_CASE("IStream: malformed input is rejected")
 {
     SECTION("field id varint overflow")
@@ -1745,6 +1893,100 @@ TEST_CASE("IStream: a field whose wire type contradicts the read is skipped inta
 #if SOFAB_SKIP_COUNTER
     REQUIRE(istream.skipped() == 4);
 #endif
+}
+
+// The selecting overloads: readString / readBlob / readArray / readSequence
+// given a callable instead of a destination call it only behind their own §7.3
+// test -- what a tagged union needs, whose option must not be selected for a
+// field that is skipped. `selected` counts the calls.
+class SelectingObject : public sofab::IStreamMessage
+{
+public:
+    TypeCheckedObject::StrSeq strSeq_;
+
+    sofab::FixedString<8>                         name;
+    sofab::FixedBytes<8>                          blob;
+    sofab::InlineVector<uint32_t, 4>              nums;
+    sofab::InlineVector<sofab::FixedString<8>, 4> tags;
+    int selected[4] = {0, 0, 0, 0};
+
+    void deserialize(sofab::IStreamImpl &is, sofab::id id, size_t size, size_t count) noexcept override
+    {
+        switch (id)
+        {
+            case 1: is.readString([this]() -> auto & { selected[0]++; return name; }, size, 8); break;
+            case 2: is.readBlob([this]() -> auto & { selected[1]++; return blob; }, size, 8);   break;
+            case 3: is.readSequence(strSeq_, [this]() -> auto & { selected[2]++; return tags; }); break;
+            case 4: is.readArray([this]() -> auto & { selected[3]++; return nums; }, count, 4); break;
+            default: break;
+        }
+    }
+
+    SelectingObject *operator->() noexcept { return this; }
+};
+
+TEST_CASE("IStream: the selecting reads select behind the tag test")
+{
+    SECTION("matching fields select once and decode")
+    {
+        const std::vector<uint8_t> blob = {1, 2, 3};
+        const std::array<uint32_t, 2> nums = {5, 6};
+        sofab::OStream os{256};
+        os.write(1, std::string_view{"couch"});
+        os.write(2, blob.data(), static_cast<int32_t>(blob.size()));
+        os.sequenceBeginLazy(3);
+        os.write(0, std::string_view{"a"});
+        os.write(1, std::string_view{"bb"});
+        os.sequenceEnd();
+        os.write(4, nums);
+
+        sofab::IStreamObject<SelectingObject> istream;
+        REQUIRE(istream.feed(os.data(), os.bytesUsed()).ok());
+
+        REQUIRE(istream->name == std::string_view{"couch"});
+        REQUIRE(istream->blob.size() == blob.size());
+        REQUIRE(std::equal(istream->blob.begin(), istream->blob.end(), blob.begin()));
+        REQUIRE(istream->tags.size() == 2);
+        REQUIRE(istream->tags[1] == std::string_view{"bb"});
+        REQUIRE(istream->nums.size() == 2);
+        REQUIRE(istream->nums[1] == 6);
+        for (int n : istream->selected) REQUIRE(n == 1);
+#if SOFAB_SKIP_COUNTER
+        REQUIRE(istream.skipped() == 0);
+#endif
+    }
+
+    SECTION("contradicting fields never select and are counted as skips")
+    {
+        sofab::OStream os{256};
+        os.write(1, uint32_t{42});                      // varint -> readString
+        os.write(2, std::string_view{"not a blob"});    // string -> readBlob
+        os.write(3, uint32_t{9});                       // varint -> readSequence
+        os.write(4, std::string_view{"x"});             // string -> readArray
+
+        sofab::IStreamObject<SelectingObject> istream;
+        REQUIRE(istream.feed(os.data(), os.bytesUsed()).ok());
+
+        for (int n : istream->selected) REQUIRE(n == 0);
+        REQUIRE(istream->name.size() == 0);
+        REQUIRE(istream->blob.size() == 0);
+        REQUIRE(istream->tags.size() == 0);
+        REQUIRE(istream->nums.size() == 0);
+#if SOFAB_SKIP_COUNTER
+        REQUIRE(istream.skipped() == 4);
+#endif
+    }
+
+    SECTION("a schema bound is refused before the string is selected")
+    {
+        sofab::OStream os{256};
+        os.write(1, std::string_view{"far too long"});  // > maxlen 8
+
+        sofab::IStreamObject<SelectingObject> istream;
+        auto result = istream.feed(os.data(), os.bytesUsed());
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        REQUIRE(istream->selected[0] == 0);
+    }
 }
 
 TEST_CASE("IStream: a skipped field does not disturb the fields around it")
