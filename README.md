@@ -718,10 +718,10 @@ until the test image links again.
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~4.0KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~4.0KB | 0.0KB | 0.0KB |
-| RV32IMC | ~5.2KB | 0.0KB | 0.0KB |
-| atmega8 | ~8.5KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.9KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.9KB | 0.0KB | 0.0KB |
+| RV32IMC | ~5.0KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.4KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — the only rows where the validator
 (`utf8.c`) is compiled in. The delta over *Full* above is its entire
@@ -729,15 +729,15 @@ until the test image links again.
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~4.2KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~4.2KB | 0.0KB | 0.0KB |
-| RV32IMC | ~5.4KB | 0.0KB | 0.0KB |
-| atmega8 | ~9.0KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~4.1KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~4.1KB | 0.0KB | 0.0KB |
+| RV32IMC | ~5.2KB | 0.0KB | 0.0KB |
+| atmega8 | ~8.8KB | 0.0KB | 0.0KB |
 
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
 those *Full* rows: 276&nbsp;B on ARMv6-m, 512&nbsp;B on atmega8. A pure-C consumer
 encoding only through `sofab_object_encode()` takes it back out with
-`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3830&nbsp;B, `sofab_ostream_t`
+`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3684&nbsp;B, `sofab_ostream_t`
 shrinks from 56&nbsp;B to 20&nbsp;B per stream, and a typical encode drops
 6&nbsp;Ir/op. The *Minimal* rows below disable sequences outright and are
 unaffected.
@@ -774,20 +774,20 @@ same [`tools/footprint.sh`](tools/footprint.sh):
 
 | Switch | `.text` | delta |
 | - | -: | -: |
-| *(full, the baseline)* | 4106&nbsp;B | — |
-| `SOFAB_DISABLE_OBJECT_API` | 2282&nbsp;B | **−1824&nbsp;B** |
-| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 3026&nbsp;B | **−1080&nbsp;B** |
-| `SOFAB_DISABLE_ARRAY_SUPPORT` | 3064&nbsp;B | **−1042&nbsp;B** |
-| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3278&nbsp;B | −828&nbsp;B |
-| `SOFAB_DISABLE_INT64_SUPPORT` | 3788&nbsp;B | −318&nbsp;B |
-| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3830&nbsp;B | −276&nbsp;B |
-| `SOFAB_DISABLE_UNION_SUPPORT` | 3868&nbsp;B | −238&nbsp;B |
-| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 4032&nbsp;B | −74&nbsp;B |
-| `SOFAB_DISABLE_FP64_SUPPORT` | 4060&nbsp;B | −46&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 4100&nbsp;B | −6&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 4118&nbsp;B | +12&nbsp;B |
-| `SOFAB_ENABLE_SKIP_COUNTER` | 4124&nbsp;B | +18&nbsp;B |
-| `SOFAB_ENABLE_STRICT_UTF8` | 4352&nbsp;B | +246&nbsp;B |
+| *(full, the baseline)* | 3960&nbsp;B | — |
+| `SOFAB_DISABLE_OBJECT_API` | 2282&nbsp;B | **−1678&nbsp;B** |
+| `SOFAB_DISABLE_ARRAY_SUPPORT` | 2918&nbsp;B | **−1042&nbsp;B** |
+| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 3026&nbsp;B | −934&nbsp;B |
+| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3148&nbsp;B | −812&nbsp;B |
+| `SOFAB_DISABLE_INT64_SUPPORT` | 3646&nbsp;B | −314&nbsp;B |
+| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3684&nbsp;B | −276&nbsp;B |
+| `SOFAB_DISABLE_UNION_SUPPORT` | 3868&nbsp;B | −92&nbsp;B |
+| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3886&nbsp;B | −74&nbsp;B |
+| `SOFAB_DISABLE_FP64_SUPPORT` | 3918&nbsp;B | −42&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3962&nbsp;B | +2&nbsp;B |
+| `SOFAB_ENABLE_SKIP_COUNTER` | 3978&nbsp;B | +18&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3982&nbsp;B | +22&nbsp;B |
+| `SOFAB_ENABLE_STRICT_UTF8` | 4206&nbsp;B | +246&nbsp;B |
 
 Four rows need a word:
 
@@ -795,11 +795,14 @@ Four rows need a word:
   arrays removes code dropping fixlen would also have removed — so a switch is
   worth *at most* its row here once another is on. The four configurations above
   are the measured combinations.
-- **`SOFAB_DISABLE_UNION_SUPPORT` buys 238&nbsp;B of flash, not time.** It is
-  the object API's tagged-union walk. A schema without unions never reaches it —
-  every union test sits in a branch a plain struct does not take — so it costs
-  such a schema flash only; built with the switch, `object.c` is the plain-struct
-  code byte for byte.
+- **`SOFAB_DISABLE_UNION_SUPPORT` buys 92&nbsp;B of flash** (atmega8: 216&nbsp;B)
+  and a few cycles. It is the object API's tagged-union walk, shaped for the
+  smallest code: the walks test the union flag and the tag per field, so a schema
+  without unions pays those tests too — measured on sofabgen's C bench schema
+  with its unions removed (x86-64, `-O3`): +1.2&nbsp;% encode, +2.8&nbsp;% decode
+  `Ir/op`. Built with the switch, `object.c` is the plain-struct code byte for
+  byte, so a union-free build should set it; sofabgen's generated C project does
+  so on its own for a schema without a union.
 - **`SOFAB_OBJECT_DESCR_PROFILE` barely moves the library and `SMALL` makes it
   slightly bigger.** The profile sizes the descriptor members in **your** tables,
   which is where the saving lands; narrower members cost the library a few

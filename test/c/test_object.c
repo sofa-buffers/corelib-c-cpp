@@ -3704,6 +3704,20 @@ static void test_object_union_nested_union_not_default_when_forced (void)
     _uf_check(&m, ar0, sizeof(ar0), "array option at count 0 beside a union D");
 }
 
+static void test_object_union_stray_tag_holds_nothing (void)
+{
+    _uf_msg_t m;
+    uint8_t out[32];
+    sofab_object_init(&_uf_msg, &m);
+
+    /* a tag that names no option (a caller's stray write) holds nothing: no
+     * option is written and the union reads as default, so its parent omits
+     * it -- which a receiver decodes as default_id at its default */
+    m.f.which = 99;
+    m.r.which = 99;
+    TEST_ASSERT_EQUAL_size_t(0, _un_encode_any(&_uf_msg, &m, out, sizeof(out)));
+}
+
 static void test_object_union_prefix_image (void)
 {
     _uf_msg_t m, d;
@@ -3841,6 +3855,7 @@ int test_object_main (void)
     RUN_TEST(test_object_union_array_elements_roundtrip);
     RUN_TEST(test_object_union_held_option_at_own_default_is_written);
     RUN_TEST(test_object_union_nested_union_not_default_when_forced);
+    RUN_TEST(test_object_union_stray_tag_holds_nothing);
     RUN_TEST(test_object_union_prefix_image);
     RUN_TEST(test_object_union_array_default_id_not_first);
 #endif
