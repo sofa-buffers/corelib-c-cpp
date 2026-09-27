@@ -412,27 +412,79 @@ extern "C" {
  * union frame carries at most one child); on decode the option received last
  * wins, and switching to a sequence option starts it from its default.
  *
- * @p default_struct is the object's default image: its tag names `default_id`,
- * and its storage holds that option's default.
+ * **Encode** (MESSAGE_SPEC §2/§4.2). The held option is the only child the
+ * union frame can carry. When it is the `default_id` option it is written like
+ * an ordinary field — omitted iff it equals its default, so a union holding
+ * `default_id` at its default is itself default and is omitted by its parent.
+ * Any other held option is written @b even @b at @b its @b own @b default: a
+ * scalar as its value, a string or sized blob as the empty value, a sized array
+ * as count 0 (a fixlen array keeps its @c fixlen_word), and a sequence option
+ * (struct, union or wrapper-array holder) as a present, possibly empty, frame.
+ * Otherwise the receiver, whose fresh union holds `default_id`, could not tell
+ * that another option was selected. A union holding a non-`default_id` option is
+ * therefore never default, one level up included.
  *
- * @warning PROTOTYPE LIMITATION — one default image for all options. The
- * options overlay each other, so the single image can only carry ONE option's
- * default, the `default_id` option's. A different option that declares a
- * non-zero default is handled wrongly in two places: a decode that switches to
- * it does not seed it from its default (a leaf option is fully overwritten by
- * the incoming value, so this only bites a partially written option), and the
- * ≠-default test compares it against the `default_id` option's bytes, so the
- * §2 degenerate case (held option equal to its own default -> omitted) is
- * missed or mis-detected. Options whose default is zero — the common case, and
- * every option of a union whose `default_id` option also defaults to zero —
- * are exact.
+ * **Decode** (MESSAGE_SPEC §7.4.1). The tag switches at the point where a field
+ * is known to be bound — past the MESSAGE_SPEC §7.3 wire-type/subtype test — so a
+ * skipped child or an unknown id never switches the union. A switch to a
+ * sequence option starts it from its default (its own descriptor); the same
+ * option received again continues its scope (§7.4 merge); a leaf option is
+ * replaced whole by its payload. Several children and re-opened frames are
+ * legal: the option received last wins.
+ *
+ * @p default_image is the object's default image, or @c NULL. It covers the tag
+ * and the `default_id` option @b only — a prefix of @p obj, never a full image:
+ * the corelib reads the tag (the `default_id`) and, for a leaf `default_id`
+ * option, that option's own bytes and companion length, and nothing else. A
+ * non-`default_id` option is never compared (it is forced) and a sequence option
+ * is always seeded through its own descriptor. So an image type is
+ * `struct { sofab_object_descr_id_t which; }` when `default_id` names a sequence
+ * option, or `struct { sofab_object_descr_id_t which; union { D; A align; } u; }`
+ * for a leaf one, with @c offsetof(image, u) @c == @c offsetof(obj, u). @c NULL
+ * means tag 0 with an all-zero `default_id` option — exactly what an image
+ * carrying nothing but zeros would say, at no @c .rodata cost.
+ *
+ * Why one image is enough (MESSAGE_SPEC §4.2 / §6): a union option of type
+ * string, blob or array may not declare a non-empty default. Init seeds only
+ * `default_id`; the ≠-default test only ever compares a held `default_id`
+ * option (any other held option is forced); a decode that switches to a
+ * sequence option re-initialises it through its own descriptor, and a leaf
+ * option is overwritten whole by its payload. No other option's default is ever
+ * needed, so the options' overlay costs nothing in correctness. Selecting an
+ * option by hand is the caller writing the tag and the value — for a sequence
+ * option at its default, the tag and @ref sofab_object_init on that option's
+ * descriptor.
  *
  * Built with @c SOFAB_DISABLE_UNION_SUPPORT (or without sequence support) the
- * union walk compiles out and such a descriptor behaves as a plain struct.
+ * union walk compiles out and such a descriptor behaves as a plain struct: every
+ * option is initialised, compared and encoded although they overlay each other,
+ * which no union survives. The switch must therefore be configured identically
+ * for the library and for every includer; generated code refuses to build
+ * against it.
+ *
+ * @param field_list    Array of @ref sofab_object_descr_field_t (one per option).
+ * @param field_count   Number of options.
+ * @param nested_list   Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
+ * @param nested_count  Number of entries in @p nested_list.
+ * @param default_image Pointer to the prefix default image, or @c NULL (tag 0,
+ *                      `default_id` option all-zero or a sequence).
+ * @param obj           The union object type.
+ * @param tfield        The tag member, a @c sofab_object_descr_id_t declared
+ *                      @b first in @p obj (at offset 0).
  */
-#define SOFAB_OBJECT_DESCR_UNION(field_list, field_count, nested_list, nested_count, default_struct, obj, tfield) \
-    { (field_list), (nested_list), (const void *)&(default_struct), (field_count), (nested_count), \
-      (uint8_t)(SOFAB_OBJECT_UNION \
+/*! @cond INTERNAL */
+/* The union bit a union descriptor carries: none when the union walk is compiled
+ * out, so such a descriptor really is a plain struct (fixed_seq == 0) to every
+ * walk -- and the plain-struct paths need no mask for a bit that cannot be set. */
+#if defined(SOFAB_DISABLE_UNION_SUPPORT) || defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+#  define _SOFAB_OBJECT_UNION_BIT 0u
+#else
+#  define _SOFAB_OBJECT_UNION_BIT SOFAB_OBJECT_UNION
+#endif
+/*! @endcond */
+#define SOFAB_OBJECT_DESCR_UNION(field_list, field_count, nested_list, nested_count, default_image, obj, tfield) \
+    { (field_list), (nested_list), (const void *)(default_image), (field_count), (nested_count), \
+      (uint8_t)(_SOFAB_OBJECT_UNION_BIT \
                 | 0u * sizeof(char[sizeof(((obj *)0)->tfield) == sizeof(sofab_object_descr_id_t) ? 1 : -1]) \
                 | SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, tfield)) }
 
