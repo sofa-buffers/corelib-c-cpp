@@ -1987,6 +1987,18 @@ TEST_CASE("IStream: the selecting reads select behind the tag test")
         REQUIRE(result.code() == sofab::Error::InvalidMessage);
         REQUIRE(istream->selected[0] == 0);
     }
+
+    SECTION("a schema count is refused before the array is selected")
+    {
+        const std::array<uint32_t, 5> nums = {1, 2, 3, 4, 5};  // > count 4
+        sofab::OStream os{256};
+        os.write(4, nums);
+
+        sofab::IStreamObject<SelectingObject> istream;
+        auto result = istream.feed(os.data(), os.bytesUsed());
+        REQUIRE(result.code() == sofab::Error::InvalidMessage);
+        REQUIRE(istream->selected[3] == 0);
+    }
 }
 
 TEST_CASE("IStream: a skipped field does not disturb the fields around it")
