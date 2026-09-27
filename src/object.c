@@ -137,23 +137,26 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
  * overlay the same storage. The tag at offset 0 of the object holds the id of
  * the option received LAST (MESSAGE_SPEC §7.4.1: the last correctly-typed option
  * wins), the way a sized holder's count at offset 0 holds its length. Every walk
- * visits the held option only: init seeds it, the ≠-default test and encode look
- * at nothing else, and decode records the tag at the same "was bound" point where
- * a holder records its length -- so an option skipped under §7.3 never switches
- * the union.
+ * treats an option that is not the held one as absent: init seeds only the held
+ * option, the ≠-default test and encode look at nothing else, and decode records
+ * the tag at the same "was bound" point where a holder records its length -- so
+ * an option skipped under §7.3 never switches the union.
  *
  * The default image is a PREFIX (object.h): the tag, then the `default_id`
  * option's own bytes when that option is a leaf. A NULL image means tag 0. A held
- * option other than `default_id` is FORCED (MESSAGE_SPEC §2/§4.2): written even
- * at its own default and never compared against the image, which does not carry
- * it -- and a union holding one is never default, so its parent frames it.
+ * option other than `default_id` is FORCED (MESSAGE_SPEC §2/§4.2): it is never
+ * default (@ref _field_is_default), so it is written even at its own default and
+ * never compared against the image, which does not carry it -- and a union
+ * holding one is never default either, so its parent frames it. A tag that names
+ * no option (a caller's stray write) holds nothing: no option is seeded, compared
+ * or written, and the union reads as default -- omitted, which a receiver decodes
+ * as `default_id` at its default.
  *
- * Cost on a union-free schema: none. A union sets bit 7 of @c fixed_seq, so it
- * is one of the descriptors whose @c fixed_seq is non-zero (with the wrapper
- * holders); every walk already branches on that byte once, and the union test
- * sits inside that branch. A plain struct never reaches it, no per-field loop
- * carries a union test, and a union's walk narrows the field range to the held
- * option once instead of testing every field.
+ * Shaped for the footprint profile, where flash outranks cycles: the walks test
+ * the tag against the field id per field (init, the ≠-default test, the decode
+ * re-init) instead of narrowing each walk to the held option up front. That is
+ * the least code; a union-free schema pays it as one flag test per field in
+ * cycles, and in flash only this code.
  * @{
  */
 #if !defined(SOFAB_DISABLE_UNION_SUPPORT) && !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
@@ -164,50 +167,17 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
 #  define _IS_HOLDER(info) ((info)->fixed_seq & SOFAB_OBJECT_SEQ_HOLDER)
 #else
 /* SOFAB_OBJECT_DESCR_UNION sets no bit in this build (object.h), so no
- * descriptor is a union, a non-zero fixed_seq is a holder, and no walk needs
- * either test beyond what it always had. */
+ * descriptor is a union and a non-zero fixed_seq is a holder. */
+#  define _IS_UNION(info) 0
 #  define _IS_HOLDER(info) ((info)->fixed_seq)
 #endif
-#if defined(_SOFAB_WITH_UNION)
 /*! The tag: the id of the held option, typed like a descriptor field id. */
 #define _TAG(obj) (*(sofab_object_descr_id_t *)(uintptr_t)(const void *)(obj))
 /*! The `default_id`: the image's leading tag, or 0 without an image. */
 #define _DEFAULT_TAG(info) ((info)->default_values \
        ? *(const sofab_object_descr_id_t *)(info)->default_values : 0u)
-/*! A union holding an option other than `default_id`: written, never omitted. */
-#define _UNION_FORCED(info, obj) (_TAG(obj) != _DEFAULT_TAG(info))
-
-/*!
- * @brief Index of the option a union holds, or @c SIZE_MAX for none.
- *
- * The walks run over @c [held, held + 1) instead of testing every option: one
- * scan per union walk, and the per-field loop bodies stay those of a plain
- * struct. A tag that names no option (a caller's stray write) selects nothing:
- * @c SIZE_MAX @c + @c 1 wraps to 0, so that range is empty and no option is
- * seeded, compared or written. (The union's own frame is still written when
- * such a tag is not `default_id`; it decodes as `default_id` at its default.)
- */
-static size_t _union_held (const sofab_object_descr_t *info, const void *obj)
-{
-    for (size_t i = 0; i < info->field_count; i++)
-    {
-        if (info->field_list[i].id == _TAG(obj)) return i;
-    }
-    return (size_t)-1;
-}
-
-/*
- * Keeps the call before it from becoming a sibling call. The union branch of
- * the field callback ends in a call (a switched-to sequence option's init);
- * compiled as a tail call it needs its own copy of the callback's register
- * restore, which on RV32IMC and AVR costs more than the call it replaces.
- */
-#if defined(__GNUC__)
-#  define _SOFAB_NO_TAIL_CALL() __asm__ __volatile__("")
-#else
-#  define _SOFAB_NO_TAIL_CALL() ((void)0)
-#endif
-#endif /* defined(_SOFAB_WITH_UNION) */
+/*! A field of a union that is not the held option: skipped, as if absent. */
+#define _NOT_HELD(info, obj, field) (_IS_UNION(info) && _TAG(obj) != (field)->id)
 /*! @} */
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
@@ -220,14 +190,24 @@ static size_t _union_held (const sofab_object_descr_t *info, const void *obj)
  * (@ref SOFAB_OBJECT_DESCR_SEQ_SIZED). A plain object (@c fixed_seq @c == @c 0)
  * and an un-sized holder (@ref SOFAB_OBJECT_DESCR_SEQ, @c fixed_seq @c == @c 1)
  * both yield 0, which is what every "does it carry a length?" test below asks.
- * A union (bit 7) yields non-zero as well: every caller that can meet one tests
- * @ref _IS_UNION inside its non-zero branch, before it uses the value as a width,
- * which keeps the union test off the plain-struct path.
+ *
+ * A union (bit 7 only) yields 0x40 here, which is no width: @ref _store_uint and
+ * @ref _load_uint ignore it (their default arms), so the two callers that only
+ * store or raise a length -- init and @ref _seq_len_observe -- do nothing for a
+ * union and need no union test of their own. The one caller that DECIDES on the
+ * width, the ≠-default test, masks it (@ref _seq_len_width_masked).
  */
 static uint8_t _seq_len_width (const sofab_object_descr_t *info)
 {
     return (uint8_t)(info->fixed_seq >> SOFAB_OBJECT_SEQ_LEN_SHIFT);
 }
+
+/*! @ref _seq_len_width with the union bit masked off: 0 for a union. */
+#if defined(_SOFAB_WITH_UNION)
+#  define _seq_len_width_masked(info) (_seq_len_width(info) & 0x0Fu)
+#else
+#  define _seq_len_width_masked(info) _seq_len_width(info)
+#endif
 
 /*!
  * @def _SEQ_LEN_OFFSET
@@ -299,48 +279,10 @@ static size_t _seq_len (const sofab_object_descr_t *info, const void *obj)
 static void _seq_len_observe (const sofab_object_descr_t *info,
                               uint8_t *dst, sofab_id_t id)
 {
-#if defined(_SOFAB_WITH_UNION)
-    /* Tested on the flags byte itself, so a plain struct leaves exactly as
-     * early and as cheaply as it does on the width alone (fixed_seq 0: a plain
-     * struct; 1: an un-sized holder -- neither records anything). */
-    const uint8_t flags = info->fixed_seq;
-    uint8_t width;
-    size_t off, len;
-
-    if (flags <= SOFAB_OBJECT_SEQ_HOLDER) return;
-    if (flags & SOFAB_OBJECT_UNION)
-    {
-        /* A union records the option it now holds instead: MESSAGE_SPEC
-         * §7.4.1, the last correctly-typed option wins, and this is the point
-         * where the option is known to be bound, so a child skipped under §7.3
-         * or an unknown id never switches it. A switch to a sequence option
-         * starts that option from its default -- its own descriptor -- before
-         * any of its children arrive (they are delivered after the field
-         * callback returns). The held option received again continues its
-         * scope under §7.4; a leaf option is overwritten whole by its payload.
-         * The option is found: @p id matched one of the union's fields. */
-        if (_TAG(dst) != (sofab_object_descr_id_t)id)
-        {
-            const sofab_object_descr_field_t *held;
-
-            _TAG(dst) = (sofab_object_descr_id_t)id;
-            held = &info->field_list[_union_held(info, dst)];
-            if (held->type == SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
-            {
-                sofab_object_init(info->nested_list[held->nested_idx],
-                                  dst + held->offset);
-                _SOFAB_NO_TAIL_CALL();
-            }
-        }
-        return;
-    }
-    width = (uint8_t)(flags >> SOFAB_OBJECT_SEQ_LEN_SHIFT);
-#else
     uint8_t width = _seq_len_width(info);
     size_t off, len;
 
     if (width == 0) return;
-#endif
 
     off = _SEQ_LEN_OFFSET;
     len = (size_t)id + 1u;
@@ -350,6 +292,18 @@ static void _seq_len_observe (const sofab_object_descr_t *info,
     {
         _store_uint(dst + off, width, (uint64_t)len);
     }
+
+#if defined(_SOFAB_WITH_UNION)
+    /* A union records the option it now holds instead (MESSAGE_SPEC §7.4.1: the
+     * last correctly-typed option wins); the length steps above are no-ops for
+     * it (its "width" is the union bit, see _seq_len_width). This is the point
+     * where the option is known to be bound, so a child skipped under §7.3 or an
+     * unknown id never switches it; a leaf option switched to is overwritten
+     * whole by its payload, a sequence option was re-initialised when its frame
+     * opened. Tested on the width already in hand: the smallest code. */
+    if (width & (SOFAB_OBJECT_UNION >> SOFAB_OBJECT_SEQ_LEN_SHIFT))
+        _TAG(dst) = (sofab_object_descr_id_t)id;
+#endif
 }
 
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
@@ -565,35 +519,34 @@ static int _field_is_default (
     const sofab_object_descr_field_t *field,
     const void *src)
 {
+#if defined(_SOFAB_WITH_UNION)
+    /* The union rule, decided here for both callers -- encode, and the SEQUENCE
+     * branch below one level up -- so neither loop tests the tag itself:
+     *  - an option the union does not hold is absent, hence default: encode
+     *    skips it, and it never makes the union non-default;
+     *  - the held option, when it is not `default_id`, is never default: it is
+     *    FORCED (MESSAGE_SPEC §4.2) -- written even at its own default, a scalar
+     *    as its value, a string/blob empty, an array as count 0, a sequence
+     *    option as a present frame -- because a receiver's fresh union holds
+     *    `default_id` and would read the omission back as that. The same answer
+     *    one level up makes the union holding it not default, so its parent
+     *    frames it;
+     *  - `default_id` held is compared against its default like any field. */
+    if (_IS_UNION(info))
+    {
+        if (field->id != _TAG(src)) return 1;
+        if (field->id != _DEFAULT_TAG(info)) return 0;
+    }
+#endif
+
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     if (field->type == SOFAB_OBJECT_FIELDTYPE_SEQUENCE)
     {
         const sofab_object_descr_t *ninfo = info->nested_list[field->nested_idx];
         const void *nsrc = CAST_TO(const void *, src, field->offset);
-#if defined(_SOFAB_WITH_UNION)
-        size_t i = 0;
-        size_t n = ninfo->field_count;
-#endif
 
-        if (_seq_len_width(ninfo) != 0)
+        if (_seq_len_width_masked(ninfo) != 0)
         {
-#if defined(_SOFAB_WITH_UNION)
-            if (_IS_UNION(ninfo))
-            {
-                /* A union is default iff it holds `default_id` at that option's
-                 * default. Any other held option is FORCED (MESSAGE_SPEC §4.2):
-                 * written even at its own default -- a scalar as its value, a
-                 * string/blob empty, an array as count 0, a sequence option as a
-                 * present frame -- because a receiver's fresh union holds
-                 * `default_id` and would read the omission back as that. So the
-                 * union holding it is never default either, which is what makes
-                 * its parent frame it. Otherwise only the held option is asked. */
-                if (_UNION_FORCED(ninfo, nsrc)) return 0;
-                i = _union_held(ninfo, nsrc);
-                n = i + 1u;
-            }
-            else
-#endif
             /* Sized wrapper holder: the length IS the value (§5.1), so the test is
              * "is the array empty?" and nothing else -- exactly like a sized blob
              * or a sized array. Scanning the slots would be wrong twice over: their
@@ -605,11 +558,7 @@ static int _field_is_default (
             return _seq_len(ninfo, nsrc) == 0;
         }
 
-#if defined(_SOFAB_WITH_UNION)
-        for (; i < n; i++)
-#else
         for (size_t i = 0; i < ninfo->field_count; i++)
-#endif
         {
             if (!_field_is_default(ninfo, &ninfo->field_list[i], nsrc))
                 return 0;
@@ -681,10 +630,6 @@ extern sofab_ret_t sofab_object_init (
     const sofab_object_descr_t *info,
     void *obj)
 {
-#if defined(_SOFAB_WITH_UNION)
-    size_t i = 0;
-    size_t n = info->field_count;
-#endif
     assert(info != NULL);
     assert(obj != NULL);
 
@@ -699,29 +644,23 @@ extern sofab_ret_t sofab_object_init (
         uint8_t seq_width = _seq_len_width(info);
         if (seq_width != 0)
         {
-#if defined(_SOFAB_WITH_UNION)
-            /* A union holds `default_id` at that option's default: the tag
-             * first, then the loop below seeds that one option only. */
-            if (_IS_UNION(info))
-            {
-                _TAG(obj) = (sofab_object_descr_id_t)_DEFAULT_TAG(info);
-                i = _union_held(info, obj);
-                n = i + 1u;
-            }
-            else
-#endif
             _store_uint(CAST_TO(void *, obj, _SEQ_LEN_OFFSET), seq_width, 0);
         }
     }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
 #if defined(_SOFAB_WITH_UNION)
-    for (; i < n; i++)
-#else
-    for (size_t i = 0; i < info->field_count; i++)
+    /* A union holds `default_id` at that option's default: the tag first, then
+     * the loop below seeds that one option only. */
+    if (_IS_UNION(info))
+        _TAG(obj) = (sofab_object_descr_id_t)_DEFAULT_TAG(info);
 #endif
+
+    for (size_t i = 0; i < info->field_count; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
+
+        if (_NOT_HELD(info, obj, field)) continue;
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
         /* A nested object is seeded field by field, not as a byte image: its own
@@ -782,9 +721,6 @@ extern sofab_ret_t sofab_object_encode (
     const void *src)
 {
     sofab_ret_t ret = SOFAB_RET_OK;
-#if defined(_SOFAB_WITH_UNION)
-    size_t first = 0;
-#endif
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     size_t count;
     size_t last;
@@ -822,40 +758,19 @@ extern sofab_ret_t sofab_object_encode (
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     count = info->field_count;
     last  = (size_t)-1;
-    if (info->fixed_seq)
+    if (_IS_HOLDER(info))
     {
-#if defined(_SOFAB_WITH_UNION)
-        /* A union walks its held option only, and a held option other than
-         * `default_id` is FORCED (MESSAGE_SPEC §4.2) -- written even at its own
-         * default, exactly like the last element of a holder, so it takes the
-         * same `last` exemption from the ≠-default test below. */
-        if (_IS_UNION(info))
-        {
-            first = _union_held(info, src);
-            count = first + 1u;
-            if (_UNION_FORCED(info, src)) last = first;
-        }
-        else
-#endif
-        {
-            count = _seq_len(info, src);
-            last  = count - 1u;   /* count == 0 -> SIZE_MAX, and the loop never runs */
-        }
+        count = _seq_len(info, src);
+        last  = count - 1u;   /* count == 0 -> SIZE_MAX, and the loop never runs */
     }
-#  if defined(_SOFAB_WITH_UNION)
-#    define _SOFAB_FIELD_FIRST first
-#  else
-#    define _SOFAB_FIELD_FIRST 0
-#  endif
 #  define _SOFAB_FIELD_COUNT count
 #  define _SOFAB_ELEMENT_HELD(i) ((i) == last)
 #else
-#  define _SOFAB_FIELD_FIRST 0
 #  define _SOFAB_FIELD_COUNT (info->field_count)
 #  define _SOFAB_ELEMENT_HELD(i) 0
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
-    for (size_t i = _SOFAB_FIELD_FIRST; i < _SOFAB_FIELD_COUNT && ret == SOFAB_RET_OK; i++)
+    for (size_t i = 0; i < _SOFAB_FIELD_COUNT && ret == SOFAB_RET_OK; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
@@ -1031,7 +946,6 @@ extern sofab_ret_t sofab_object_encode (
                 return SOFAB_RET_E_ARGUMENT;
         }
     }
-#undef _SOFAB_FIELD_FIRST
 #undef _SOFAB_FIELD_COUNT
 #undef _SOFAB_ELEMENT_HELD
 
@@ -1201,9 +1115,12 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
                 // requires sofab_object_init() between decodes, exactly as it
                 // always has for an omitted leaf field (see object.h).
                 //
-                // A union option switched to is started from its default once
-                // the frame is known to be bound (_seq_len_observe, below).
-                if (_IS_HOLDER(nested->info))
+                // A union option switched to starts from its default
+                // (MESSAGE_SPEC §7.4.1), before any of its children arrive. Past
+                // the wire-type test above the frame is bound (a sequence read
+                // always binds), so this is the "was bound" point; the tag
+                // follows below. The held option received again merges (§7.4).
+                if (_IS_HOLDER(nested->info) || _NOT_HELD(info, decoder->dst, field))
                 {
                     sofab_object_init(nested->info, nested->dst);
                 }
