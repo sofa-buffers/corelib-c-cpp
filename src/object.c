@@ -173,12 +173,24 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
 #endif
 /*! The tag: the id of the held option, typed like a descriptor field id. */
 #define _TAG(obj) (*(sofab_object_descr_id_t *)(uintptr_t)(const void *)(obj))
-/*! The `default_id`: the image's leading tag, or 0 without an image. */
-#define _DEFAULT_TAG(info) ((info)->default_values \
-       ? *(const sofab_object_descr_id_t *)(info)->default_values : 0u)
 /*! A field of a union that is not the held option: skipped, as if absent. */
 #define _NOT_HELD(info, obj, field) (_IS_UNION(info) && _TAG(obj) != (field)->id)
 /*! @} */
+
+#if defined(_SOFAB_WITH_UNION)
+/*!
+ * @brief A union's `default_id`: the default image's leading tag, or 0 without
+ *        an image.
+ *
+ * Out of line rather than a macro: its two callers (init and the ≠-default
+ * test) share one body, which is the smaller image on the footprint targets.
+ */
+static sofab_object_descr_id_t _default_tag(const sofab_object_descr_t *info)
+{
+    return info->default_values
+        ? *(const sofab_object_descr_id_t *)info->default_values : 0u;
+}
+#endif
 
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 /*!
@@ -535,7 +547,7 @@ static int _field_is_default (
     if (_IS_UNION(info))
     {
         if (field->id != _TAG(src)) return 1;
-        if (field->id != _DEFAULT_TAG(info)) return 0;
+        if (field->id != _default_tag(info)) return 0;
     }
 #endif
 
@@ -653,7 +665,7 @@ extern sofab_ret_t sofab_object_init (
     /* A union holds `default_id` at that option's default: the tag first, then
      * the loop below seeds that one option only. */
     if (_IS_UNION(info))
-        _TAG(obj) = (sofab_object_descr_id_t)_DEFAULT_TAG(info);
+        _TAG(obj) = _default_tag(info);
 #endif
 
     for (size_t i = 0; i < info->field_count; i++)
