@@ -75,20 +75,6 @@ if(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
     target_compile_definitions(sofabuffers PUBLIC SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
 endif()
 
-# The tagged-union walk of the object API (SOFAB_OBJECT_DESCR_UNION) can be
-# compiled out too. It removes no wire construct -- a union frame is an ordinary
-# sequence to the streams -- only the object API's handling of a union
-# descriptor: built with it, such a descriptor behaves as a plain struct whose
-# overlaid options are all initialised, compared and encoded, which no union
-# survives. Generated code that uses a union refuses to build against it. PUBLIC
-# for the same reason as above: the library and every includer must agree, or a
-# union descriptor built by one is walked wrongly by the other.
-option(SOFAB_DISABLE_UNION_SUPPORT
-    "Exclude the tagged-union walk of the object API (SOFAB_OBJECT_DESCR_UNION)" OFF)
-if(SOFAB_DISABLE_UNION_SUPPORT)
-    target_compile_definitions(sofabuffers PUBLIC SOFAB_DISABLE_UNION_SUPPORT)
-endif()
-
 # The object descriptor width profile is configured the same way, and for the
 # same reason applied PUBLIC: SOFAB_OBJECT_DESCR_PROFILE selects the integer
 # widths of sofab_object_descr_field_t in the *public* header, so the library and
