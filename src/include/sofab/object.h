@@ -99,7 +99,8 @@ extern "C" {
  * @param type   Field type tag (one of the scalar @ref SOFAB_OBJECT_FIELDTYPE_UNSIGNED "SOFAB_OBJECT_FIELDTYPE_*").
  */
 #define SOFAB_OBJECT_FIELD(id, obj, field, type) \
-    { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field) & 0xF) }
+    { id, offsetof(obj, field) + SOFAB_OBJECT_ASSERT_FITS_PROFILE(obj, field, id), \
+      sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field) & 0xF) }
 
 /*!
  * @brief Build a variable-length blob field descriptor (reuses the BLOB type).
@@ -128,11 +129,37 @@ extern "C" {
  * @param lfield  Used-length member, declared immediately before @p dfield.
  */
 #define SOFAB_OBJECT_FIELD_BLOB_SIZED(id, obj, dfield, lfield) \
-    { id, offsetof(obj, dfield), sizeof(((obj *)0)->dfield), \
+    { id, offsetof(obj, dfield) + SOFAB_OBJECT_ASSERT_FITS_PROFILE(obj, dfield, id), \
+      sizeof(((obj *)0)->dfield), \
       (uint8_t)(sizeof(((obj *)0)->lfield) \
                 + SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, dfield, lfield)), \
       SOFAB_OBJECT_FIELDTYPE_BLOB, \
       (sizeof(((obj *)0)->dfield) & 0xF) }
+
+/*!
+ * @brief Compile-time check that a field fits the configured descriptor profile.
+ *
+ * @ref SOFAB_OBJECT_DESCR_PROFILE narrows the descriptor's @c id, @c offset and
+ * @c size members (SMALL: 8 bit, MEDIUM: 16, BIG: 32). A field past the
+ * resulting ceiling does not merely fail to be described -- its offset is
+ * silently truncated, so the walk reads and writes the wrong member. The
+ * compiler's own @c -Woverflow catches the narrowing only as a warning, and only
+ * where it is enabled; this makes it an error that names the cause, at no cost
+ * to the descriptor.
+ *
+ * The test is the narrowing itself -- does the value survive the round trip
+ * through the profile's type? -- not a comparison against the ceiling. A range
+ * test is tautological wherever @c size_t is no wider than the member (BIG on a
+ * 32-bit target), which @c -Wtype-limits rejects; the round trip is the same
+ * question and is never trivially true.
+ */
+#define SOFAB_OBJECT_ASSERT_FITS_PROFILE(obj, field, id) \
+    (0u * sizeof(struct { int field_exceeds_the_SOFAB_OBJECT_DESCR_PROFILE_id_offset_or_size_ceiling \
+            : ((size_t)(sofab_object_descr_offset_t)(offsetof(obj, field)) \
+                   == (size_t)(offsetof(obj, field)) \
+               && (size_t)(sofab_object_descr_size_t)(sizeof(((obj *)0)->field)) \
+                   == (size_t)(sizeof(((obj *)0)->field)) \
+               && (size_t)(sofab_object_descr_id_t)(id) == (size_t)(id)) ? 1 : -1; }))
 
 /*!
  * @brief Compile-time check that @p lfield immediately precedes @p dfield.
@@ -181,7 +208,8 @@ extern "C" {
  * @param idx    Index of the nested descriptor in the @c nested_list.
  */
 #define SOFAB_OBJECT_FIELD_SEQUENCE(id, obj, field, type, idx) \
-    { id, offsetof(obj, field), sizeof(((obj *)0)->field), idx, type, (sizeof(((obj *)0)->field) & 0xF) }
+    { id, offsetof(obj, field) + SOFAB_OBJECT_ASSERT_FITS_PROFILE(obj, field, id), \
+      sizeof(((obj *)0)->field), idx, type, (sizeof(((obj *)0)->field) & 0xF) }
 
 /*!
  * @brief Build an array field descriptor.
@@ -196,7 +224,8 @@ extern "C" {
  * @param type   Field type tag (one of the array @ref SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED "SOFAB_OBJECT_FIELDTYPE_ARRAY_*").
  */
 #define SOFAB_OBJECT_FIELD_ARRAY(id, obj, field, type) \
-    { id, offsetof(obj, field), sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field[0]) & 0xF) }
+    { id, offsetof(obj, field) + SOFAB_OBJECT_ASSERT_FITS_PROFILE(obj, field, id), \
+      sizeof(((obj *)0)->field), 0, type, (sizeof(((obj *)0)->field[0]) & 0xF) }
 
 /*!
  * @brief Build a length-carrying (sized) array field descriptor.
@@ -243,7 +272,8 @@ extern "C" {
  * @param type    Field type tag (one of the array @ref SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED "SOFAB_OBJECT_FIELDTYPE_ARRAY_*").
  */
 #define SOFAB_OBJECT_FIELD_ARRAY_SIZED(id, obj, dfield, lfield, type) \
-    { id, offsetof(obj, dfield), sizeof(((obj *)0)->dfield), \
+    { id, offsetof(obj, dfield) + SOFAB_OBJECT_ASSERT_FITS_PROFILE(obj, dfield, id), \
+      sizeof(((obj *)0)->dfield), \
       (uint8_t)(sizeof(((obj *)0)->lfield) \
                 + SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, dfield, lfield)), \
       type, (sizeof(((obj *)0)->dfield[0]) & 0xF) }
