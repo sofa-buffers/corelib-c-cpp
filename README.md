@@ -795,7 +795,7 @@ Four rows need a word:
   arrays removes code dropping fixlen would also have removed — so a switch is
   worth *at most* its row here once another is on. The four configurations above
   are the measured combinations.
-- **`SOFAB_DISABLE_UNION_SUPPORT` buys 92&nbsp;B of flash** (atmega8: 216&nbsp;B)
+- **`SOFAB_DISABLE_UNION_SUPPORT` buys 92&nbsp;B of flash** (atmega8: 206&nbsp;B)
   and a few cycles. It is the object API's tagged-union walk, shaped for the
   smallest code: the walks test the union flag and the tag per field, so a schema
   without unions pays those tests too — measured on sofabgen's C bench schema
