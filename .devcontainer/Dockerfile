@@ -24,6 +24,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     graphviz \
     && rm -rf /var/lib/apt/lists/*
 
+# A second host compiler.
+#
+# The public headers lean on constructs whose *diagnostic* is the feature -- the
+# SOFAB_OBJECT_ASSERT_* guards and the SOFAB_OBJECT_DESCR_UNION support guard
+# fail to compile on purpose, and what a user sees is the compiler's wording.
+# gcc and clang phrase (and anchor) those differently, so a guard that reads
+# clearly under one can be useless under the other. clang also flags a different
+# slice of warnings under -Wall -Wextra, which is the cheapest portability check
+# this repo has short of a second CI matrix entry.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    && rm -rf /var/lib/apt/lists/*
+
 # Bare-metal cross toolchains.
 #
 # These are what tools/footprint.sh checks for in its preflight and what the
