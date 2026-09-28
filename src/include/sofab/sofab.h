@@ -418,6 +418,11 @@ typedef int32_t sofab_signed_t;
  *   # error "field IDs exceed the configured descriptor id width"
  *   #endif
  * @endcode
+ *
+ * A field that does not fit the selected profile is a compile error naming the
+ * ceiling, not a silently truncated offset: every @c SOFAB_OBJECT_FIELD* macro
+ * checks its id, offset and size against the three maxima below
+ * (@c SOFAB_OBJECT_ASSERT_FITS_PROFILE in object.h). The check generates no code.
  */
 #define SOFAB_OBJECT_DESCR_SMALL  1  /*!< uint8_t  id/offset/size (max 255) */
 #define SOFAB_OBJECT_DESCR_MEDIUM 2  /*!< uint16_t id/offset/size (max 65535) */

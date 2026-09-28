@@ -18,6 +18,22 @@ target_compile_options(unity
         -DUNITY_INCLUDE_DOUBLE
 )
 
+# The hand-written Unity suites are max-only by design: their fixtures are sized
+# to exercise the format, not to fit a narrowed descriptor. `fullscale_message_t`
+# alone is 464 bytes, so under SOFAB_OBJECT_DESCR_SMALL (8-bit id/offset/size,
+# ceiling 255) its fields cannot be described at all -- SOFAB_OBJECT_FIELD says so
+# at compile time (SOFAB_OBJECT_ASSERT_FITS_PROFILE). Shrinking the fixtures to fit
+# would be sizing the test to the narrowest profile rather than to the format, so
+# SMALL builds the flag-tolerant vector runner instead, exactly as the reduced
+# feature configs do (.github/workflows/ci.yml). MEDIUM and BIG build everything.
+if(SOFAB_OBJECT_DESCR_PROFILE STREQUAL "SOFAB_OBJECT_DESCR_SMALL")
+    message(STATUS
+        "sofab: SOFAB_OBJECT_DESCR_SMALL -- skipping the max-only Unity suites "
+        "(sofabtest, sofabtest_limits); sofab_vectortest covers this profile")
+    set(SOFAB_SKIP_MAX_ONLY_TESTS ON)
+endif()
+
+if(NOT SOFAB_SKIP_MAX_ONLY_TESTS)
 # --- test executable ---
 add_executable(sofabtest
     main.c
@@ -76,6 +92,7 @@ target_link_libraries(sofabtest
 
 # --- ctest registration ---
 add_test(NAME test_c COMMAND sofabtest)
+endif()  # NOT SOFAB_SKIP_MAX_ONLY_TESTS
 
 # ----------------------------------------
 # Standalone, feature-flag-tolerant conformance-vector runner
@@ -124,7 +141,8 @@ endif()
 #
 # Hosted-only (it has to run) and full-configuration-only (it writes blobs and
 # arrays, which a reduced profile removes).
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic"
+if(NOT SOFAB_SKIP_MAX_ONLY_TESTS
+   AND NOT CMAKE_SYSTEM_NAME STREQUAL "Generic"
    AND NOT SOFAB_DISABLE_FIXLEN_SUPPORT
    AND NOT SOFAB_DISABLE_ARRAY_SUPPORT)
     add_executable(sofabtest_limits

@@ -69,6 +69,26 @@ jobs:
             --target sofab_cpp_freestanding \
             --parallel "$(nproc)"
 
+      # The vector generator is the encoder replaying the committed vector set.
+      # Regenerating and diffing assets/test_vectors.json is the cheapest proof
+      # that no wire behaviour moved: the JSON is produced by the real encoder,
+      # so a byte-identical file means the bytes on the wire did not change. It
+      # also builds SOFAB_ENABLE_VECTORGEN, which nothing else did.
+      - name: Vector generator reproduces the committed vectors
+        run: |
+          cmake -S . -B build/vectorgen -DCMAKE_BUILD_TYPE=Debug -DSOFAB_ENABLE_VECTORGEN=ON
+          cmake --build build/vectorgen --target generate-vectors --parallel "$(nproc)"
+          git diff --exit-code -- assets/test_vectors.json \
+            || { echo "::error::assets/test_vectors.json is stale -- the encoder changed the wire"; exit 1; }
+
+      # SOFAB_ENABLE_FUZZ only wires up the instrumentation and the harnesses; no
+      # corpus is run here. Building it keeps the option from rotting.
+      - name: Compile (fuzz harnesses)
+        run: |
+          cmake -S . -B build/fuzz -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DSOFAB_ENABLE_FUZZ=ON
+          cmake --build build/fuzz --parallel "$(nproc)"
+
   # ------------------------------------------------------------- the fan-out
   # One call site, one reusable workflow, ten targets. Twelve separate `uses:`
   # entries would also work and would sit near the 20-calls-per-run ceiling;
@@ -600,6 +620,44 @@ jobs:
           cmake -S . -B build/strict-utf8-on $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_ENABLE_STRICT_UTF8"
           cmake --build build/strict-utf8-on --target sofab_vectortest --parallel $(nproc)
           $RUN ./build/strict-utf8-on/test/c/sofab_vectortest
+
+      # The skip counter is opt-in and adds a member to sofab_istream_t plus the
+      # increments that maintain it, so it is a build variant like any other.
+      - name: skip-counter
+        run: |
+          cmake -S . -B build/skip-counter $CM_ARGS -DSOFAB_ENABLE_SKIP_COUNTER=ON
+          cmake --build build/skip-counter --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/skip-counter/test/c/sofab_vectortest
+
+      # Without the object API the descriptor walk is gone and only the stream
+      # codec remains -- the configuration a hand-rolled encoder links against.
+      # The vector runner drives the streams directly, so it still covers it.
+      - name: no-object-api
+        run: |
+          cmake -S . -B build/no-object-api $CM_ARGS -DSOFAB_DISABLE_OBJECT_API=ON
+          cmake --build build/no-object-api --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/no-object-api/test/c/sofab_vectortest
+
+      # SOFAB_OBJECT_DESCR_PROFILE narrows the descriptor's id/offset/size members
+      # in the PUBLIC header, so it changes every descriptor a consumer writes --
+      # and it was the one knob no leg exercised. BIG runs the whole suite. SMALL
+      # runs the vector runner: its 8-bit ceiling cannot describe the max-only
+      # fixtures at all (test/c/CMakeLists.txt), which SOFAB_OBJECT_FIELD reports
+      # at compile time rather than truncating the offset.
+      - name: descr-profile-small
+        run: |
+          cmake -S . -B build/descr-small $CM_ARGS \
+            -DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_SMALL
+          cmake --build build/descr-small --target sofab_vectortest --parallel $(nproc)
+          $RUN ./build/descr-small/test/c/sofab_vectortest
+
+      - name: descr-profile-big
+        run: |
+          cmake -S . -B build/descr-big $CM_ARGS \
+            -DSOFAB_OBJECT_DESCR_PROFILE=SOFAB_OBJECT_DESCR_BIG
+          cmake --build build/descr-big --target sofab_vectortest sofabtest --parallel $(nproc)
+          $RUN ./build/descr-big/test/c/sofab_vectortest
+          $RUN ./build/descr-big/test/c/sofabtest
 
   # ---- moved from build-cpp-feature-matrix.yaml
   # Every job below carries a timeout-minutes. A hung step must fail fast and
