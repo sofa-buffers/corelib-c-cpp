@@ -151,8 +151,9 @@ extern "C" {
  * (@ref SOFAB_OBJECT_ASSERT_LEN_FIRST).
  */
 #define SOFAB_OBJECT_ASSERT_LEN_ADJACENT(obj, dfield, lfield) \
-    (0 * sizeof(char[(offsetof(obj, dfield) \
-                      == offsetof(obj, lfield) + sizeof(((obj *)0)->lfield)) ? 1 : -1]))
+    (0 * sizeof(struct { int length_member_must_sit_immediately_before_the_data_member \
+            : (offsetof(obj, dfield) \
+               == offsetof(obj, lfield) + sizeof(((obj *)0)->lfield)) ? 1 : -1; }))
 
 /*!
  * @brief Compile-time check that @p lfield is the @b first member of @p obj.
@@ -163,7 +164,8 @@ extern "C" {
  * holder.
  */
 #define SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, lfield) \
-    (0 * sizeof(char[(offsetof(obj, lfield) == 0) ? 1 : -1]))
+    (0 * sizeof(struct { int length_member_must_be_the_first_member_of_the_object \
+            : (offsetof(obj, lfield) == 0) ? 1 : -1; }))
 
 /*!
  * @brief Build a nested-object (sequence) field descriptor.
@@ -399,6 +401,9 @@ extern "C" {
     { (field_list), (nested_list), NULL, (field_count), (nested_count), \
       (uint8_t)(SOFAB_OBJECT_SEQ_HOLDER \
                 | (sizeof(((obj *)0)->lfield) << SOFAB_OBJECT_SEQ_LEN_SHIFT) \
+                | 0u * sizeof(struct { int length_member_is_too_wide_to_share_fixed_seq_with_the_union_bit \
+                        : ((sizeof(((obj *)0)->lfield) << SOFAB_OBJECT_SEQ_LEN_SHIFT) \
+                           < SOFAB_OBJECT_UNION) ? 1 : -1; }) \
                 | SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, lfield)) }
 
 /*!
@@ -429,8 +434,12 @@ extern "C" {
  * skipped child or an unknown id never switches the union. A switch to a
  * sequence option starts it from its default (its own descriptor); the same
  * option received again continues its scope (§7.4 merge); a leaf option is
- * replaced whole by its payload. Several children and re-opened frames are
- * legal: the option received last wins.
+ * replaced whole by its payload — a scalar and a sized blob or array by their
+ * value and length, a string by its payload and terminator, an array's slots past
+ * the wire count by the element default the istream clears them to. A
+ * capacity-only blob option is the one form that could NOT be replaced whole,
+ * which is why it is not allowed (see below). Several children and re-opened
+ * frames are legal: the option received last wins.
  *
  * @p default_image is the object's default image, or @c NULL. It covers the tag
  * and the `default_id` option @b only — a prefix of @p obj, never a full image:
@@ -450,17 +459,32 @@ extern "C" {
  * option (any other held option is forced); a decode that switches to a
  * sequence option re-initialises it through its own descriptor, and a leaf
  * option is overwritten whole by its payload. No other option's default is ever
- * needed, so the options' overlay costs nothing in correctness. Selecting an
- * option by hand is the caller writing the tag and the value — for a sequence
- * option at its default, the tag and @ref sofab_object_init on that option's
- * descriptor.
+ * needed, so the options' overlay costs nothing in correctness.
  *
- * Built with @c SOFAB_DISABLE_UNION_SUPPORT (or without sequence support) the
- * union walk compiles out and such a descriptor behaves as a plain struct: every
- * option is initialised, compared and encoded although they overlay each other,
- * which no union survives. The switch must therefore be configured identically
- * for the library and for every includer; generated code refuses to build
- * against it.
+ * @warning A @c BLOB option @b must carry its length
+ * (@ref SOFAB_OBJECT_FIELD_BLOB_SIZED), never the capacity-only form
+ * @ref SOFAB_OBJECT_FIELDTYPE_BLOB "SOFAB_OBJECT_FIELD(…, BLOB)". A
+ * capacity-only blob has nowhere to record the length it received, so its value
+ * is always its full capacity: a peer sending fewer bytes than that (a different
+ * schema revision, or a hostile one) leaves the rest at whatever the object held,
+ * which in a union is the previously held option's payload — and encode would put
+ * it back on the wire. The sized form has no such gap, because the length says
+ * what the value is. @ref sofab_object_init asserts it.
+ *
+ * @warning Selecting an option by hand is the caller writing the tag @b and the
+ * value — @b always both, for every option kind. The tag alone is never enough,
+ * not even for an option "at its default": the options overlay each other and
+ * @ref sofab_object_init seeds only the one held, so the storage of any other
+ * option is indeterminate until the caller writes it. Encoding a string option
+ * whose buffer was never written reads past it (the encoder measures a string
+ * with @c strlen). For a sequence option at its default, "the value" is
+ * @ref sofab_object_init on that option's own descriptor.
+ *
+ * A union frame is an ordinary sequence, so this descriptor needs sequence
+ * support and carries no switch of its own: under
+ * @c SOFAB_DISABLE_SEQUENCE_SUPPORT the macro fails to compile rather than
+ * degrade to a plain struct, which no union survives (every overlaid option
+ * would be initialised, compared and encoded).
  *
  * @param field_list    Array of @ref sofab_object_descr_field_t (one per option).
  * @param field_count   Number of options.
@@ -473,11 +497,16 @@ extern "C" {
  *                      @b first in @p obj (at offset 0).
  */
 /*! @cond INTERNAL */
-/* The union bit a union descriptor carries: none when the union walk is compiled
- * out, so such a descriptor really is a plain struct (fixed_seq == 0) to every
- * walk -- and the plain-struct paths need no mask for a bit that cannot be set. */
-#if defined(SOFAB_DISABLE_UNION_SUPPORT) || defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-#  define _SOFAB_OBJECT_UNION_BIT 0u
+/* A union is a sequence on the wire, so the walk that reads it needs sequence
+ * support and has no switch of its own: where sequences are compiled out a union
+ * descriptor cannot be walked at all, and building one is a mistake the macro
+ * reports here instead of silently degrading to a plain struct -- which no union
+ * survives, since every overlaid option would be initialised, compared and
+ * encoded. */
+#if defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+#  define _SOFAB_OBJECT_UNION_BIT (0u * sizeof(char[ \
+      SOFAB_OBJECT_DESCR_UNION_needs_sequence_support_but_SOFAB_DISABLE_SEQUENCE_SUPPORT_is_defined \
+          ? 1 : -1]))
 #else
 #  define _SOFAB_OBJECT_UNION_BIT SOFAB_OBJECT_UNION
 #endif
@@ -485,7 +514,8 @@ extern "C" {
 #define SOFAB_OBJECT_DESCR_UNION(field_list, field_count, nested_list, nested_count, default_image, obj, tfield) \
     { (field_list), (nested_list), (const void *)(default_image), (field_count), (nested_count), \
       (uint8_t)(_SOFAB_OBJECT_UNION_BIT \
-                | 0u * sizeof(char[sizeof(((obj *)0)->tfield) == sizeof(sofab_object_descr_id_t) ? 1 : -1]) \
+                | 0u * sizeof(struct { int tag_member_must_have_the_width_of_sofab_object_descr_id_t \
+                        : sizeof(((obj *)0)->tfield) == sizeof(sofab_object_descr_id_t) ? 1 : -1; }) \
                 | SOFAB_OBJECT_ASSERT_LEN_FIRST(obj, tfield)) }
 
 /* types **********************************************************************/

@@ -305,7 +305,6 @@ disagree is a silent ABI mismatch, not a warning. Passing the macro through
 | `SOFAB_DISABLE_INT64_SUPPORT` | CMake option | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | CMake option | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
 | `SOFAB_DISABLE_OBJECT_API` | CMake option | off | Exclude the descriptor-driven object API (`object.c`) and leave the bare stream corelib |
-| `SOFAB_DISABLE_UNION_SUPPORT` | CMake option | off | Drop the tagged-union walk of the object API (`SOFAB_OBJECT_DESCR_UNION`): a union descriptor then behaves as a plain struct, which no union survives, so generated code that uses a union refuses to build against it. Removes no wire construct — a union frame is an ordinary sequence to the streams. **Must be configured identically for the library and everything that includes `object.h`** (applied `PUBLIC`); implied by `SOFAB_DISABLE_SEQUENCE_SUPPORT` |
 
 > **A switch that removes a wire construct makes the decoder *reject* messages
 > that carry it.** `SOFAB_DISABLE_FIXLEN_SUPPORT`, `_ARRAY_`, `_SEQUENCE_`,
@@ -781,7 +780,6 @@ same [`tools/footprint.sh`](tools/footprint.sh):
 | `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3148&nbsp;B | −812&nbsp;B |
 | `SOFAB_DISABLE_INT64_SUPPORT` | 3646&nbsp;B | −314&nbsp;B |
 | `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3684&nbsp;B | −276&nbsp;B |
-| `SOFAB_DISABLE_UNION_SUPPORT` | 3868&nbsp;B | −92&nbsp;B |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3886&nbsp;B | −74&nbsp;B |
 | `SOFAB_DISABLE_FP64_SUPPORT` | 3918&nbsp;B | −42&nbsp;B |
 | `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3962&nbsp;B | +2&nbsp;B |
@@ -789,20 +787,12 @@ same [`tools/footprint.sh`](tools/footprint.sh):
 | `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3982&nbsp;B | +22&nbsp;B |
 | `SOFAB_ENABLE_STRICT_UTF8` | 4206&nbsp;B | +246&nbsp;B |
 
-Four rows need a word:
+Three rows need a word:
 
 - **The deltas do not add up to the *Minimal* rows.** They overlap — dropping
   arrays removes code dropping fixlen would also have removed — so a switch is
   worth *at most* its row here once another is on. The four configurations above
   are the measured combinations.
-- **`SOFAB_DISABLE_UNION_SUPPORT` buys 92&nbsp;B of flash** (atmega8: 206&nbsp;B)
-  and a few cycles. It is the object API's tagged-union walk, shaped for the
-  smallest code: the walks test the union flag and the tag per field, so a schema
-  without unions pays those tests too — measured on sofabgen's C bench schema
-  with its unions removed (x86-64, `-O3`): +1.2&nbsp;% encode, +2.8&nbsp;% decode
-  `Ir/op`. Built with the switch, `object.c` is the plain-struct code byte for
-  byte, so a union-free build should set it; sofabgen's generated C project does
-  so on its own for a schema without a union.
 - **`SOFAB_OBJECT_DESCR_PROFILE` barely moves the library and `SMALL` makes it
   slightly bigger.** The profile sizes the descriptor members in **your** tables,
   which is where the saving lands; narrower members cost the library a few

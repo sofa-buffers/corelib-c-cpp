@@ -3215,7 +3215,7 @@ static void test_object_sized_wrapper_init_clears_length (void)
 
 //
 
-#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_UNION_SUPPORT) \
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) \
     && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
 /* ---- tagged union (SOFAB_OBJECT_DESCR_UNION) ----------------------------------
  * shape: union { num u16 @0, name string[16] @1, pt struct{x=7,y i32} @2 },
@@ -3837,13 +3837,83 @@ static void test_object_union_array_default_id_not_first (void)
     TEST_ASSERT_EQUAL_UINT(1, d.v.e[0].which);
     TEST_ASSERT_EQUAL_STRING("z", d.v.e[0].u.s);
 }
-#endif /* sequence && union && fixlen && array support */
+/* ---- switching to a leaf option starts it from that option's default ---------
+ * ub: union { s string[8] @0 (default_id), bl blob[4] *SIZED* @1, ar u8[4] @2 }
+ * -- @2 is capacity-only (no companion length), @1 carries one, and a
+ * capacity-only BLOB option is forbidden (object.h; sofab_object_init asserts).
+ *
+ * Both arms get the same attack: ONE union frame that first sets the string
+ * option to "SECRET" -- filling the shared storage -- and then switches to the
+ * other option with a payload SHORTER than its capacity. MESSAGE_SPEC §7.4.1
+ * starts the option switched to from ITS default, and §4.2 forbids a union
+ * blob/array option a non-empty one, so what the wire does not carry must read
+ * as empty, never as the option held before. The array answers through the
+ * cleared tail (istream _bind_array_count), the blob through its length.
+ */
+typedef struct {
+    sofab_object_descr_id_t which;
+    union { char s[9]; struct { uint8_t len; uint8_t data[4]; } bl; uint8_t ar[4]; } u;
+} _ub_t;
+typedef struct { _ub_t f; } _ub_msg_t;
+static const sofab_object_descr_field_t _ub_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _ub_t, u.s, SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(1, _ub_t, u.bl.data, u.bl.len),
+    SOFAB_OBJECT_FIELD_ARRAY(2, _ub_t, u.ar, SOFAB_OBJECT_FIELDTYPE_ARRAY_UNSIGNED),
+};
+/* NULL image: default_id 0, the string at "" */
+static const sofab_object_descr_t _ub = SOFAB_OBJECT_DESCR_UNION(
+    _ub_fields, 3, NULL, 0, NULL, _ub_t, which);
+static const sofab_object_descr_field_t _ub_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(0, _ub_msg_t, f, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _ub_msg_nested[] = { &_ub };
+static const sofab_object_descr_t _ub_msg = SOFAB_OBJECT_DESCR(_ub_msg_fields, 1, _ub_msg_nested, 1);
+
+static void test_object_union_switched_to_leaf_carries_no_earlier_option (void)
+{
+    _ub_msg_t d;
+    uint8_t out[64];
+    size_t n;
+
+    /* { s:"SECRET" } then { ar:[0xFF] } -> {FF,00,00,00}, re-encoded as 4 elements */
+    static const uint8_t ar_wire[] = { 0x06, 0x02, 0x32, 0x53, 0x45, 0x43, 0x52, 0x45,
+                                       0x54, 0x13, 0x01, 0xFF, 0x01, 0x07 };
+    static const uint8_t ar_want[] = { 0xFF, 0x00, 0x00, 0x00 };
+    static const uint8_t ar_re[]   = { 0x06, 0x13, 0x04, 0xFF, 0x01, 0x00, 0x00, 0x00, 0x07 };
+
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _un_decode_any(&_ub_msg, &d, sizeof(d), ar_wire, sizeof(ar_wire)));
+    TEST_ASSERT_EQUAL_UINT(2, d.f.which);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY_MESSAGE(ar_want, d.f.u.ar, 4,
+        "the array slots past the wire count are the element default, not the string option");
+    n = _un_encode_any(&_ub_msg, &d, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(ar_re), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(ar_re, out, sizeof(ar_re));
+
+    /* { s:"SECRET" } then { bl:FF } -> len 1, and the re-encode is that one byte:
+     * the length is what keeps the bytes the wire never carried out of the value. */
+    static const uint8_t bl_wire[] = { 0x06, 0x02, 0x32, 0x53, 0x45, 0x43, 0x52, 0x45,
+                                       0x54, 0x0A, 0x0B, 0xFF, 0x07 };
+    static const uint8_t bl_re[]   = { 0x06, 0x0A, 0x0B, 0xFF, 0x07 };
+
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK,
+        _un_decode_any(&_ub_msg, &d, sizeof(d), bl_wire, sizeof(bl_wire)));
+    TEST_ASSERT_EQUAL_UINT(1, d.f.which);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, d.f.u.bl.len, "the sized blob records what arrived");
+    TEST_ASSERT_EQUAL_HEX8(0xFF, d.f.u.bl.data[0]);
+    n = _un_encode_any(&_ub_msg, &d, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(sizeof(bl_re), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY_MESSAGE(bl_re, out, sizeof(bl_re),
+        "the re-encode must not carry bytes of the option held before");
+}
+
+#endif /* sequence && fixlen && array support */
 
 int test_object_main (void)
 {
     UNITY_BEGIN();
 
-#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_UNION_SUPPORT) \
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) \
     && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) && !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
     RUN_TEST(test_object_union_init_holds_default_id);
     RUN_TEST(test_object_union_null_image_holds_id_0);
@@ -3858,6 +3928,7 @@ int test_object_main (void)
     RUN_TEST(test_object_union_stray_tag_holds_nothing);
     RUN_TEST(test_object_union_prefix_image);
     RUN_TEST(test_object_union_array_default_id_not_first);
+    RUN_TEST(test_object_union_switched_to_leaf_carries_no_earlier_option);
 #endif
 
     RUN_TEST(test_object_serialize);

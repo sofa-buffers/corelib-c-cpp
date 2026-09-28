@@ -159,22 +159,29 @@ static uint8_t _sized_width (const sofab_object_descr_field_t *field)
  * cycles, and in flash only this code.
  * @{
  */
-#if !defined(SOFAB_DISABLE_UNION_SUPPORT) && !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+/* A union needs sequence support -- it IS a sequence on the wire -- so the union
+ * walk rides that one condition and needs no switch of its own: without
+ * sequences SOFAB_OBJECT_DESCR_UNION sets no bit (object.h), no descriptor is a
+ * union, and a non-zero fixed_seq is a holder. */
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 #  define _SOFAB_WITH_UNION 1
 /*! A union descriptor: bit 7 of @c fixed_seq. */
 #  define _IS_UNION(info) ((info)->fixed_seq & SOFAB_OBJECT_UNION)
 /*! A wrapper-array holder: bit 0 of @c fixed_seq (a union sets bit 7 only). */
 #  define _IS_HOLDER(info) ((info)->fixed_seq & SOFAB_OBJECT_SEQ_HOLDER)
 #else
-/* SOFAB_OBJECT_DESCR_UNION sets no bit in this build (object.h), so no
- * descriptor is a union and a non-zero fixed_seq is a holder. */
 #  define _IS_UNION(info) 0
 #  define _IS_HOLDER(info) ((info)->fixed_seq)
 #endif
-/*! The tag: the id of the held option, typed like a descriptor field id. */
-#define _TAG(obj) (*(sofab_object_descr_id_t *)(uintptr_t)(const void *)(obj))
+/*! The tag, READ: the id of the held option, typed like a descriptor field id.
+ *  Split from the writing form so a const source stays const -- @ref
+ *  _field_is_default and @ref _NOT_HELD only ever read it, and the compiler is
+ *  what should say so if that ever stops being true. */
+#define _TAG_R(obj) (*(const sofab_object_descr_id_t *)(const void *)(obj))
+/*! The tag, WRITTEN: init seeds it, @ref _seq_len_observe switches it. */
+#define _TAG_W(obj) (*(sofab_object_descr_id_t *)(void *)(obj))
 /*! A field of a union that is not the held option: skipped, as if absent. */
-#define _NOT_HELD(info, obj, field) (_IS_UNION(info) && _TAG(obj) != (field)->id)
+#define _NOT_HELD(info, obj, field) (_IS_UNION(info) && _TAG_R(obj) != (field)->id)
 /*! @} */
 
 #if defined(_SOFAB_WITH_UNION)
@@ -215,11 +222,18 @@ static uint8_t _seq_len_width (const sofab_object_descr_t *info)
 }
 
 /*! @ref _seq_len_width with the union bit masked off: 0 for a union. */
-#if defined(_SOFAB_WITH_UNION)
-#  define _seq_len_width_masked(info) (_seq_len_width(info) & 0x0Fu)
-#else
-#  define _seq_len_width_masked(info) _seq_len_width(info)
-#endif
+#define _seq_len_width_masked(info) (_seq_len_width(info) & 0x0Fu)
+
+/* The contract the two no-op callers above rely on, made a compile error rather
+ * than a comment: the value a union's fixed_seq yields through _seq_len_width
+ * (SOFAB_OBJECT_UNION >> SOFAB_OBJECT_SEQ_LEN_SHIFT) must NOT be a width
+ * _load_uint / _store_uint recognise, or init and _seq_len_observe would read and
+ * write a length where a union has none. Those two dispatch 1/2/4/8 and ignore
+ * everything else, so the contract is that the union bit lands above 8. */
+typedef struct {
+    int union_bit_must_not_be_a_valid_length_width
+        : ((SOFAB_OBJECT_UNION >> SOFAB_OBJECT_SEQ_LEN_SHIFT) > 8u) ? 1 : -1;
+} _sofab_union_bit_width_check;
 
 /*!
  * @def _SEQ_LEN_OFFSET
@@ -314,7 +328,7 @@ static void _seq_len_observe (const sofab_object_descr_t *info,
      * whole by its payload, a sequence option was re-initialised when its frame
      * opened. Tested on the width already in hand: the smallest code. */
     if (width & (SOFAB_OBJECT_UNION >> SOFAB_OBJECT_SEQ_LEN_SHIFT))
-        _TAG(dst) = (sofab_object_descr_id_t)id;
+        _TAG_W(dst) = (sofab_object_descr_id_t)id;
 #endif
 }
 
@@ -546,7 +560,7 @@ static int _field_is_default (
      *  - `default_id` held is compared against its default like any field. */
     if (_IS_UNION(info))
     {
-        if (field->id != _TAG(src)) return 1;
+        if (field->id != _TAG_R(src)) return 1;
         if (field->id != _default_tag(info)) return 0;
     }
 #endif
@@ -665,12 +679,27 @@ extern sofab_ret_t sofab_object_init (
     /* A union holds `default_id` at that option's default: the tag first, then
      * the loop below seeds that one option only. */
     if (_IS_UNION(info))
-        _TAG(obj) = _default_tag(info);
+        _TAG_W(obj) = _default_tag(info);
 #endif
 
     for (size_t i = 0; i < info->field_count; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
+
+#if defined(_SOFAB_WITH_UNION) && !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
+        /* A union's BLOB option must carry its length
+         * (SOFAB_OBJECT_FIELD_BLOB_SIZED, see object.h). A capacity-only blob
+         * cannot represent the M < N a peer may send, so the bytes the wire does
+         * not carry would keep whatever the object held -- in a union, another
+         * option's payload, which would then be re-encoded as part of this one.
+         * A descriptor that does it is wrong by construction, so this is an
+         * assert -- this port's mechanism for an out-of-range argument -- and
+         * costs nothing under NDEBUG. Checked for every option, not just the held
+         * one, so one init of a fresh object screens the whole descriptor. */
+        assert(!(_IS_UNION(info)
+                 && field->type == SOFAB_OBJECT_FIELDTYPE_BLOB
+                 && _sized_width(field) == 0));
+#endif
 
         if (_NOT_HELD(info, obj, field)) continue;
 
