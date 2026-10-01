@@ -16,6 +16,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <cstdint>
+#include <initializer_list>
+#include <string>
+#include <string_view>
 #include <vector>
 
 /* helpers ********************************************************************/
@@ -440,4 +443,276 @@ TEST_CASE("MessageSeq: rows within the capacity round-trip through inline storag
     REQUIRE(in->out[0][2] == 3);
     REQUIRE(in->out[1].size() == 2);
     REQUIRE(in->out[1][0] == 8);
+}
+
+/* rows the stream cannot read on its own (RowSeq / FixedRowSeq) **************/
+
+namespace
+{
+
+//! The row read for array<array<string>>, row `count: 3`, element `maxlen: 8`,
+//! in inline storage. The inner collector is static for the same reason every
+//! collector here is: the deferred C decoder uses it after this call returns.
+struct FixedStrRow
+{
+    static constexpr sofab::Wire wire() noexcept { return sofab::Wire::SequenceStart; }
+    void operator()(sofab::IStreamImpl &is, sofab::InlineVector<sofab::FixedString<8>, 3> &row,
+                    size_t) const noexcept
+    {
+        static sofab::FixedStringSeq<sofab::InlineVector<sofab::FixedString<8>, 3>> c;
+        is.readSequence(c, row);
+    }
+};
+
+//! The same row in growable storage.
+struct DynStrRow
+{
+    static constexpr sofab::Wire wire() noexcept { return sofab::Wire::SequenceStart; }
+    void operator()(sofab::IStreamImpl &is, std::vector<std::string> &row, size_t) const noexcept
+    {
+        static sofab::StringSeq c;
+        c.cap = 3;
+        c.elemMax = 8;
+        is.readSequence(c, row);
+    }
+};
+
+//! A row that arrives as a native array but is bound by the caller -- the shape
+//! of an enum or boolean row, which binds through a view of its elements. It
+//! takes the announced element count, as readArray does.
+struct ByteRow
+{
+    static constexpr sofab::Wire wire() noexcept { return sofab::Wire::ArrayUnsigned; }
+    void operator()(sofab::IStreamImpl &is, std::vector<uint8_t> &row, size_t count) const noexcept
+    {
+        is.readArray(row, count, 3);
+    }
+};
+
+using InlineStrRows = sofab::InlineVector<sofab::InlineVector<sofab::FixedString<8>, 3>, 2>;
+using FixedStrRows  = Holder<sofab::FixedRowSeq<InlineStrRows, FixedStrRow>, InlineStrRows>;
+using DynStrRows    = Holder<sofab::RowSeq<std::vector<std::vector<std::string>>, DynStrRow>,
+                             std::vector<std::vector<std::string>>>;
+using DynByteRows   = Holder<sofab::RowSeq<std::vector<std::vector<uint8_t>>, ByteRow>,
+                             std::vector<std::vector<uint8_t>>>;
+
+//! Write one string row of the wrapper array at element index @p id.
+void writeStrRow(sofab::OStream &os, uint32_t id, std::initializer_list<std::string_view> row)
+{
+    os.sequenceBeginLazy(id);
+    uint32_t i = 0;
+    for (auto s : row) os.write(i++, s);
+    os.sequenceEndKeep();
+}
+
+} // namespace
+
+TEST_CASE("RowSeq: the row wire type is the reader's")
+{
+    static_assert(sofab::FixedRowSeq<InlineStrRows, FixedStrRow>::elemWire
+                  == static_cast<int>(sofab::Wire::SequenceStart));
+    static_assert(sofab::RowSeq<std::vector<std::vector<uint8_t>>, ByteRow>::elemWire
+                  == static_cast<int>(sofab::Wire::ArrayUnsigned));
+    // A stateless reader costs the collector nothing.
+    static_assert(sizeof(sofab::FixedRowSeq<InlineStrRows, FixedStrRow>)
+                  == sizeof(sofab::FixedMessageSeq<sofab::InlineVector<Point, 2>>));
+    SUCCEED("compile-time only");
+}
+
+TEST_CASE("RowSeq: a row that is a wrapper sequence is placed at its id")
+{
+    sofab::OStream os{256};
+    os.sequenceBeginLazy(1);
+    writeStrRow(os, 0, {"a"});
+    writeStrRow(os, 1, {"b", "cc"});
+    os.sequenceEnd();
+
+    SECTION("inline storage")
+    {
+        sofab::IStreamObject<FixedStrRows> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE(in->out.size() == 2);
+        REQUIRE(in->out[0].size() == 1);
+        REQUIRE(std::string_view(in->out[0][0].c_str()) == "a");
+        REQUIRE(in->out[1].size() == 2);
+        REQUIRE(std::string_view(in->out[1][1].c_str()) == "cc");
+    }
+
+    SECTION("growable storage")
+    {
+        sofab::IStreamObject<DynStrRows> in;
+        (*in).seq.cap = 2;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE(in->out.size() == 2);
+        REQUIRE(in->out[0] == std::vector<std::string>{"a"});
+        REQUIRE(in->out[1] == std::vector<std::string>{"b", "cc"});
+    }
+}
+
+TEST_CASE("RowSeq: an omitted row fills a gap, it does not shift")
+{
+    sofab::OStream os{256};
+    os.sequenceBeginLazy(1);
+    writeStrRow(os, 0, {"a"});
+    writeStrRow(os, 2, {"z"});
+    os.sequenceEnd();
+
+    sofab::IStreamObject<DynStrRows> in;
+    (*in).seq.cap = 3;
+    REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+    REQUIRE(in->out.size() == 3);
+    REQUIRE(in->out[1].empty());
+    REQUIRE(in->out[2] == std::vector<std::string>{"z"});
+}
+
+TEST_CASE("RowSeq: the count itself is INVALID, decided before the fill")
+{
+    sofab::OStream os{256};
+    os.sequenceBeginLazy(1);
+    writeStrRow(os, 2, {"a"});
+    os.sequenceEnd();
+
+    SECTION("inline: the capacity is the bound")
+    {
+        sofab::IStreamObject<FixedStrRows> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
+        REQUIRE(in->out.empty());
+    }
+
+    SECTION("growable: cap is the bound")
+    {
+        sofab::IStreamObject<DynStrRows> in;
+        (*in).seq.cap = 2;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
+        REQUIRE(in->out.capacity() == 0);
+    }
+
+    SECTION("growable: no count and no cap is refused, not read as unlimited")
+    {
+        sofab::IStreamObject<DynStrRows> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidArgument);
+    }
+}
+
+TEST_CASE("RowSeq: a contradicting element is skipped and leaves the rows intact")
+{
+    SECTION("past the count: skipped, not INVALID (§7.3 before §7.1)")
+    {
+        sofab::OStream os{256};
+        os.sequenceBeginLazy(1);
+        writeStrRow(os, 0, {"a"});
+        os.write(5, uint32_t{9});
+        os.sequenceEnd();
+
+        sofab::IStreamObject<FixedStrRows> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE(in->out.size() == 1);
+    }
+
+    SECTION("in range: no phantom row")
+    {
+        sofab::OStream os{256};
+        os.sequenceBeginLazy(1);
+        writeStrRow(os, 0, {"a"});
+        os.write(1, uint32_t{9});
+        os.sequenceEnd();
+
+        sofab::IStreamObject<DynStrRows> in;
+        (*in).seq.cap = 2;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE(in->out.size() == 1);
+    }
+
+    SECTION("a sequence where an array row is declared")
+    {
+        sofab::OStream os{256};
+        os.sequenceBeginLazy(1);
+        writeStrRow(os, 0, {"a"});
+        os.sequenceEnd();
+
+        sofab::IStreamObject<DynByteRows> in;
+        (*in).seq.cap = 2;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE(in->out.empty());
+    }
+}
+
+TEST_CASE("RowSeq: an array-wire row is bound by its reader with the announced count")
+{
+    const std::array<uint8_t, 2> r1 = {1, 1};
+    sofab::OStream os{256};
+    os.sequenceBeginLazy(1);
+    os.write(1, r1);
+    os.sequenceEnd();
+
+    sofab::IStreamObject<DynByteRows> in;
+    (*in).seq.cap = 2;
+    REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+    REQUIRE(in->out.size() == 2);
+    REQUIRE(in->out[0].empty());
+    REQUIRE(in->out[1] == std::vector<uint8_t>{1, 1});
+}
+
+TEST_CASE("RowSeq: a count given as a template argument binds like cap, and costs no storage")
+{
+    using Counted = sofab::RowSeq<std::vector<std::vector<std::string>>, DynStrRow, 2>;
+    using Runtime = sofab::RowSeq<std::vector<std::vector<std::string>>, DynStrRow>;
+    static_assert(sizeof(Counted) < sizeof(Runtime),
+                  "a compile-time count stores neither cap nor dynCap");
+    using DynCountedRows = Holder<Counted, std::vector<std::vector<std::string>>>;
+
+    SECTION("count - 1 is the last index that fits")
+    {
+        sofab::OStream os{256};
+        os.sequenceBeginLazy(1);
+        writeStrRow(os, 1, {"a"});
+        os.sequenceEnd();
+
+        sofab::IStreamObject<DynCountedRows> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE(in->out.size() == 2);
+        REQUIRE(in->out[1] == std::vector<std::string>{"a"});
+    }
+
+    SECTION("the count itself is INVALID, decided before the fill")
+    {
+        sofab::OStream os{256};
+        os.sequenceBeginLazy(1);
+        writeStrRow(os, 2, {"a"});
+        os.sequenceEnd();
+
+        sofab::IStreamObject<DynCountedRows> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
+        REQUIRE(in->out.capacity() == 0);
+    }
+
+    SECTION("§7.3 still comes first")
+    {
+        sofab::OStream os{256};
+        os.sequenceBeginLazy(1);
+        os.write(5, uint32_t{9});
+        os.sequenceEnd();
+
+        sofab::IStreamObject<DynCountedRows> in;
+        REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+        REQUIRE(in->out.empty());
+    }
+}
+
+TEST_CASE("RowSeq: a second occurrence of the field replaces the array")
+{
+    sofab::OStream os{256};
+    os.sequenceBeginLazy(1);
+    writeStrRow(os, 0, {"a"});
+    writeStrRow(os, 1, {"b"});
+    os.sequenceEnd();
+    os.sequenceBeginLazy(1);
+    writeStrRow(os, 0, {"z"});
+    os.sequenceEnd();
+
+    sofab::IStreamObject<DynStrRows> in;
+    (*in).seq.cap = 2;
+    REQUIRE(in.feed(os.data(), os.bytesUsed()).ok());
+    REQUIRE(in->out.size() == 1);
+    REQUIRE(in->out[0] == std::vector<std::string>{"z"});
 }
