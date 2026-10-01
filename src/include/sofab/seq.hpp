@@ -9,12 +9,15 @@
  * as an ordinary runtime value — exactly the way @ref sofab::StringSeq already
  * takes its `cap` and `elemMax`.
  *
- * What lives here is the collector for the two element kinds the four
+ * What lives here is the collector for the element kinds the four
  * string/blob collectors in `sofab.hpp` do not cover: a struct/union element,
- * and a row of native scalars (a matrix). Their placement rule is the shared
- * one — MESSAGE_SPEC §5.1 makes an element's child id its array index — and it
- * is the rule an appending collector gets wrong, so it is spelled out once, on
- * @ref sofab::FixedMessageSeq, and referred to from the growable twin.
+ * a row of native scalars (a matrix), and a row the stream cannot read on its
+ * own — one that is itself a wrapper sequence, or an enum/boolean row that binds
+ * through a view — whose read the caller hands in (@ref sofab::FixedRowSeq /
+ * @ref sofab::RowSeq). Their placement rule is the shared one — MESSAGE_SPEC
+ * §5.1 makes an element's child id its array index — and it is the rule an
+ * appending collector gets wrong, so it is spelled out once, on
+ * @ref sofab::FixedMessageSeq, and referred to from the others.
  *
  * Include `sofab/sofab.hpp`; it pulls this in. Including this header alone
  * works too and means the same thing.
@@ -311,6 +314,146 @@ namespace sofab
                     is.readArray(elem, count);
                 }
             }
+        }
+    };
+
+    /*!
+     * @brief Collects a wrapper sequence of rows the stream cannot read on its
+     *        own, into inline storage.
+     *
+     * @ref FixedMessageSeq reads a struct/union element or a row of native
+     * scalars itself. A row that is itself a wrapper sequence
+     * (`array<array<string>>`, `array<array<struct>>`, deeper) is neither, and an
+     * `enum` or `boolean` row has to bind through a view of its elements. For
+     * those the row read is the caller's: @p Reader. It is the only part of a row
+     * collector that differs between schemas; the rest is
+     * @ref FixedMessageSeq's rule, unchanged and in the same order — the §7.3
+     * skip first, then the index bound against the inline capacity, then the
+     * placement at the index id (see @ref FixedMessageSeq for why each comes
+     * where it does).
+     *
+     * @tparam Container Inline vector of rows.
+     * @tparam Reader    The row read, one level down. A default-constructible
+     *                   type with
+     *                   - `static constexpr Wire wire()`, the wire type a row of
+     *                     this schema arrives with — @ref Wire::SequenceStart for
+     *                     a row that is a wrapper sequence, the array wire type of
+     *                     the backing integer for an enum or boolean row; and
+     *                   - `void operator()(IStreamImpl &, Elem &, size_t count)`,
+     *                     binding the row that was placed; @p count is the
+     *                     element count the stream announced for it, as
+     *                     @ref IStreamImpl::readArray takes it.
+     *
+     *                   `wire()` is a function rather than a constant because a
+     *                   local class — which is where generated code declares the
+     *                   reader, next to the field it reads — may not have static
+     *                   data members.
+     */
+    template <typename Container, typename Reader>
+    struct FixedRowSeq : IStreamMessage
+    {
+        /*! @brief Row type: the container's element. */
+        using Elem = typename Container::value_type;
+
+        /*! @brief Declared row wire type (§7.3), from @p Reader. */
+        static constexpr int elemWire = static_cast<int>(Reader::wire());
+
+        static_assert(fixed_capacity_v<Container> >= 0,
+            "FixedRowSeq needs a heap-free container: its capacity IS the "
+            "schema bound this collector applies. Use sofab::RowSeq, with an "
+            "explicit cap, for a growable one.");
+
+        Container *out = nullptr;            //!< Destination, bound by @ref IStreamImpl::readSequence.
+        [[no_unique_address]] Reader readRow{}; //!< The row read.
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
+        {
+            if (static_cast<int>(is.wire()) != elemWire) return; /* §7.3 */
+            if (static_cast<size_t>(id) >= static_cast<size_t>(fixed_capacity_v<Container>))
+            {
+                is.invalidate(); /* §5.1/§7 */
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) (void)out->emplace_back();
+            readRow(is, (*out)[static_cast<size_t>(id)], count);
+        }
+    };
+
+    /*!
+     * @brief The index bounds of a @ref RowSeq whose schema `count` is not a
+     *        template argument: the schema `count` and the §6.2.1 receiver cap,
+     *        as runtime members, exactly as @ref MessageSeq carries them.
+     */
+    template <long Count>
+    struct RowSeqBounds
+    {
+        // A count given as a template argument needs no storage.
+    };
+
+    /*! @copydoc RowSeqBounds */
+    template <>
+    struct RowSeqBounds<-1>
+    {
+        long cap = -1;     //!< Schema `count` N, or -1 when the schema declares none.
+        DynCap dynCap{};   //!< §6.2.1 receiver cap on the index; required where @ref cap is -1.
+    };
+
+    /*!
+     * @brief Collects a wrapper sequence of rows the stream cannot read on its
+     *        own, into a growable container.
+     *
+     * The heap counterpart of @ref FixedRowSeq, as @ref MessageSeq is of
+     * @ref FixedMessageSeq. Named to match `sofab::RowSeq` in corelib-cpp. The
+     * schema `count` arrives one of two ways:
+     *
+     * - as the template argument @p Count — the bound is then a constant, the
+     *   collector stores no bound at all and a row at or past it is
+     *   @ref Error::InvalidMessage. This is the generated layer's form: the
+     *   footprint profile requires a `count` on every array level, so a receiver
+     *   cap could never apply, and neither its storage nor its branch is paid for;
+     * - or, with @p Count left at -1, as the runtime member `cap`, with the
+     *   §6.2.1 receiver cap `dynCap` beside it for a schema-unbounded array —
+     *   applied by @ref seqRefuse exactly as @ref MessageSeq applies them.
+     *
+     * A row is placed only once its own field opens, i.e. once every target in
+     * the row before it has been filled, so growing the container cannot move a
+     * destination the deferred decoder still has bound (see @ref MessageSeq).
+     *
+     * @tparam Container Growable container of rows.
+     * @tparam Reader    The row read, as for @ref FixedRowSeq.
+     * @tparam Count     Schema `count` N, or -1 to take the bounds as members.
+     */
+    template <typename Container, typename Reader, long Count = -1>
+    struct RowSeq : IStreamMessage, RowSeqBounds<Count>
+    {
+        static_assert(Count >= -1, "Count is a schema count, or -1 for runtime bounds");
+
+        /*! @brief Row type: the container's element. */
+        using Elem = typename Container::value_type;
+
+        /*! @brief Declared row wire type (§7.3), from @p Reader. */
+        static constexpr int elemWire = static_cast<int>(Reader::wire());
+
+        Container *out = nullptr;               //!< Destination, bound by @ref IStreamImpl::readSequence.
+        [[no_unique_address]] Reader readRow{}; //!< The row read.
+
+        void deserialize(IStreamImpl &is, sofab_id_t id, size_t, size_t count) noexcept override
+        {
+            if (static_cast<int>(is.wire()) != elemWire) return; /* §7.3 */
+            if constexpr (Count >= 0)
+            {
+                if (static_cast<size_t>(id) >= static_cast<size_t>(Count))
+                {
+                    is.invalidate(); /* §5.1/§7 */
+                    return;
+                }
+            }
+            else if (seqRefuse(is, static_cast<size_t>(id) + 1, this->cap, this->dynCap))
+            {
+                return;
+            }
+            while (out->size() <= static_cast<size_t>(id)) (void)out->emplace_back();
+            readRow(is, (*out)[static_cast<size_t>(id)], count);
         }
     };
 };
