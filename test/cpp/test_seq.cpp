@@ -401,19 +401,17 @@ TEST_CASE("MessageSeq: a native-scalar row is placed by id and sized by the wire
     }
 }
 
-TEST_CASE("MessageSeq: a row longer than the row's own capacity is InvalidArgument")
+TEST_CASE("MessageSeq: a row longer than the row's own capacity is InvalidMessage")
 {
-    // Rejected rather than truncated into the row -- that half is §6.2.1's
-    // "rejected, never clamped" and is unchanged.
-    //
-    // The CODE changed with the bounds move. The codec no longer takes a schema
-    // `count`: MESSAGE_SPEC §7 gives schema bounds to generated code, "the
-    // corelib cannot know the schema". What this corelib still sees is the row's
-    // storage, and a value the caller's storage cannot hold is §6.6.3's third
-    // refusal tier -- InvalidArgument, not InvalidMessage. A handler that wants
-    // the row's capacity to ALSO mean the schema `count` compares the announced
-    // count itself and calls invalidate(); the two answers are then its choice,
-    // made where the schema is known.
+    // Rejected rather than truncated into the row (§6.2.1, "rejected, never
+    // clamped"), and rejected as INVALID: an inline row's capacity IS the schema
+    // `count` it was generated for (the same reading FixedMessageSeq applies to
+    // the OUTER index), and MESSAGE_SPEC §7.1 makes an element past a declared
+    // bound INVALID on every target. The collector has no other way to state the
+    // bound -- it is the only one that sees the row's storage and the schema
+    // slot is not passed down -- so it passes the row's capacity as the bound.
+    // A row handed straight to readArray with no stated bound still gets §6.6.3's
+    // InvalidArgument: that one is a caller's destination, not a schema.
     const std::array<uint32_t, 5> row = {1, 2, 3, 4, 5};
 
     sofab::OStream os{256};
@@ -422,7 +420,7 @@ TEST_CASE("MessageSeq: a row longer than the row's own capacity is InvalidArgume
     os.sequenceEnd();
 
     sofab::IStreamObject<InlineRows> in;
-    REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidArgument);
+    REQUIRE(in.feed(os.data(), os.bytesUsed()).code() == sofab::Error::InvalidMessage);
 }
 
 TEST_CASE("MessageSeq: rows within the capacity round-trip through inline storage")
