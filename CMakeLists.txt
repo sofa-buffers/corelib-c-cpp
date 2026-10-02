@@ -95,6 +95,33 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffunction-sections -fdata-sections)
     add_link_options(-Wl,--gc-sections -Wl,-Map=mapfile.map)
 
+    # AVR is the tightest target in the footprint tables, and the one place
+    # where a further -Os knob still pays: -mcall-prologues replaces each
+    # function's register-save prologue and epilogue with a call to the shared
+    # __prologue_saves__ / __epilogue_restores__ pair in libgcc. Measured on
+    # atmega8, full configuration (tools/footprint.sh, and a linked image to net
+    # out the helpers):
+    #
+    #   libsofabuffers.a   8572 B -> 7550 B   (-1022 B)
+    #   linked image       8980 B -> 8068 B   ( -912 B)
+    #
+    # The 110 B difference is that helper pair, which the image pays once; a
+    # firmware built with the same flag amortises it and keeps the full -1022 B.
+    # The cost is cycles -- every call now enters and leaves through a shared
+    # routine -- which is the trade this library makes deliberately: flash is the
+    # scarce resource on these parts, speed is subordinate.
+    #
+    # Guarded on the processor rather than the compiler because the flag is
+    # AVR-only; CMAKE_SYSTEM_PROCESSOR is set by utils/avr/toolchain-avr.cmake.
+    # `naked` functions (utils/avr/startup.c) emit no prologue and are
+    # unaffected. Other architectures measured no gain from their equivalents:
+    # RISC-V -msave-restore wins 308 B in the archive but only 56 B in a linked
+    # image, because the __riscv_save_*/__riscv_restore_* set costs 1284 B there,
+    # and on ARMv6-m every comparable knob came out at ±0 B or worse.
+    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "avr")
+        add_compile_options(-mcall-prologues)
+    endif()
+
     if(SOFAB_ENABLE_LTO)
         # -O3 rather than the -Os above: this leg is not measuring footprint, it
         # is trying to give the optimiser every reason to act on a type-based
