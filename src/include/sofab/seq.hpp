@@ -216,8 +216,10 @@ namespace sofab
                  * row from the wire count and refuses a count the row cannot hold
                  * instead of truncating into it (§7.1). A heap-free row's capacity
                  * IS the schema `count` it was generated for, so it is passed as
-                 * the bound. */
-                is.readArray(elem, count);
+                 * the bound: a count past it is INVALID (§7.1), where leaving the
+                 * bound out would report the same row as a too-short destination
+                 * (InvalidArgument, §6.6.3). */
+                is.readArray(elem, count, fixed_capacity_v<Elem>);
             }
         }
     };
