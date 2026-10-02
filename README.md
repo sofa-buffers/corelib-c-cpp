@@ -713,6 +713,18 @@ is `.text` (flash). The tables are `size libsofabuffers.a` at `-Os`, regenerated
 configuration; `atmega8` is the exception, its workflow being on manual dispatch
 until the test image links again.
 
+The AVR rows carry one flag beyond `-Os`: `-mcall-prologues`, which routes every
+prologue and epilogue through libgcc's shared save/restore pair. It is worth
+1022&nbsp;B of the `atmega8` *Full* row and is applied by the top-level
+`CMakeLists.txt` for that processor only, so a hand-rolled AVR build without it
+measures about 1&nbsp;KB more. In a linked image it nets 912&nbsp;B — the shared
+pair costs 110&nbsp;B once, which a firmware built with the same flag amortises.
+It buys flash with cycles, which is the trade this library makes on these parts.
+The equivalents elsewhere do not pay and are deliberately not set: RISC-V
+`-msave-restore` saves 308&nbsp;B in the archive but only 56&nbsp;B in an image
+(its helper set costs 1284&nbsp;B there), and on ARMv6-m every comparable knob
+measured ±0&nbsp;B or worse.
+
 **Full configuration**
 
 | Architecture | .text | .data | .bss |
@@ -720,7 +732,7 @@ until the test image links again.
 | ARMv6-m | ~3.9KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~3.9KB | 0.0KB | 0.0KB |
 | RV32IMC | ~5.0KB | 0.0KB | 0.0KB |
-| atmega8 | ~8.4KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.4KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — the only rows where the validator
 (`utf8.c`) is compiled in. The delta over *Full* above is its entire
@@ -731,10 +743,10 @@ until the test image links again.
 | ARMv6-m | ~4.1KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~4.1KB | 0.0KB | 0.0KB |
 | RV32IMC | ~5.2KB | 0.0KB | 0.0KB |
-| atmega8 | ~8.8KB | 0.0KB | 0.0KB |
+| atmega8 | ~7.8KB | 0.0KB | 0.0KB |
 
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
-those *Full* rows: 276&nbsp;B on ARMv6-m, 512&nbsp;B on atmega8. A pure-C consumer
+those *Full* rows: 276&nbsp;B on ARMv6-m, 398&nbsp;B on atmega8. A pure-C consumer
 encoding only through `sofab_object_encode()` takes it back out with
 `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3684&nbsp;B, `sofab_ostream_t`
 shrinks from 56&nbsp;B to 20&nbsp;B per stream, and a typical encode drops
@@ -750,7 +762,7 @@ unaffected.
 | ARMv6-m | ~1.1KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~1.1KB | 0.0KB | 0.0KB |
 | RV32IMC | ~1.4KB | 0.0KB | 0.0KB |
-| atmega8 | ~2.8KB | 0.0KB | 0.0KB |
+| atmega8 | ~2.4KB | 0.0KB | 0.0KB |
 
 Same minimal configuration, additionally without `object.c`
 (`SOFAB_DISABLE_OBJECT_API`):
@@ -760,7 +772,7 @@ Same minimal configuration, additionally without `object.c`
 | ARMv6-m | ~0.7KB | 0.0KB | 0.0KB |
 | ARMv7-m+fp.dp | ~0.7KB | 0.0KB | 0.0KB |
 | RV32IMC | ~0.9KB | 0.0KB | 0.0KB |
-| atmega8 | ~1.9KB | 0.0KB | 0.0KB |
+| atmega8 | ~1.6KB | 0.0KB | 0.0KB |
 
 #### What each switch is worth
 
