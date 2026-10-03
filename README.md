@@ -729,9 +729,9 @@ measured ±0&nbsp;B or worse.
 
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
-| ARMv6-m | ~3.9KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~3.9KB | 0.0KB | 0.0KB |
-| RV32IMC | ~5.0KB | 0.0KB | 0.0KB |
+| ARMv6-m | ~3.8KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~3.8KB | 0.0KB | 0.0KB |
+| RV32IMC | ~4.9KB | 0.0KB | 0.0KB |
 | atmega8 | ~7.4KB | 0.0KB | 0.0KB |
 
 **Full configuration, strict UTF-8 on** — the only rows where the validator
@@ -741,14 +741,14 @@ measured ±0&nbsp;B or worse.
 | Architecture | .text | .data | .bss |
 | - | - | - | - |
 | ARMv6-m | ~4.1KB | 0.0KB | 0.0KB |
-| ARMv7-m+fp.dp | ~4.1KB | 0.0KB | 0.0KB |
+| ARMv7-m+fp.dp | ~4.0KB | 0.0KB | 0.0KB |
 | RV32IMC | ~5.2KB | 0.0KB | 0.0KB |
 | atmega8 | ~7.8KB | 0.0KB | 0.0KB |
 
 The [hold-back framing](#sequence-framing-and-the-hold-back-window) is part of
 those *Full* rows: 276&nbsp;B on ARMv6-m, 398&nbsp;B on atmega8. A pure-C consumer
 encoding only through `sofab_object_encode()` takes it back out with
-`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3684&nbsp;B, `sofab_ostream_t`
+`SOFAB_DISABLE_LAZY_SEQ_SUPPORT` — ARMv6-m returns to 3662&nbsp;B, `sofab_ostream_t`
 shrinks from 56&nbsp;B to 20&nbsp;B per stream, and a typical encode drops
 6&nbsp;Ir/op. The *Minimal* rows below disable sequences outright and are
 unaffected.
@@ -785,19 +785,19 @@ same [`tools/footprint.sh`](tools/footprint.sh):
 
 | Switch | `.text` | delta |
 | - | -: | -: |
-| *(full, the baseline)* | 3960&nbsp;B | — |
-| `SOFAB_DISABLE_OBJECT_API` | 2282&nbsp;B | **−1678&nbsp;B** |
-| `SOFAB_DISABLE_ARRAY_SUPPORT` | 2918&nbsp;B | **−1042&nbsp;B** |
-| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 3026&nbsp;B | −934&nbsp;B |
-| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3148&nbsp;B | −812&nbsp;B |
-| `SOFAB_DISABLE_INT64_SUPPORT` | 3646&nbsp;B | −314&nbsp;B |
-| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3684&nbsp;B | −276&nbsp;B |
-| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3886&nbsp;B | −74&nbsp;B |
-| `SOFAB_DISABLE_FP64_SUPPORT` | 3918&nbsp;B | −42&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3962&nbsp;B | +2&nbsp;B |
-| `SOFAB_ENABLE_SKIP_COUNTER` | 3978&nbsp;B | +18&nbsp;B |
-| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3982&nbsp;B | +22&nbsp;B |
-| `SOFAB_ENABLE_STRICT_UTF8` | 4206&nbsp;B | +246&nbsp;B |
+| *(full, the baseline)* | 3938&nbsp;B | — |
+| `SOFAB_DISABLE_OBJECT_API` | 2282&nbsp;B | **−1656&nbsp;B** |
+| `SOFAB_DISABLE_ARRAY_SUPPORT` | 2972&nbsp;B | **−966&nbsp;B** |
+| `SOFAB_DISABLE_SEQUENCE_SUPPORT` | 3002&nbsp;B | −936&nbsp;B |
+| `SOFAB_DISABLE_FIXLEN_SUPPORT` | 3152&nbsp;B | −786&nbsp;B |
+| `SOFAB_DISABLE_INT64_SUPPORT` | 3624&nbsp;B | −314&nbsp;B |
+| `SOFAB_DISABLE_LAZY_SEQ_SUPPORT` | 3662&nbsp;B | −276&nbsp;B |
+| `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | 3864&nbsp;B | −74&nbsp;B |
+| `SOFAB_DISABLE_FP64_SUPPORT` | 3896&nbsp;B | −42&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_BIG` | 3940&nbsp;B | +2&nbsp;B |
+| `SOFAB_OBJECT_DESCR_PROFILE=…_SMALL` | 3954&nbsp;B | +16&nbsp;B |
+| `SOFAB_ENABLE_SKIP_COUNTER` | 3956&nbsp;B | +18&nbsp;B |
+| `SOFAB_ENABLE_STRICT_UTF8` | 4184&nbsp;B | +246&nbsp;B |
 
 Three rows need a word:
 
