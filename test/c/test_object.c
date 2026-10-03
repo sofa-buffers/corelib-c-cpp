@@ -1420,6 +1420,132 @@ static size_t blobsized_encode (const blobsized_t *in, uint8_t *buf, size_t bufl
     return sofab_ostream_flush(&octx);
 }
 
+/*
+ * A sized blob WITH a non-empty declared default: the used length is compared
+ * against the default image's length and the used prefix against its bytes, like
+ * a sized array (MESSAGE_SPEC §2). The default is {'H','i'}.
+ */
+static const blobsized_t _info_defaults_blobsized =
+    { .used_len = 2, .data = { 'H', 'i' } };
+
+static const sofab_object_descr_t _info_blobsized_with_default =
+    SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_info_fields_blobsized, 1, NULL, 0,
+                                     &_info_defaults_blobsized);
+
+static size_t blobsized_def_encode (const sofab_object_descr_t *info,
+                                    const blobsized_t *in, uint8_t *buf, size_t n)
+{
+    sofab_ostream_t octx;
+    sofab_ostream_init(&octx, buf, n, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_object_encode(&octx, info, in), "encode failed");
+    return sofab_ostream_flush(&octx);
+}
+
+static void blobsized_def_decode (const sofab_object_descr_t *info,
+                                  blobsized_t *out, const uint8_t *buf, size_t n)
+{
+    sofab_istream_t ictx;
+    sofab_object_decoder_t dec;
+    memset(&dec, 0, sizeof(dec));
+    dec.info = info;
+    dec.dst = (uint8_t *)out;
+    sofab_istream_init(&ictx, sofab_object_field_cb, &dec);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK, sofab_istream_feed(&ictx, buf, n),
+        "decode failed");
+}
+
+static void test_object_blob_sized_default_nonempty (void)
+{
+    uint8_t buf[32];
+    blobsized_t in, out;
+
+    /* 1. left at its default: omitted. */
+    sofab_object_init(&_info_blobsized_with_default, &in);
+    TEST_ASSERT_EQUAL_UINT8(2, in.used_len);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0,
+        blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf)),
+        "a sized blob equal to its non-empty default must be omitted");
+
+    /* 2. a different non-empty value (same length, other bytes; and other length):
+     *    written. */
+    in.data[1] = 'o';
+    size_t n = blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf));
+    const uint8_t exp_ho[] = { 0x02, 0x13, 'H', 'o' };
+    TEST_ASSERT_EQUAL_size_t(sizeof(exp_ho), n);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(exp_ho, buf, n);
+
+    sofab_object_init(&_info_blobsized_with_default, &in);
+    in.used_len = 1;                       /* "H": a prefix of the default */
+    n = blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf));
+    const uint8_t exp_h[] = { 0x02, 0x0B, 'H' };
+    TEST_ASSERT_EQUAL_size_t(sizeof(exp_h), n);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(exp_h, buf, n);
+
+    /* 4. absent decodes to the default; a written value round-trips. */
+    sofab_object_init(&_info_blobsized_with_default, &out);
+    blobsized_def_decode(&_info_blobsized_with_default, &out, buf, 0);
+    TEST_ASSERT_EQUAL_UINT8(2, out.used_len);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY("Hi", out.data, 2);
+
+    sofab_object_init(&_info_blobsized_with_default, &in);
+    in.data[1] = 'o';
+    n = blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf));
+    sofab_object_init(&_info_blobsized_with_default, &out);
+    blobsized_def_decode(&_info_blobsized_with_default, &out, buf, n);
+    TEST_ASSERT_EQUAL_UINT8(2, out.used_len);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY("Ho", out.data, 2);
+}
+
+static void test_object_blob_sized_default_explicit_empty (void)
+{
+    uint8_t buf[32];
+    blobsized_t in, out;
+    size_t n;
+
+    /* explicit empty over a non-empty default: written as an empty blob, and
+     *    it decodes back as empty (not as the default). */
+    sofab_object_init(&_info_blobsized_with_default, &in);
+    in.used_len = 0;
+    n = blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf));
+    const uint8_t exp_empty[] = { 0x02, 0x03 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(exp_empty), n,
+        "an explicit empty blob over a non-empty default must be written");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(exp_empty, buf, n);
+
+    sofab_object_init(&_info_blobsized_with_default, &out);
+    blobsized_def_decode(&_info_blobsized_with_default, &out, buf, n);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, out.used_len, "empty must decode as empty");
+}
+
+static void test_object_blob_sized_no_default_image_unchanged (void)
+{
+    uint8_t buf[32];
+    blobsized_t in;
+
+    /* No default image: the logical default stays the empty blob. */
+    sofab_object_init(&_info_blobsized, &in);
+    in.data[0] = 0x55;                     /* dirty buffer, length 0 */
+    TEST_ASSERT_EQUAL_size_t(0, blobsized_encode(&in, buf, sizeof(buf)));
+
+    in.used_len = 1;
+    const uint8_t exp[] = { 0x02, 0x0B, 0x55 };
+    size_t n = blobsized_encode(&in, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_size_t(sizeof(exp), n);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(exp, buf, n);
+
+    /* A default image whose blob is empty behaves the same as none. */
+    static const blobsized_t empty_def = { .used_len = 0 };
+    static const sofab_object_descr_t info_empty_def =
+        SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_info_fields_blobsized, 1, NULL, 0, &empty_def);
+    sofab_object_init(&info_empty_def, &in);
+    TEST_ASSERT_EQUAL_size_t(0,
+        blobsized_def_encode(&info_empty_def, &in, buf, sizeof(buf)));
+    in.used_len = 1; in.data[0] = 0x55;
+    TEST_ASSERT_EQUAL_size_t(sizeof(exp),
+        blobsized_def_encode(&info_empty_def, &in, buf, sizeof(buf)));
+}
+
 static void test_object_blob_sized (void)
 {
     uint8_t buf[32];
@@ -3950,6 +4076,9 @@ int test_object_main (void)
     RUN_TEST(test_object_roundtrip_empty_sequence_before_sequence);
     RUN_TEST(test_object_string_default_omission);
     RUN_TEST(test_object_blob_sized);
+    RUN_TEST(test_object_blob_sized_default_nonempty);
+    RUN_TEST(test_object_blob_sized_default_explicit_empty);
+    RUN_TEST(test_object_blob_sized_no_default_image_unchanged);
 
     RUN_TEST(test_object_boolean_tolerant_decode);
     RUN_TEST(test_object_boolean_roundtrip);
