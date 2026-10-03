@@ -1432,8 +1432,10 @@ static const sofab_object_descr_t _info_blobsized_with_default =
     SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_info_fields_blobsized, 1, NULL, 0,
                                      &_info_defaults_blobsized);
 
+/* Descriptor-driven, so the two blob layouts below (capacity 8 and 16) share it;
+ * sofab_object_encode takes the object as a void * for the same reason. */
 static size_t blobsized_def_encode (const sofab_object_descr_t *info,
-                                    const blobsized_t *in, uint8_t *buf, size_t n)
+                                    const void *in, uint8_t *buf, size_t n)
 {
     sofab_ostream_t octx;
     sofab_ostream_init(&octx, buf, n, 0, NULL, NULL);
@@ -1443,7 +1445,7 @@ static size_t blobsized_def_encode (const sofab_object_descr_t *info,
 }
 
 static void blobsized_def_decode (const sofab_object_descr_t *info,
-                                  blobsized_t *out, const uint8_t *buf, size_t n)
+                                  void *out, const uint8_t *buf, size_t n)
 {
     sofab_istream_t ictx;
     sofab_object_decoder_t dec;
@@ -1467,14 +1469,15 @@ static void test_object_blob_sized_default_nonempty (void)
         blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf)),
         "a sized blob equal to its non-empty default must be omitted");
 
-    /* 2. a different non-empty value (same length, other bytes; and other length):
-     *    written. */
+    /* 2. same length, different bytes: written. */
     in.data[1] = 'o';
     size_t n = blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf));
     const uint8_t exp_ho[] = { 0x02, 0x13, 'H', 'o' };
     TEST_ASSERT_EQUAL_size_t(sizeof(exp_ho), n);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(exp_ho, buf, n);
 
+    /* 3. a prefix of the default -- same bytes, shorter length: written, because
+     *    the length is part of the value (§3). */
     sofab_object_init(&_info_blobsized_with_default, &in);
     in.used_len = 1;                       /* "H": a prefix of the default */
     n = blobsized_def_encode(&_info_blobsized_with_default, &in, buf, sizeof(buf));
@@ -1544,6 +1547,65 @@ static void test_object_blob_sized_no_default_image_unchanged (void)
     in.used_len = 1; in.data[0] = 0x55;
     TEST_ASSERT_EQUAL_size_t(sizeof(exp),
         blobsized_def_encode(&info_empty_def, &in, buf, sizeof(buf)));
+}
+
+/*
+ * Capacity 16: the descriptor records sizeof(data) & 0xF == 0 in element_size, so
+ * a sized blob that read element_size to derive its capacity would divide by zero
+ * here. The default-image comparison must stay defined and byte-exact.
+ */
+typedef struct
+{
+    uint8_t used_len;
+    uint8_t data[16];
+} blobsized_cap16_t;
+
+static const sofab_object_descr_field_t _info_fields_blobsized_cap16[] =
+{
+    SOFAB_OBJECT_FIELD_BLOB_SIZED(0, blobsized_cap16_t, data, used_len),
+};
+
+static const blobsized_cap16_t _info_defaults_blobsized_cap16 =
+    { .used_len = 3, .data = { 'a', 'b', 'c' } };
+
+static const sofab_object_descr_t _info_blobsized_cap16 =
+    SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_info_fields_blobsized_cap16, 1, NULL, 0,
+                                     &_info_defaults_blobsized_cap16);
+
+static void test_object_blob_sized_default_capacity_16 (void)
+{
+    uint8_t buf[32];
+    blobsized_cap16_t in;
+    size_t n;
+
+    /* at its default: omitted, and the capacity division is well-defined. */
+    sofab_object_init(&_info_blobsized_cap16, &in);
+    TEST_ASSERT_EQUAL_UINT8(3, in.used_len);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0,
+        blobsized_def_encode(&_info_blobsized_cap16, &in, buf, sizeof(buf)),
+        "a capacity-16 blob at its default must be omitted");
+
+    /* explicit empty over that default: written. */
+    in.used_len = 0;
+    n = blobsized_def_encode(&_info_blobsized_cap16, &in, buf, sizeof(buf));
+    const uint8_t exp_empty[] = { 0x02, 0x03 };
+    TEST_ASSERT_EQUAL_size_t(sizeof(exp_empty), n);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(exp_empty, buf, n);
+
+    /* a full-capacity value is compared -- and carried -- over all 16 bytes, not
+     * over 16 % 16 == 0 of them. Round-tripped rather than matched against a
+     * literal, so the test does not restate the length varint's width. */
+    blobsized_cap16_t out;
+    sofab_object_init(&_info_blobsized_cap16, &in);
+    for (uint8_t i = 0; i < 16; i++) in.data[i] = (uint8_t)(0x40 + i);
+    in.used_len = 16;
+    n = blobsized_def_encode(&_info_blobsized_cap16, &in, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN_size_t(16, n);
+
+    sofab_object_init(&_info_blobsized_cap16, &out);
+    blobsized_def_decode(&_info_blobsized_cap16, &out, buf, n);
+    TEST_ASSERT_EQUAL_UINT8(16, out.used_len);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(in.data, out.data, 16);
 }
 
 static void test_object_blob_sized (void)
@@ -4079,6 +4141,7 @@ int test_object_main (void)
     RUN_TEST(test_object_blob_sized_default_nonempty);
     RUN_TEST(test_object_blob_sized_default_explicit_empty);
     RUN_TEST(test_object_blob_sized_no_default_image_unchanged);
+    RUN_TEST(test_object_blob_sized_default_capacity_16);
 
     RUN_TEST(test_object_boolean_tolerant_decode);
     RUN_TEST(test_object_boolean_roundtrip);

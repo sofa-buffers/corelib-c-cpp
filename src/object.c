@@ -619,9 +619,21 @@ static int _field_is_default (
              * value), then the used prefix against the default image. A blob is
              * an array of one-byte elements here. Without a default image the
              * logical default is the empty value. The buffer past the used length
-             * is indeterminate and never influences the decision. */
-            size_t esz = field->type == SOFAB_OBJECT_FIELDTYPE_BLOB
-                ? 1 : field->element_size;
+             * is indeterminate and never influences the decision.
+             *
+             * The 1 a blob keeps is load-bearing, not shorthand: for a BLOB the
+             * descriptor macros record sizeof(buffer) & 0xF in element_size -- the
+             * CAPACITY, not an element width -- which is 0 at a capacity of 16, so
+             * reading it here would divide by zero. An #if rather than a ternary
+             * because it also pays: with arrays disabled the blob is the only kind
+             * that reaches this block, esz folds to a constant, and neither the
+             * division (a libgcc call on a core without one) nor the multiply is
+             * emitted at all. */
+            size_t esz = 1;
+#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+            if (field->type != SOFAB_OBJECT_FIELDTYPE_BLOB)
+                esz = field->element_size;
+#endif
             uint64_t used = _load_uint(
                 CAST_TO(const void *, src, field->offset - width), width);
             size_t cap = field->size / esz;
