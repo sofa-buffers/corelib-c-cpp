@@ -608,29 +608,23 @@ static int _field_is_default (
         /* No default image: the implicit default is the empty string. */
         return field->size == 0 || s[0] == '\0';
     }
-
-    if (field->type == SOFAB_OBJECT_FIELDTYPE_BLOB && field->nested_idx != 0)
-    {
-        /* Sized blob: the logical default is an empty blob (used_len == 0),
-         * mirroring the empty-string rule above. The buffer bytes are
-         * indeterminate and must not influence the decision. used_len sits
-         * immediately before the buffer (nested_idx bytes wide). */
-        return _load_uint(CAST_TO(const void *, src, field->offset - field->nested_idx),
-                          field->nested_idx) == 0;
-    }
 #endif
 
-#if !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
+#if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
     {
         uint8_t width = _sized_width(field);
-        if (width != 0 && field->type != SOFAB_OBJECT_FIELDTYPE_BLOB)
+        if (width != 0)
         {
-            /* Sized array: length first (§3 -- the length is the value), then the
-             * used prefix against the default image. Without a default image the
-             * logical default is the empty array. */
+            /* Sized blob / sized array: length first (§3 -- the length is the
+             * value), then the used prefix against the default image. A blob is
+             * an array of one-byte elements here. Without a default image the
+             * logical default is the empty value. The buffer past the used length
+             * is indeterminate and never influences the decision. */
+            size_t esz = field->type == SOFAB_OBJECT_FIELDTYPE_BLOB
+                ? 1 : field->element_size;
             uint64_t used = _load_uint(
                 CAST_TO(const void *, src, field->offset - width), width);
-            size_t cap = field->size / field->element_size;
+            size_t cap = field->size / esz;
             if (used > (uint64_t)cap) used = (uint64_t)cap;
 
             if (defaults == NULL) return used == 0;
@@ -639,10 +633,10 @@ static int _field_is_default (
                            width) != used)
                 return 0;
             return memcmp(CAST_TO(const void *, defaults, field->offset), val,
-                          (size_t)used * field->element_size) == 0;
+                          (size_t)used * esz) == 0;
         }
     }
-#endif /* !defined(SOFAB_DISABLE_ARRAY_SUPPORT) */
+#endif /* fixlen or array support */
 
     if (defaults != NULL)
     {
