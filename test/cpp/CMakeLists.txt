@@ -28,6 +28,7 @@ add_executable(sofabpptest
     test_ostream.cpp
     test_istream.cpp
     test_seq.cpp
+    test_floats.cpp
     test_receiver_limits.cpp
     test_allocation.cpp
     test_vector_blocks.cpp
