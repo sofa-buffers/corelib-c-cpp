@@ -3849,4 +3849,7 @@ namespace sofab
  * include guards resolve either way round. */
 #include "sofab/seq.hpp"
 
+/* The float-array bit-pattern equality the generated default test calls. */
+#include "sofab/floats.hpp"
+
 #endif // SOFAB_HPP
