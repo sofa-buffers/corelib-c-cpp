@@ -120,7 +120,7 @@ TEMPLATE_TEST_CASE("bitsEqual: NaN equals itself only bit for bit", "[floats]", 
     const T qnan = std::numeric_limits<T>::quiet_NaN();
     const T snan = std::numeric_limits<T>::signaling_NaN();
     const U qbits = bitsOf(qnan);
-    const T payload = fromBits<T>(qbits | U(1)); // same class, other payload
+    const T payload = fromBits<T>(qbits ^ U(1)); // differs on every NaN encoding (MIPS legacy has the low bit set)
     const T negnan = fromBits<T>(qbits | (U(1) << (sizeof(U) * 8 - 1)));
 
     CHECK(sofab::bitsEqual(std::vector<T>{qnan}, std::vector<T>{qnan}));
