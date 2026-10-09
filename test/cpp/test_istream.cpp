@@ -1635,12 +1635,17 @@ TEST_CASE("InlineVector: push_back, emplace_back, iteration and capacity")
     w = {10, 20};
     REQUIRE(v != w);
 
-    // At capacity the length never grows: emplace_back reuses the last slot
-    // (an OOB-safe clamp for a malformed over-length wire) rather than writing
-    // past N. The logical length stays N.
+    // At capacity the length never grows. push_back is the assignment-time
+    // clamp of the static storage: the value is dropped and the held ones stay.
     v.push_back(40);
     REQUIRE(v.size() == 3);
-    REQUIRE(v.back() == 40);
+    REQUIRE(v.back() == 30);
+    // emplace_back, the decode-side binder, reuses the last slot instead (an
+    // OOB-safe clamp for a malformed over-length wire) rather than writing past
+    // N. The logical length stays N.
+    v.emplace_back() = 50;
+    REQUIRE(v.size() == 3);
+    REQUIRE(v.back() == 50);
 }
 
 TEST_CASE("InlineVector: resize is the length, and readArray finds it")
