@@ -296,6 +296,23 @@ typedef int32_t sofab_signed_t;
 // #define SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK
 
 /*!
+ * @brief Disable the encode-side bound refusal.
+ *
+ * By default @ref sofab_object_encode reads a @c STRING field bounded by its
+ * own storage (@c char[maxlen + 1]) and refuses, with
+ * @ref SOFAB_RET_E_ARGUMENT, a value that fills that storage without a
+ * terminator: it is longer than the field's @c maxlen. Defining this switch
+ * removes the refusal (a compare and a branch per string field) for a caller
+ * that guarantees its strings are terminated within their bound; the read stays
+ * bounded, so such a value is emitted as the whole buffer instead of read past
+ * it. The C++ wrapper reads the same switch as @c sofab::ENCODE_BOUNDS. A
+ * sized blob's length and a sized array's or wrapper holder's element count are
+ * clamped to the capacity in either build (the documented clamp contract), and
+ * decode-side bound checks are not affected.
+ */
+// #define SOFAB_DISABLE_ENCODE_BOUNDS
+
+/*!
  * @brief Strict UTF-8 validation of @c string fields (default OFF — opt-in).
  *
  * A @c string payload is UTF-8 (MESSAGE_SPEC §8); @c blob is the type for

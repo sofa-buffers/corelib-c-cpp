@@ -909,8 +909,27 @@ extern sofab_ret_t sofab_object_encode (
 #endif /* !defined(SOFAB_DISABLE_FP64_SUPPORT) */
 
             case SOFAB_OBJECT_FIELDTYPE_STRING:
-                ret = sofab_ostream_write_string(ctx, field->id, CAST_TO(char *, src, field->offset));
+            {
+                /* A string member is char[maxlen + 1], so its length is read
+                 * bounded by field->size and never past the member. A value that
+                 * fills the member without a terminator is longer than maxlen:
+                 * refused before a byte of it is written (SOFAB_DISABLE_ENCODE_BOUNDS
+                 * removes the refusal; the read stays bounded). A plain byte loop
+                 * rather than strlen/memchr: no libc call, and the loop is smaller
+                 * than the call sequence on the footprint targets. */
+                const char *s = CAST_TO(const char *, src, field->offset);
+                size_t len = 0;
+                while (len < field->size && s[len] != '\0') len++;
+#if !defined(SOFAB_DISABLE_ENCODE_BOUNDS)
+                if (len == field->size)
+                {
+                    return SOFAB_RET_E_ARGUMENT;
+                }
+#endif
+                ret = sofab_ostream_write_fixlen(ctx, field->id, s, (int32_t)len,
+                                                 SOFAB_FIXLENTYPE_STRING);
                 break;
+            }
 
             case SOFAB_OBJECT_FIELDTYPE_BLOB:
             {

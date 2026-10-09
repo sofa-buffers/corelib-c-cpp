@@ -75,6 +75,17 @@ if(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
     target_compile_definitions(sofabuffers PUBLIC SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
 endif()
 
+# The encode-side bound refusal (sofab_object_encode refuses a string member that
+# fills its char[maxlen + 1] storage without a terminator; the C++ wrapper reads
+# the same macro as sofab::ENCODE_BOUNDS). A footprint switch for a caller that
+# guarantees its values fit: it removes a check, not a wire construct. PUBLIC so
+# the C++ wrapper's generated checks and object.c agree.
+option(SOFAB_DISABLE_ENCODE_BOUNDS
+    "Remove the encode-side refusal of an over-bound value" OFF)
+if(SOFAB_DISABLE_ENCODE_BOUNDS)
+    target_compile_definitions(sofabuffers PUBLIC SOFAB_DISABLE_ENCODE_BOUNDS)
+endif()
+
 # The object descriptor width profile is configured the same way, and for the
 # same reason applied PUBLIC: SOFAB_OBJECT_DESCR_PROFILE selects the integer
 # widths of sofab_object_descr_field_t in the *public* header, so the library and
