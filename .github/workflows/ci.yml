@@ -574,6 +574,16 @@ jobs:
           $RUN ./build/no-lazy-seq/test/c/sofab_vectortest
           $RUN ./build/no-lazy-seq/test/c/sofabtest
 
+      # The encode-side bound refusal compiled out (a footprint opt-out that removes a
+      # check, not a wire construct): the full unit suite runs, and the encode-bound
+      # tests take their #if-guarded opt-out branch -- the string read stays bounded.
+      - name: no-encode-bounds
+        run: |
+          cmake -S . -B build/no-encode-bounds $CM_ARGS -DCMAKE_C_FLAGS="-DSOFAB_DISABLE_ENCODE_BOUNDS"
+          cmake --build build/no-encode-bounds --target sofab_vectortest sofabtest --parallel $(nproc)
+          $RUN ./build/no-encode-bounds/test/c/sofab_vectortest
+          $RUN ./build/no-encode-bounds/test/c/sofabtest
+
       # The hold-back window is a documented, tunable bound (SOFAB_LAZY_SEQ_DEPTH,
       # CORELIB_PLAN §6), so a build that moves it must still pass the suite: the
       # bound costs canonicity past its depth, never validity.

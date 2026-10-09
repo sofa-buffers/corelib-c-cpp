@@ -4097,6 +4097,179 @@ static void test_object_union_switched_to_leaf_carries_no_earlier_option (void)
 
 #endif /* sequence && fixlen && array support */
 
+//
+// Encode bounds (generator#656). A STRING member is char[maxlen + 1]: the encoder
+// reads it bounded by that storage and refuses a value that fills it without a
+// terminator (longer than maxlen) with SOFAB_RET_E_ARGUMENT, unless the build
+// defines SOFAB_DISABLE_ENCODE_BOUNDS, where the read stays bounded and the whole
+// buffer is emitted. A sized blob's length and a sized array's or holder's count
+// past the capacity are CLAMPED to it -- the documented clamp contract, the same in
+// both builds.
+//
+
+typedef struct
+{
+    char s[5];          /* maxlen 4 */
+    char guard[4];      /* must never reach the wire */
+} _eb_str_t;
+
+static const sofab_object_descr_field_t _eb_str_fields[] =
+{
+    SOFAB_OBJECT_FIELD(0, _eb_str_t, s, SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+
+static const sofab_object_descr_t _eb_str =
+    SOFAB_OBJECT_DESCR(_eb_str_fields, 1, NULL, 0);
+
+static sofab_ret_t _eb_encode (const sofab_object_descr_t *info, const void *in,
+                               uint8_t *buf, size_t buflen, size_t *used)
+{
+    sofab_ostream_t octx;
+    sofab_ret_t ret;
+    sofab_ostream_init(&octx, buf, buflen, 0, NULL, NULL);
+    ret = sofab_object_encode(&octx, info, in);
+    *used = sofab_ostream_flush(&octx);
+    return ret;
+}
+
+static void test_object_encode_string_at_bound (void)
+{
+    uint8_t buf[16];
+    size_t used = 0;
+    _eb_str_t in;
+    memset(&in, 0, sizeof(in));
+    memcpy(in.s, "abcd", 5);
+    memcpy(in.guard, "zzz", 4);
+
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _eb_encode(&_eb_str, &in, buf, sizeof(buf), &used));
+    /* id 0 | FIXLEN = 0x02 ; (4 << 3) | STRING = 0x22 */
+    const uint8_t expected[] = { 0x02, 0x22, 'a', 'b', 'c', 'd' };
+    TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, used);
+}
+
+static void test_object_encode_string_unterminated (void)
+{
+    uint8_t buf[16];
+    size_t used = 0;
+    _eb_str_t in;
+    memset(&in, 0, sizeof(in));
+    memcpy(in.s, "abcde", 5);       /* fills char[5]: no terminator, 5 > maxlen 4 */
+    memcpy(in.guard, "zzz", 4);
+
+    sofab_ret_t ret = _eb_encode(&_eb_str, &in, buf, sizeof(buf), &used);
+#if !defined(SOFAB_DISABLE_ENCODE_BOUNDS)
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_ARGUMENT, ret,
+        "a string that fills its storage without a terminator is over maxlen");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used, "nothing of the refused field is written");
+#else
+    /* The opt-out keeps the read bounded: the five bytes, never the guard. */
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    const uint8_t expected[] = { 0x02, 0x2A, 'a', 'b', 'c', 'd', 'e' };
+    TEST_ASSERT_EQUAL_size_t(sizeof(expected), used);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, used);
+#endif
+}
+
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+/* The same rule for an element of an array<string> (a sized wrapper holder). */
+typedef struct {
+    uint8_t len;
+    char    s[3][5];
+} _eb_strs_holder_t;
+static const sofab_object_descr_field_t _eb_strs_fields[] = {
+    SOFAB_OBJECT_FIELD(0, _eb_strs_holder_t, s[0], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(1, _eb_strs_holder_t, s[1], SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(2, _eb_strs_holder_t, s[2], SOFAB_OBJECT_FIELDTYPE_STRING),
+};
+static const sofab_object_descr_t _eb_strs_holder =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_eb_strs_fields, 3, NULL, 0, _eb_strs_holder_t, len);
+
+typedef struct { _eb_strs_holder_t arr; } _eb_strs_msg_t;
+static const sofab_object_descr_field_t _eb_strs_msg_fields[] = {
+    SOFAB_OBJECT_FIELD_SEQUENCE(5, _eb_strs_msg_t, arr, SOFAB_OBJECT_FIELDTYPE_SEQUENCE, 0),
+};
+static const sofab_object_descr_t *const _eb_strs_nested[] = { &_eb_strs_holder };
+static const sofab_object_descr_t _eb_strs_msg =
+    SOFAB_OBJECT_DESCR(_eb_strs_msg_fields, 1, _eb_strs_nested, 1);
+
+static void test_object_encode_string_element_unterminated (void)
+{
+    uint8_t buf[32];
+    size_t used = 0;
+    _eb_strs_msg_t in;
+    memset(&in, 0, sizeof(in));
+    in.arr.len = 2;
+    memcpy(in.arr.s[0], "ab", 3);
+    memcpy(in.arr.s[1], "xxxxx", 5);   /* unterminated: over maxlen 4 */
+
+    sofab_ret_t ret = _eb_encode(&_eb_strs_msg, &in, buf, sizeof(buf), &used);
+#if !defined(SOFAB_DISABLE_ENCODE_BOUNDS)
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_ARGUMENT, ret,
+        "an over-maxlen element of an array<string> is refused");
+#else
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, ret);
+    (void)used;
+#endif
+
+    /* the control: the same element at its bound encodes */
+    memcpy(in.arr.s[1], "xxxx", 5);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _eb_encode(&_eb_strs_msg, &in, buf, sizeof(buf), &used));
+    TEST_ASSERT_TRUE(used > 0);
+}
+
+static void test_object_encode_holder_count_clamped (void)
+{
+    uint8_t buf[32];
+    size_t used = 0;
+    _eb_strs_msg_t in;
+    memset(&in, 0, sizeof(in));
+    in.arr.len = 9;                     /* past the 3 slots */
+    memcpy(in.arr.s[0], "a", 2);
+    memcpy(in.arr.s[1], "b", 2);
+    memcpy(in.arr.s[2], "c", 2);
+
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _eb_encode(&_eb_strs_msg, &in, buf, sizeof(buf), &used));
+    /* seq 5 open = 0x2E; ids 0..2 one-byte strings; close 0x07 */
+    const uint8_t expected[] = { 0x2E, 0x02, 0x0A, 'a', 0x0A, 0x0A, 'b', 0x12, 0x0A, 'c', 0x07 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "a holder count past the capacity is clamped to it");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, used);
+}
+#endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
+
+static void test_object_encode_blob_len_clamped (void)
+{
+    uint8_t buf[32];
+    size_t used = 0;
+    blobsized_t in;
+    memset(&in, 0, sizeof(in));
+    for (uint8_t i = 0; i < 8; i++) in.data[i] = (uint8_t)(0xA0 + i);
+    in.used_len = 200;                  /* past the 8-byte capacity */
+
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _eb_encode(&_info_blobsized, &in, buf, sizeof(buf), &used));
+    const uint8_t expected[] = { 0x02, 0x43, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "a blob length past the capacity is clamped to it");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, used);
+}
+
+static void test_object_encode_array_len_clamped (void)
+{
+    uint8_t buf[32];
+    size_t used = 0;
+    arrsized_t in;
+    sofab_object_init(&_info_arrsized, &in);
+    for (uint32_t i = 0; i < 5; i++) in.vals[i] = i + 1;
+    in.len = 99;                        /* past the 5-element capacity */
+
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, _eb_encode(&_info_arrsized, &in, buf, sizeof(buf), &used));
+    const uint8_t expected[] = { 0x03, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05 };
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(expected), used,
+        "an array count past the capacity is clamped to it");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, used);
+}
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
@@ -4201,6 +4374,15 @@ int test_object_main (void)
     RUN_TEST(test_object_sized_wrapper_row_decode_stores_length);
 
     RUN_TEST(test_object_sized_wrapper_init_clears_length);
+
+    RUN_TEST(test_object_encode_string_at_bound);
+    RUN_TEST(test_object_encode_string_unterminated);
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    RUN_TEST(test_object_encode_string_element_unterminated);
+    RUN_TEST(test_object_encode_holder_count_clamped);
+#endif
+    RUN_TEST(test_object_encode_blob_len_clamped);
+    RUN_TEST(test_object_encode_array_len_clamped);
 
     return UNITY_END();
 }

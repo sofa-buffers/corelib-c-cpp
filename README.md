@@ -304,6 +304,7 @@ disagree is a silent ABI mismatch, not a warning. Passing the macro through
 | `SOFAB_DISABLE_FP64_SUPPORT` | CMake option | off | Drop 64-bit float (`fp64`); auto-defined where `double` is not 8 bytes |
 | `SOFAB_DISABLE_INT64_SUPPORT` | CMake option | off | Narrow scalar varints from 64-bit to 32-bit (drops the `u64`/`i64` helpers) |
 | `SOFAB_DISABLE_INTEGER_OVERFLOW_CHECK` | CMake option | off | Skip integer overflow checks when decoding (smaller/faster, less safe) |
+| `SOFAB_DISABLE_ENCODE_BOUNDS` | CMake option | off | Remove the encode-side refusal of an over-bound value: `sofab_object_encode()` no longer returns `SOFAB_RET_E_ARGUMENT` for a string member that fills its `char[maxlen + 1]` without a terminator (the read stays bounded), and the C++ wrapper's `sofab::ENCODE_BOUNDS` is `false`. Sized blob lengths and array counts are clamped to the capacity either way |
 | `SOFAB_DISABLE_OBJECT_API` | CMake option | off | Exclude the descriptor-driven object API (`object.c`) and leave the bare stream corelib |
 
 > **A switch that removes a wire construct makes the decoder *reject* messages
