@@ -32,6 +32,7 @@ add_executable(sofabpptest
     test_receiver_limits.cpp
     test_allocation.cpp
     test_vector_blocks.cpp
+    test_encode_bounds.cpp
     ../shared/sofab_test_json.c
 )
 
@@ -52,6 +53,12 @@ target_link_libraries(sofabpptest
 
 # --- ctest registration ---
 add_test(NAME test_cpp COMMAND sofabpptest)
+
+# SOFAB_DISABLE_ENCODE_BOUNDS: compile-only (static_asserts), an object of its
+# own so the two values of sofab::ENCODE_BOUNDS never meet in one program.
+add_library(sofab_encode_bounds_off OBJECT encode_bounds_off.cpp)
+target_compile_options(sofab_encode_bounds_off PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(sofab_encode_bounds_off PRIVATE sofabuffers)
 
 # The README's generator example, compiled and run. The stand-in lives here as a
 # real translation unit; the test also checks that README.md still shows calls it
