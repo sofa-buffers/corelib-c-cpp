@@ -349,25 +349,29 @@ static sofab_ret_t _write_fixlen_reverse (sofab_ostream_t *ctx, const uint8_t *d
 
 //
 
+/* Stand-in for a zero-length buffer handed over as NULL.
+ *
+ * A (pointer, length) pair of (NULL, 0) is what std::vector<uint8_t>::data()
+ * yields for an empty vector, and the generated C++ one-shot encode of a
+ * FIELD-LESS message installs exactly that (generator#738): MESSAGE_SPEC §2
+ * makes the all-default message the empty byte string, so a zero-length buffer
+ * is the right size for it, and §5.1 already admits one ("a buffer installed
+ * without a sink is subject to no minimum"). The two install functions below
+ * therefore accept a null pointer at length 0 -- the same precondition every
+ * other (pointer, length) pair in this API states -- and point the cursor here
+ * rather than at NULL, so no pointer arithmetic in this file is ever performed
+ * on a null pointer (undefined before C23, and -fsanitize=undefined reports
+ * it). With buflen == 0 the cursor starts at the end of the buffer, so this
+ * byte can never be read or written and every stream may share it.
+ */
+static uint8_t _empty_buffer;
+
 extern void sofab_ostream_init (
     sofab_ostream_t *ctx, uint8_t *buffer, size_t buflen, size_t offset,
     sofab_ostream_flush_cb_t flush, void *usrptr)
 {
     assert(ctx != NULL);
-    assert(buffer != NULL);
-    /* CORELIB_PLAN §5.1 binds SOFAB_MIN_OUTPUT_BUFFER to a buffer installed
-     * *with* a sink, "and on no other" (§13). A buffer without one can be
-     * arbitrarily small -- no flush can occur, so nothing can be split, and it
-     * either holds the message or reports SOFAB_RET_E_BUFFER_FULL. That case
-     * has to stay exact: the all-default message is the empty byte string
-     * (MESSAGE_SPEC §2), so a zero-length buffer is a legitimate installation
-     * and offset == buflen is a legitimate (immediately full) cursor. */
-    assert(offset <= buflen);
-    assert(flush == NULL || buflen - offset >= SOFAB_MIN_OUTPUT_BUFFER);
 
-    ctx->buffer = buffer;
-    ctx->offset = buffer + offset;
-    ctx->bufend = buffer + buflen;
     ctx->flush = flush;
     ctx->usrptr = usrptr;
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) && !defined(SOFAB_DISABLE_LAZY_SEQ_SUPPORT)
@@ -375,6 +379,12 @@ extern void sofab_ostream_init (
      * themselves stay untouched -- npending bounds every read of them. */
     ctx->npending = 0;
 #endif /* SEQUENCE && LAZY_SEQ */
+
+    /* The buffer half IS the mid-stream installation, preconditions included:
+     * the sink is already in place above, so the §5.1 minimum is checked
+     * against the one this stream will actually drain through. One
+     * implementation of the install rules, not two. */
+    sofab_ostream_buffer_set(ctx, buffer, buflen, offset);
 }
 
 extern size_t sofab_ostream_flush (sofab_ostream_t *ctx)
@@ -403,11 +413,21 @@ extern void sofab_ostream_buffer_set	(
     sofab_ostream_t *ctx, uint8_t *buffer, size_t buflen, size_t offset)
 {
     assert(ctx != NULL);
-    assert(buffer != NULL);
-    /* Same split as in sofab_ostream_init(): the minimum binds this
-     * installation only if the stream drains through a sink (§5.1, §13). */
+    assert(buflen == 0 || buffer != NULL);   /* see _empty_buffer above */
+    /* CORELIB_PLAN §5.1 binds SOFAB_MIN_OUTPUT_BUFFER to a buffer installed
+     * *with* a sink, "and on no other" (§13). A buffer without one can be
+     * arbitrarily small -- no flush can occur, so nothing can be split, and it
+     * either holds the message or reports SOFAB_RET_E_BUFFER_FULL. That case
+     * has to stay exact: the all-default message is the empty byte string
+     * (MESSAGE_SPEC §2), so a zero-length buffer is a legitimate installation
+     * and offset == buflen is a legitimate (immediately full) cursor. */
     assert(offset <= buflen);
     assert(ctx->flush == NULL || buflen - offset >= SOFAB_MIN_OUTPUT_BUFFER);
+
+    if (buffer == NULL)
+    {
+        buffer = &_empty_buffer;
+    }
 
     ctx->buffer = buffer;
     ctx->offset = buffer + offset;

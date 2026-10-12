@@ -2038,6 +2038,51 @@ static void test_zero_room_without_a_sink_is_legal (void)
     TEST_ASSERT_EQUAL_size_t_MESSAGE(sizeof(buf), sofab_ostream_bytes_used(&ctx),
         "the cursor stays where it was installed");
 }
+
+/*
+ * The NULL twin of the test above, and the one case the preconditions still
+ * forbade (generator#738). A zero-length buffer is a legitimate installation,
+ * and the way a caller PRODUCES one is a (pointer, length) pair whose pointer
+ * is null: std::vector<uint8_t>::data() of an empty vector is NULL, and the
+ * generated C++ one-shot encode of a field-less message installs exactly that.
+ * Every other (pointer, length) pair in this API states its precondition as
+ * "len == 0 || ptr != NULL"; these two install functions now do too.
+ *
+ * Runs under the ctest build, i.e. with assert() live: it is the debug
+ * preconditions that have to admit the case.
+ */
+static void test_zero_length_buffer_may_be_null (void)
+{
+    sofab_ostream_t ctx;
+    uint8_t buf[2];
+
+    sofab_ostream_init(&ctx, NULL, 0, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_bytes_used(&ctx),
+        "the empty message occupies no bytes");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_flush(&ctx),
+        "nothing to flush");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_BUFFER_FULL,
+        sofab_ostream_write_unsigned(&ctx, 1, 42),
+        "a write into no buffer is buffer-full, not a precondition violation");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_bytes_used(&ctx),
+        "the refused write moved nothing");
+
+    /* The same through a mid-stream buffer-set, in both directions: a real
+     * buffer may be replaced by no buffer and the other way round. */
+    sofab_ostream_init(&ctx, buf, sizeof(buf), 0, NULL, NULL);
+    sofab_ostream_buffer_set(&ctx, NULL, 0, 0);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, sofab_ostream_bytes_used(&ctx),
+        "installing no buffer resets the cursor to it");
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_E_BUFFER_FULL,
+        sofab_ostream_write_unsigned(&ctx, 1, 42),
+        "still buffer-full after the set");
+    sofab_ostream_buffer_set(&ctx, buf, sizeof(buf), 0);
+    TEST_ASSERT_EQUAL_MESSAGE(SOFAB_RET_OK,
+        sofab_ostream_write_unsigned(&ctx, 1, 42),
+        "a real buffer installed after it writes again");
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(2, sofab_ostream_bytes_used(&ctx),
+        "id byte + value byte");
+}
 #endif /* !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) */
 
 int test_ostream_main (void)
@@ -2054,6 +2099,7 @@ int test_ostream_main (void)
     RUN_TEST(test_min_output_buffer_matches_one_shot);
     RUN_TEST(test_no_minimum_without_a_sink);
     RUN_TEST(test_zero_room_without_a_sink_is_legal);
+    RUN_TEST(test_zero_length_buffer_may_be_null);
 #endif
 
     RUN_TEST(test_buffer_overflow_by_id_via_unsigned);
