@@ -787,20 +787,21 @@ extern sofab_ret_t sofab_object_init (
         else
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
         {
-            {
-                const void *fdefault = _field_default(info, field);
+            /* One lookup for both halves of the field: the value and, below, a
+             * sized buffer's companion length. _field_default is pure, and at -Os
+             * the second call was not folded -- 38 B of .text for asking twice. */
+            const void *fdefault = _field_default(info, field);
 
-                if (fdefault != NULL)
-                {
-                    memcpy(
-                        CAST_TO(void *, obj, field->offset),
-                        CAST_TO(const void *, fdefault, field->offset),
-                        field->size);
-                }
-                else
-                {
-                    memset(CAST_TO(void *, obj, field->offset), 0, field->size);
-                }
+            if (fdefault != NULL)
+            {
+                memcpy(
+                    CAST_TO(void *, obj, field->offset),
+                    CAST_TO(const void *, fdefault, field->offset),
+                    field->size);
+            }
+            else
+            {
+                memset(CAST_TO(void *, obj, field->offset), 0, field->size);
             }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
@@ -813,7 +814,6 @@ extern sofab_ret_t sofab_object_init (
                 uint8_t width = _sized_width(field);
                 if (width != 0)
                 {
-                    const void *fdefault = _field_default(info, field);
                     uint64_t dlen = fdefault != NULL
                         ? _load_uint(CAST_TO(const void *, fdefault,
                                              field->offset - width), width)
