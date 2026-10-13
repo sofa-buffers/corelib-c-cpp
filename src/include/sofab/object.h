@@ -289,7 +289,7 @@ extern "C" {
  */
 /*! @brief Fields an object (message, struct, union) may declare. */
 #define SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX 255u
-/*! @brief Bytes a default image may describe (@ref SOFAB_OBJECT_DESCR_WITH_DEFAULTS). */
+/*! @brief Bytes a PREFIX default image may describe (@ref SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS). */
 #define SOFAB_OBJECT_DESCR_EXTENT_MAX      255u
 /*! @brief Element slots a wrapper-array holder may declare (@ref SOFAB_OBJECT_DESCR_SEQ). */
 #define SOFAB_OBJECT_DESCR_SLOT_COUNT_MAX  65535u
@@ -311,19 +311,18 @@ extern "C" {
             : ((n) <= SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX) ? 1 : -1; }))
 
 /*!
- * @brief Compile-time limit on a default image's byte extent.
+ * @brief Compile-time limit on a PREFIX default image's byte extent.
  *
- * The high byte of @ref sofab_object_descr_t::count_extent holds it, and an
- * extent of 0 reads as "the image covers the whole object" -- so an image longer
- * than @ref SOFAB_OBJECT_DESCR_EXTENT_MAX cannot be described as the PREFIX it
- * is. Clamping such an image to 0 would not be the conservative reading it looks
- * like: every field past the prefix would then be seeded and compared through the
- * image, reading past its end. So it is a build error here, and an image that
- * really is a copy of the whole object says so with
- * @ref SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS.
+ * The high byte of @ref sofab_object_descr_t::count_extent holds the extent, and
+ * an extent of 0 reads as "the image covers the whole object". A prefix longer
+ * than @ref SOFAB_OBJECT_DESCR_EXTENT_MAX therefore has no extent that describes
+ * it: recorded as 0, every field past the prefix would be seeded and compared
+ * through the image, reading past its end. @ref SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS
+ * refuses it here instead. A whole-object image of any length is not affected --
+ * @ref SOFAB_OBJECT_DESCR_WITH_DEFAULTS records 0 for it, which is exactly right.
  */
 #define SOFAB_OBJECT_ASSERT_EXTENT(n) \
-    (0u * sizeof(struct { int a_default_image_over_255_bytes_must_use_WITH_WHOLE_DEFAULTS \
+    (0u * sizeof(struct { int a_prefix_default_image_may_not_exceed_255_bytes \
             : ((n) <= SOFAB_OBJECT_DESCR_EXTENT_MAX) ? 1 : -1; }))
 
 /*!
@@ -348,13 +347,19 @@ extern "C" {
  *
  * An extent of 0 reads as "the image covers the whole object": what every
  * descriptor written before the extent existed carries, what a union image uses,
- * and what @ref SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS states on purpose. An
- * image too long for the high byte is therefore refused rather than clamped to
- * 0 (@ref SOFAB_OBJECT_ASSERT_EXTENT).
+ * and what an image too long for the high byte is recorded as. That last one is
+ * right for a whole-object image -- the form every generated file before the
+ * extent hands over, at any size -- and wrong for a prefix, which is why a
+ * prefix goes through @ref SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS and is
+ * refused there (@ref SOFAB_OBJECT_ASSERT_EXTENT) rather than clamped here.
+ *
+ * Generated code tests for @ref SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS, the
+ * macro it calls, to tell a corelib that reads prefix images from one that does
+ * not -- never for this helper.
  */
-#define SOFAB_OBJECT_COUNT_EXTENT(field_count, extent) \
+#define SOFAB_OBJECT_DESCR_COUNT_WORD(field_count, extent) \
     ((uint16_t)(((field_count) + SOFAB_OBJECT_ASSERT_FIELD_COUNT(field_count)) \
-                | (uint16_t)(((extent) + SOFAB_OBJECT_ASSERT_EXTENT(extent)) \
+                | (uint16_t)(((extent) <= SOFAB_OBJECT_DESCR_EXTENT_MAX ? (extent) : 0u) \
                              << SOFAB_OBJECT_DESCR_EXTENT_SHIFT)))
 
 /*!
@@ -369,7 +374,7 @@ extern "C" {
  * @param nested_count  Number of entries in @p nested_list.
  */
 #define SOFAB_OBJECT_DESCR(field_list, field_count, nested_list, nested_count) \
-    { (field_list), (nested_list), NULL, SOFAB_OBJECT_COUNT_EXTENT(field_count, 0u), (nested_count), 0 }
+    { (field_list), (nested_list), NULL, SOFAB_OBJECT_DESCR_COUNT_WORD(field_count, 0u), (nested_count), 0 }
 
 /*!
  * @brief Build an object descriptor with a default-values reference.
@@ -382,49 +387,48 @@ extern "C" {
  * @param field_count    Number of entries in @p field_list.
  * @param nested_list    Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
  * @param nested_count   Number of entries in @p nested_list.
- * @param default_struct Pointer to an object holding the field defaults. It need
- *                       NOT be a whole object: any PREFIX of one will do, as long
- *                       as every field it describes sits at the same offset as in
- *                       the object itself, because that is how the fields are
- *                       addressed. @c sizeof(*default_struct) is recorded as the
- *                       extent and a field at or past it is compared against zero
- *                       -- which is what "no declared default" means. A prefix is
- *                       what the SofaBuffers generator emits: a message that
- *                       defaults one byte then costs one byte of @c .rodata
- *                       instead of a copy of the whole object. At most
- *                       @ref SOFAB_OBJECT_DESCR_EXTENT_MAX bytes: a longer image
- *                       is a build error, because the extent has nowhere to say
- *                       how far it reaches -- use
- *                       @ref SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS for an image
- *                       that is a copy of the whole object.
+ * @param default_struct Pointer to a fully-populated object holding the field
+ *                       defaults. @c sizeof(*default_struct) is recorded as the
+ *                       extent, or 0 ("the whole object") when it is longer than
+ *                       @ref SOFAB_OBJECT_DESCR_EXTENT_MAX -- both mean the same
+ *                       for a whole-object image, so this form takes one of any
+ *                       size, as it always has. A PREFIX of the object goes
+ *                       through @ref SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS: here,
+ *                       one longer than the extent byte would be read as the whole
+ *                       object and past its own end.
  */
 #define SOFAB_OBJECT_DESCR_WITH_DEFAULTS(field_list, field_count,nested_list, nested_count, default_struct) \
     { (field_list), (nested_list), (default_struct), \
-      SOFAB_OBJECT_COUNT_EXTENT(field_count, sizeof(*(default_struct))), (nested_count), 0 }
+      SOFAB_OBJECT_DESCR_COUNT_WORD(field_count, sizeof(*(default_struct))), (nested_count), 0 }
 
 /*!
- * @brief Build an object descriptor whose default image covers the WHOLE object.
+ * @brief Build an object descriptor whose default image is a PREFIX of the object.
  *
- * As @ref SOFAB_OBJECT_DESCR_WITH_DEFAULTS, but the image is a copy of the
- * entire object instead of a prefix of it, and the descriptor says so by
- * recording an extent of 0. Two callers want that: an image longer than
- * @ref SOFAB_OBJECT_DESCR_EXTENT_MAX, which no prefix extent can describe, and
- * code generated before the extent existed -- an omitted initialiser is 0, so it
- * already reads this way.
+ * As @ref SOFAB_OBJECT_DESCR_WITH_DEFAULTS, but @p default_prefix need not be a
+ * whole object: any prefix of one will do, as long as every field it describes
+ * sits at the same offset as in the object itself, because that is how the
+ * fields are addressed. @c sizeof(*default_prefix) is recorded as the extent,
+ * and a field at or past it is seeded with and compared against zero -- which is
+ * what "no declared default" means. This is what the SofaBuffers generator emits
+ * (the defaulted members first): a message that defaults one byte costs one byte
+ * of @c .rodata instead of a copy of the whole object.
  *
- * @warning @p default_struct must be as long as the object. Every field is
- * seeded and compared through it, with no extent to stop the walk, so an image
- * shorter than @c sizeof the object is read past its end.
+ * The prefix may be at most @ref SOFAB_OBJECT_DESCR_EXTENT_MAX bytes; a longer
+ * one is a build error (@ref SOFAB_OBJECT_ASSERT_EXTENT), because the extent has
+ * no value that says how far it reaches. Hand over the whole object through
+ * @ref SOFAB_OBJECT_DESCR_WITH_DEFAULTS instead.
  *
  * @param field_list     Array of @ref sofab_object_descr_field_t for this object.
  * @param field_count    Number of entries in @p field_list.
  * @param nested_list    Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
  * @param nested_count   Number of entries in @p nested_list.
- * @param default_struct Pointer to a fully-populated object holding the field defaults.
+ * @param default_prefix Pointer to a prefix of the object holding the field defaults.
  */
-#define SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS(field_list, field_count, nested_list, nested_count, default_struct) \
-    { (field_list), (nested_list), (default_struct), \
-      SOFAB_OBJECT_COUNT_EXTENT(field_count, 0u), (nested_count), 0 }
+#define SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS(field_list, field_count, nested_list, nested_count, default_prefix) \
+    { (field_list), (nested_list), (default_prefix), \
+      SOFAB_OBJECT_DESCR_COUNT_WORD(field_count, sizeof(*(default_prefix)) \
+                                + SOFAB_OBJECT_ASSERT_EXTENT(sizeof(*(default_prefix)))), \
+      (nested_count), 0 }
 
 /*!
  * @name Wrapper-array holder marker (@ref sofab_object_descr_t::fixed_seq)
@@ -663,7 +667,7 @@ extern "C" {
 /*! @endcond */
 #define SOFAB_OBJECT_DESCR_UNION(field_list, field_count, nested_list, nested_count, default_image, obj, tfield) \
     { (field_list), (nested_list), (const void *)(default_image), \
-      SOFAB_OBJECT_COUNT_EXTENT(field_count, 0u), (nested_count), \
+      SOFAB_OBJECT_DESCR_COUNT_WORD(field_count, 0u), (nested_count), \
       (uint8_t)(_SOFAB_OBJECT_UNION_BIT \
                 | 0u * sizeof(struct { int tag_member_must_have_the_width_of_sofab_object_descr_id_t \
                         : sizeof(((obj *)0)->tfield) == sizeof(sofab_object_descr_id_t) ? 1 : -1; }) \

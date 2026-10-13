@@ -239,9 +239,10 @@ static size_t _default_extent(const sofab_object_descr_t *info)
  * PREFIX of the object that carries defaults instead of a copy of all of it: a
  * message that defaults one byte costs one byte of .rodata. An extent of 0 reads
  * as "the whole object": what every descriptor written before the extent existed
- * carries, what a union image uses, and what SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS
- * states on purpose -- never a clamped prefix, which the macros refuse
- * (SOFAB_OBJECT_ASSERT_EXTENT) because it would read past the image.
+ * carries, what a union image uses, and what SOFAB_OBJECT_DESCR_WITH_DEFAULTS
+ * records for a whole-object image too long for the extent byte. A prefix that
+ * long is refused by SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS instead
+ * (SOFAB_OBJECT_ASSERT_EXTENT), because read as 0 it would run past the image.
  */
 static const void *_field_default(const sofab_object_descr_t *info,
                                   const sofab_object_descr_field_t *field)
