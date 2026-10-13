@@ -112,7 +112,8 @@ Four use cases — serialize a message that fits one buffer, serialize one too l
 for it, deserialize a whole message, deserialize one arriving in chunks — plus the
 generated-code path that wraps them. The examples use the **C core**; the
 header-only **C++ wrapper** mirrors each through `sofab::OStreamInline` /
-`sofab::IStreamObject`.
+`sofab::IStreamObject` — or `sofab::IStreamInto`, which decodes into a message
+you already hold instead of owning one.
 
 ### Serialize
 
