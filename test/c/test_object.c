@@ -4270,6 +4270,181 @@ static void test_object_encode_array_len_clamped (void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, used);
 }
 
+
+/* ---- the default image may be a PREFIX of the object ------------------- */
+
+/*
+ * SOFAB_OBJECT_DESCR_WITH_DEFAULTS used to require "a fully-populated object":
+ * every read addresses the image at the field's own offset, so the only buffer a
+ * generator could hand over was a copy of the whole struct -- 824 bytes of
+ * .rodata on one real schema to carry 16 bytes of actual defaults.
+ *
+ * It now records sizeof(*image) as the extent, so the image may stop after the
+ * members that have defaults. A field at or past the extent has no declared
+ * default and is compared against (and seeded with) zero, which is what "no
+ * declared default" has always meant.
+ */
+typedef struct
+{
+    uint32_t seeded;      /* has a default, first in the struct on purpose */
+    uint32_t plain;       /* no default, past the image */
+} prefix_obj_t;
+
+/*
+ * The image buffer deliberately holds MORE than the extent describes: `poison`
+ * sits exactly where `plain` would be read from. An implementation that ignored
+ * the extent would seed `plain` with it, so the boundary is observable in a
+ * value rather than only in a sanitizer -- which is the difference between a
+ * test that fails and a test that happens to pass on zeroed .rodata.
+ */
+typedef struct
+{
+    uint32_t seeded;      /* the prefix that carries defaults */
+    uint32_t poison;      /* past the extent: must never reach the object */
+} prefix_img_t;
+
+static const sofab_object_descr_field_t _prefix_fields[] =
+{
+    SOFAB_OBJECT_FIELD(0, prefix_obj_t, seeded, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+    SOFAB_OBJECT_FIELD(1, prefix_obj_t, plain,  SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+
+static const prefix_img_t _prefix_img = { .seeded = 4242, .poison = 0xDEADBEEFu };
+
+/* Hand-built so the extent can be smaller than the buffer: the macro derives it
+ * from sizeof(*image), which is what a generator wants (its image stops where
+ * the defaults stop) but cannot express "describe only the first 4 bytes". */
+static const sofab_object_descr_t _prefix_descr =
+{
+    _prefix_fields, NULL, &_prefix_img,
+    SOFAB_OBJECT_COUNT_EXTENT(2, sizeof(uint32_t)), 0, 0
+};
+
+/* ...and the same thing through the macro, where the image IS its own extent. */
+typedef struct { uint32_t seeded; } prefix_exact_img_t;
+
+static const prefix_exact_img_t _prefix_exact_img = { .seeded = 4242 };
+
+static const sofab_object_descr_t _prefix_exact_descr =
+    SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_prefix_fields, 2, NULL, 0, &_prefix_exact_img);
+
+/* The same two fields, but the image is a whole object and the extent is 0 --
+ * what every descriptor written before the extent existed looks like, and what a
+ * union image still uses. Hand-built: the macro would fill the extent in. */
+static const prefix_obj_t _whole_img = { .seeded = 4242, .plain = 77 };
+
+static const sofab_object_descr_t _whole_descr =
+{
+    _prefix_fields, NULL, &_whole_img, 2 /* count, extent 0 */, 0, 0
+};
+
+static void test_object_default_image_may_be_a_prefix (void)
+{
+    prefix_obj_t o;
+
+    memset(&o, 0xAA, sizeof o);
+    sofab_object_init(&_prefix_descr, &o);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(4242, o.seeded,
+        "a field inside the image is seeded from it");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, o.plain,
+        "a field past the extent has no declared default: zero, never the "
+        "image bytes that happen to sit at its offset");
+
+    /* the macro form: the image stops where the defaults stop */
+    memset(&o, 0xAA, sizeof o);
+    sofab_object_init(&_prefix_exact_descr, &o);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(4242, o.seeded, "seeded through the macro form");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, o.plain,
+        "and the field past sizeof(*image) is zero");
+
+    /* The omission test follows the same line: the seeded field is at its
+     * default, and the field past the image is at its default when it is 0. */
+    uint8_t buf[32];
+    sofab_ostream_t os;
+    size_t used;
+
+    sofab_ostream_init(&os, buf, sizeof buf, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_encode(&os, &_prefix_descr, &o));
+    used = sofab_ostream_flush(&os);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(0, used,
+        "a fresh object is all-default and encodes to nothing");
+
+    o.plain = 1;
+    sofab_ostream_init(&os, buf, sizeof buf, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_encode(&os, &_prefix_descr, &o));
+    used = sofab_ostream_flush(&os);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(2, used,
+        "the field past the image is written once it differs from zero");
+
+    o.plain = 0;
+    o.seeded = 0;
+    sofab_ostream_init(&os, buf, sizeof buf, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_encode(&os, &_prefix_descr, &o));
+    used = sofab_ostream_flush(&os);
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(2, used,
+        "and the seeded field is written once it differs from ITS default");
+}
+
+static void test_object_extent_zero_means_the_whole_object (void)
+{
+    prefix_obj_t o;
+
+    memset(&o, 0xAA, sizeof o);
+    sofab_object_init(&_whole_descr, &o);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(4242, o.seeded, "seeded from the image");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(77, o.plain,
+        "extent 0 reads as 'the whole object', so this field is seeded too");
+}
+
+/*
+ * A wrapper-array holder spends all 16 bits of count_extent on its slot count,
+ * so an `array<string, count: 300>` keeps its 300 slots -- the packing that buys
+ * the extent must not cap an array's capacity at 255. The slots are expanded by
+ * macro: 300 field descriptors say the same thing in 300 lines.
+ */
+enum { BIG_SLOTS = 300 };
+
+typedef struct { uint16_t len; uint8_t items[BIG_SLOTS]; } big_holder_t;
+
+#define _SLOT1(i) SOFAB_OBJECT_FIELD(i, big_holder_t, items[i], SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+#define _SLOT10(b) _SLOT1(b+0) _SLOT1(b+1) _SLOT1(b+2) _SLOT1(b+3) _SLOT1(b+4) \
+                   _SLOT1(b+5) _SLOT1(b+6) _SLOT1(b+7) _SLOT1(b+8) _SLOT1(b+9)
+#define _SLOT100(b) _SLOT10(b+0) _SLOT10(b+10) _SLOT10(b+20) _SLOT10(b+30) _SLOT10(b+40) \
+                    _SLOT10(b+50) _SLOT10(b+60) _SLOT10(b+70) _SLOT10(b+80) _SLOT10(b+90)
+
+static const sofab_object_descr_field_t _big_holder_fields[] =
+{
+    _SLOT100(0) _SLOT100(100) _SLOT100(200)
+};
+
+static const sofab_object_descr_t _big_holder_descr =
+    SOFAB_OBJECT_DESCR_SEQ_SIZED(_big_holder_fields, BIG_SLOTS, NULL, 0, big_holder_t, len);
+
+static void test_object_holder_keeps_a_16_bit_slot_count (void)
+{
+    static big_holder_t holder;
+    uint8_t buf[2048];
+    sofab_ostream_t os;
+    size_t used;
+
+    TEST_ASSERT_EQUAL_size_t_MESSAGE(BIG_SLOTS,
+        sizeof _big_holder_fields / sizeof _big_holder_fields[0],
+        "the macro expansion must produce one field per slot");
+
+    memset(&holder, 0, sizeof holder);
+    holder.len = BIG_SLOTS;
+    holder.items[BIG_SLOTS - 1] = 7;      /* the LAST slot, past any 8-bit count */
+
+    sofab_ostream_init(&os, buf, sizeof buf, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_encode(&os, &_big_holder_descr, &holder));
+    used = sofab_ostream_flush(&os);
+    TEST_ASSERT_TRUE_MESSAGE(used > 0,
+        "a 300-slot holder must reach its last element; a byte-wide slot count "
+        "would have stopped at 255 and written nothing");
+    TEST_ASSERT_EQUAL_HEX8_MESSAGE(7, buf[used - 1],
+        "and the value written last is the one in the last slot");
+}
+
 int test_object_main (void)
 {
     UNITY_BEGIN();
@@ -4383,6 +4558,10 @@ int test_object_main (void)
 #endif
     RUN_TEST(test_object_encode_blob_len_clamped);
     RUN_TEST(test_object_encode_array_len_clamped);
+
+    RUN_TEST(test_object_default_image_may_be_a_prefix);
+    RUN_TEST(test_object_extent_zero_means_the_whole_object);
+    RUN_TEST(test_object_holder_keeps_a_16_bit_slot_count);
 
     return UNITY_END();
 }
