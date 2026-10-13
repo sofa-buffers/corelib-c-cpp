@@ -4311,13 +4311,14 @@ static const sofab_object_descr_field_t _prefix_fields[] =
 
 static const prefix_img_t _prefix_img = { .seeded = 4242, .poison = 0xDEADBEEFu };
 
-/* Hand-built so the extent can be smaller than the buffer: the macro derives it
- * from sizeof(*image), which is what a generator wants (its image stops where
- * the defaults stop) but cannot express "describe only the first 4 bytes". */
+/* Hand-built so the extent can be smaller than the buffer: the prefix macro
+ * derives it from sizeof(*image), which is what a generator wants (its image
+ * stops where the defaults stop) but cannot express "describe only the first 4
+ * bytes". */
 static const sofab_object_descr_t _prefix_descr =
 {
     _prefix_fields, NULL, &_prefix_img,
-    SOFAB_OBJECT_COUNT_EXTENT(2, sizeof(uint32_t)), 0, 0
+    SOFAB_OBJECT_DESCR_COUNT_WORD(2, sizeof(uint32_t)), 0, 0
 };
 
 /* ...and the same thing through the macro, where the image IS its own extent. */
@@ -4326,15 +4327,11 @@ typedef struct { uint32_t seeded; } prefix_exact_img_t;
 static const prefix_exact_img_t _prefix_exact_img = { .seeded = 4242 };
 
 static const sofab_object_descr_t _prefix_exact_descr =
-    SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_prefix_fields, 2, NULL, 0, &_prefix_exact_img);
+    SOFAB_OBJECT_DESCR_WITH_PREFIX_DEFAULTS(_prefix_fields, 2, NULL, 0, &_prefix_exact_img);
 
 /* The same two fields, but the image is a whole object and the extent is 0 --
  * what every descriptor written before the extent existed looks like, and what a
- * union image still uses. Built twice on purpose: hand-rolled the way an old
- * descriptor looks (an omitted initialiser is 0), and through the macro that
- * states it, which is the only form left for an image the extent cannot
- * describe -- one over SOFAB_OBJECT_DESCR_EXTENT_MAX is a build error now, not a
- * silently clamped prefix. The two must read identically. */
+ * union image still uses. Hand-built: the macro would fill the extent in. */
 static const prefix_obj_t _whole_img = { .seeded = 4242, .plain = 77 };
 
 static const sofab_object_descr_t _whole_descr =
@@ -4342,8 +4339,30 @@ static const sofab_object_descr_t _whole_descr =
     _prefix_fields, NULL, &_whole_img, 2 /* count, extent 0 */, 0, 0
 };
 
-static const sofab_object_descr_t _whole_macro_descr =
-    SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS(_prefix_fields, 2, NULL, 0, &_whole_img);
+/*
+ * A WHOLE-object image longer than the extent byte, through the macro every
+ * generated file before the extent uses. vehicle_telemetry is 824 bytes; its
+ * descriptor must keep building and keep seeding the members past byte 255, or
+ * every existing generated header breaks on the corelib update. The macro has
+ * to record extent 0 for it -- the one value that says "all of it" -- and the
+ * prefix form, which cannot say that, is the one that refuses an image this long.
+ */
+typedef struct
+{
+    char     big[300];    /* pushes the next member past the extent byte */
+    uint32_t tail;        /* at offset 300: only an extent of 0 reaches it */
+} whole_big_obj_t;
+
+static const sofab_object_descr_field_t _whole_big_fields[] =
+{
+    SOFAB_OBJECT_FIELD(0, whole_big_obj_t, big,  SOFAB_OBJECT_FIELDTYPE_STRING),
+    SOFAB_OBJECT_FIELD(1, whole_big_obj_t, tail, SOFAB_OBJECT_FIELDTYPE_UNSIGNED),
+};
+
+static const whole_big_obj_t _whole_big_img = { .big = "hi", .tail = 77 };
+
+static const sofab_object_descr_t _whole_big_descr =
+    SOFAB_OBJECT_DESCR_WITH_DEFAULTS(_whole_big_fields, 2, NULL, 0, &_whole_big_img);
 
 static void test_object_default_image_may_be_a_prefix (void)
 {
@@ -4402,18 +4421,27 @@ static void test_object_extent_zero_means_the_whole_object (void)
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(77, o.plain,
         "extent 0 reads as 'the whole object', so this field is seeded too");
 
-    /* ...and the macro that states it reads the same, member for member: the
-     * extent is the only thing it sets, so a difference could only be a wrong
-     * extent. */
-    TEST_ASSERT_EQUAL_UINT16_MESSAGE(_whole_descr.count_extent,
-        _whole_macro_descr.count_extent,
-        "WITH_WHOLE_DEFAULTS must build the same count word as an old descriptor");
+}
+
+static void test_object_whole_image_longer_than_the_extent_byte (void)
+{
+    whole_big_obj_t o;
+
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, _whole_big_descr.count_extent >> 8,
+        "a whole image past the extent byte must read as 'the whole object'");
 
     memset(&o, 0xAA, sizeof o);
-    sofab_object_init(&_whole_macro_descr, &o);
-    TEST_ASSERT_EQUAL_UINT32(4242, o.seeded);
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(77, o.plain,
-        "the whole image is read through the macro form too");
+    sofab_object_init(&_whole_big_descr, &o);
+    TEST_ASSERT_EQUAL_STRING("hi", o.big);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(77, o.tail,
+        "the member past byte 255 is seeded from the whole image");
+
+    /* and it is at its default, so a fresh object still encodes to nothing */
+    uint8_t buf[16];
+    sofab_ostream_t os;
+    sofab_ostream_init(&os, buf, sizeof buf, 0, NULL, NULL);
+    TEST_ASSERT_EQUAL(SOFAB_RET_OK, sofab_object_encode(&os, &_whole_big_descr, &o));
+    TEST_ASSERT_EQUAL_size_t(0, sofab_ostream_flush(&os));
 }
 
 /*
@@ -4581,6 +4609,7 @@ int test_object_main (void)
 
     RUN_TEST(test_object_default_image_may_be_a_prefix);
     RUN_TEST(test_object_extent_zero_means_the_whole_object);
+    RUN_TEST(test_object_whole_image_longer_than_the_extent_byte);
     RUN_TEST(test_object_holder_keeps_a_16_bit_slot_count);
 
     return UNITY_END();
