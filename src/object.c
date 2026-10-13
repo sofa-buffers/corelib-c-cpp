@@ -205,16 +205,16 @@ static sofab_object_descr_id_t _default_tag(const sofab_object_descr_t *info)
  * A wrapper-array HOLDER spends all 16 bits of
  * @ref sofab_object_descr_t::count_extent on its element slot count, so a
  * 300-element `array<string>` keeps its 300 slots. Every other object spends
- * the low byte on the field count (255 max, asserted by the macros) and the
- * high byte on the default image's extent, which is what keeps the descriptor
- * 16 bytes wide instead of 20.
+ * the low byte on the field count (@ref SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX,
+ * asserted by the macros) and the high byte on the default image's extent, which
+ * is what keeps the descriptor 16 bytes wide instead of 20.
  */
 static size_t _field_count(const sofab_object_descr_t *info)
 {
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
     if (_IS_HOLDER(info)) return (size_t)info->count_extent;
 #endif
-    return (size_t)(info->count_extent & 0xFFu);
+    return (size_t)(info->count_extent & SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX);
 }
 
 /*!
@@ -226,7 +226,7 @@ static size_t _field_count(const sofab_object_descr_t *info)
  */
 static size_t _default_extent(const sofab_object_descr_t *info)
 {
-    return (size_t)(info->count_extent >> 8);
+    return (size_t)(info->count_extent >> SOFAB_OBJECT_DESCR_EXTENT_SHIFT);
 }
 
 /*!
@@ -238,8 +238,10 @@ static size_t _default_extent(const sofab_object_descr_t *info)
  * exactly what "no declared default" means. That is what lets the image be the
  * PREFIX of the object that carries defaults instead of a copy of all of it: a
  * message that defaults one byte costs one byte of .rodata. An extent of 0 reads
- * as "the whole object", the conservative meaning every descriptor written
- * before the extent existed carries, and what a union image uses.
+ * as "the whole object": what every descriptor written before the extent existed
+ * carries, what a union image uses, and what SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS
+ * states on purpose -- never a clamped prefix, which the macros refuse
+ * (SOFAB_OBJECT_ASSERT_EXTENT) because it would read past the image.
  */
 static const void *_field_default(const sofab_object_descr_t *info,
                                   const sofab_object_descr_field_t *field)
