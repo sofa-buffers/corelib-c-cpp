@@ -279,29 +279,83 @@ extern "C" {
       type, (sizeof(((obj *)0)->dfield[0]) & 0xF) }
 
 /*!
+ * @name Count-word ceilings (@ref sofab_object_descr_t::count_extent)
+ *
+ * What the 16-bit count word can describe. Generated code can hold a schema
+ * against these at compile time the way it holds a field id against
+ * @ref SOFAB_ID_MAX, instead of discovering the ceiling as an assertion failure
+ * inside this header -- which is why they are macros and not just prose.
+ * @{
+ */
+/*! @brief Fields an object (message, struct, union) may declare. */
+#define SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX 255u
+/*! @brief Bytes a default image may describe (@ref SOFAB_OBJECT_DESCR_WITH_DEFAULTS). */
+#define SOFAB_OBJECT_DESCR_EXTENT_MAX      255u
+/*! @brief Element slots a wrapper-array holder may declare (@ref SOFAB_OBJECT_DESCR_SEQ). */
+#define SOFAB_OBJECT_DESCR_SLOT_COUNT_MAX  65535u
+/*! @brief Position of the extent inside the count word. */
+#define SOFAB_OBJECT_DESCR_EXTENT_SHIFT    8
+/*! @} */
+
+/*!
  * @brief Compile-time limit on an OBJECT's field count (message, struct, union).
  *
- * The low byte of @ref sofab_object_descr_t::count_extent holds it, so 255 is
- * the ceiling and a 256-field object fails to compile here instead of wrapping
- * silently. A wrapper-array HOLDER is not affected: its slot count uses all 16
- * bits (see @ref SOFAB_OBJECT_DESCR_SEQ_SIZED).
+ * The low byte of @ref sofab_object_descr_t::count_extent holds it, so
+ * @ref SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX is the ceiling and a 256-field object
+ * fails to compile here instead of wrapping silently. A wrapper-array HOLDER is
+ * not affected: its slot count uses all 16 bits
+ * (@ref SOFAB_OBJECT_ASSERT_SLOT_COUNT).
  */
 #define SOFAB_OBJECT_ASSERT_FIELD_COUNT(n) \
     (0u * sizeof(struct { int an_object_may_not_declare_more_than_255_fields \
-            : ((n) <= 255) ? 1 : -1; }))
+            : ((n) <= SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX) ? 1 : -1; }))
+
+/*!
+ * @brief Compile-time limit on a default image's byte extent.
+ *
+ * The high byte of @ref sofab_object_descr_t::count_extent holds it, and an
+ * extent of 0 reads as "the image covers the whole object" -- so an image longer
+ * than @ref SOFAB_OBJECT_DESCR_EXTENT_MAX cannot be described as the PREFIX it
+ * is. Clamping such an image to 0 would not be the conservative reading it looks
+ * like: every field past the prefix would then be seeded and compared through the
+ * image, reading past its end. So it is a build error here, and an image that
+ * really is a copy of the whole object says so with
+ * @ref SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS.
+ */
+#define SOFAB_OBJECT_ASSERT_EXTENT(n) \
+    (0u * sizeof(struct { int a_default_image_over_255_bytes_must_use_WITH_WHOLE_DEFAULTS \
+            : ((n) <= SOFAB_OBJECT_DESCR_EXTENT_MAX) ? 1 : -1; }))
+
+/*!
+ * @brief Compile-time limit on a wrapper-array holder's element slot count.
+ *
+ * A holder spends all 16 bits of @ref sofab_object_descr_t::count_extent on its
+ * slot count, so @ref SOFAB_OBJECT_DESCR_SLOT_COUNT_MAX is the ceiling. Named
+ * here rather than left to the narrowing in the initialiser: @c -Woverflow
+ * reports that only where it is enabled, and a holder whose count wrapped walks
+ * a fraction of its slots and rejects every element id above them as an
+ * over-index (MESSAGE_SPEC §7.1) -- a silent change of meaning, not a build
+ * failure.
+ */
+#define SOFAB_OBJECT_ASSERT_SLOT_COUNT(n) \
+    (0u * sizeof(struct { int a_wrapper_array_may_not_declare_more_than_65535_slots \
+            : ((n) <= SOFAB_OBJECT_DESCR_SLOT_COUNT_MAX) ? 1 : -1; }))
 
 /*!
  * @brief The @ref sofab_object_descr_t::count_extent word of an object: the
  *        field count in the low byte, the default image's byte extent in the
  *        high byte.
  *
- * An image longer than 255 bytes stores an extent of 0, which reads as "the
- * image covers the whole object" -- the conservative meaning, and the one every
- * descriptor written before the extent existed carries.
+ * An extent of 0 reads as "the image covers the whole object": what every
+ * descriptor written before the extent existed carries, what a union image uses,
+ * and what @ref SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS states on purpose. An
+ * image too long for the high byte is therefore refused rather than clamped to
+ * 0 (@ref SOFAB_OBJECT_ASSERT_EXTENT).
  */
 #define SOFAB_OBJECT_COUNT_EXTENT(field_count, extent) \
     ((uint16_t)(((field_count) + SOFAB_OBJECT_ASSERT_FIELD_COUNT(field_count)) \
-                | (uint16_t)(((extent) <= 255u ? (extent) : 0u) << 8)))
+                | (uint16_t)(((extent) + SOFAB_OBJECT_ASSERT_EXTENT(extent)) \
+                             << SOFAB_OBJECT_DESCR_EXTENT_SHIFT)))
 
 /*!
  * @brief Build an object descriptor (@ref sofab_object_descr_t) without defaults.
@@ -337,11 +391,40 @@ extern "C" {
  *                       -- which is what "no declared default" means. A prefix is
  *                       what the SofaBuffers generator emits: a message that
  *                       defaults one byte then costs one byte of @c .rodata
- *                       instead of a copy of the whole object.
+ *                       instead of a copy of the whole object. At most
+ *                       @ref SOFAB_OBJECT_DESCR_EXTENT_MAX bytes: a longer image
+ *                       is a build error, because the extent has nowhere to say
+ *                       how far it reaches -- use
+ *                       @ref SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS for an image
+ *                       that is a copy of the whole object.
  */
 #define SOFAB_OBJECT_DESCR_WITH_DEFAULTS(field_list, field_count,nested_list, nested_count, default_struct) \
     { (field_list), (nested_list), (default_struct), \
       SOFAB_OBJECT_COUNT_EXTENT(field_count, sizeof(*(default_struct))), (nested_count), 0 }
+
+/*!
+ * @brief Build an object descriptor whose default image covers the WHOLE object.
+ *
+ * As @ref SOFAB_OBJECT_DESCR_WITH_DEFAULTS, but the image is a copy of the
+ * entire object instead of a prefix of it, and the descriptor says so by
+ * recording an extent of 0. Two callers want that: an image longer than
+ * @ref SOFAB_OBJECT_DESCR_EXTENT_MAX, which no prefix extent can describe, and
+ * code generated before the extent existed -- an omitted initialiser is 0, so it
+ * already reads this way.
+ *
+ * @warning @p default_struct must be as long as the object. Every field is
+ * seeded and compared through it, with no extent to stop the walk, so an image
+ * shorter than @c sizeof the object is read past its end.
+ *
+ * @param field_list     Array of @ref sofab_object_descr_field_t for this object.
+ * @param field_count    Number of entries in @p field_list.
+ * @param nested_list    Array of pointers to nested @ref sofab_object_descr_t (may be NULL).
+ * @param nested_count   Number of entries in @p nested_list.
+ * @param default_struct Pointer to a fully-populated object holding the field defaults.
+ */
+#define SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS(field_list, field_count, nested_list, nested_count, default_struct) \
+    { (field_list), (nested_list), (default_struct), \
+      SOFAB_OBJECT_COUNT_EXTENT(field_count, 0u), (nested_count), 0 }
 
 /*!
  * @name Wrapper-array holder marker (@ref sofab_object_descr_t::fixed_seq)
@@ -397,8 +480,9 @@ extern "C" {
  * @param nested_count  Number of entries in @p nested_list.
  */
 #define SOFAB_OBJECT_DESCR_SEQ(field_list, field_count, nested_list, nested_count) \
-    { (field_list), (nested_list), NULL, (uint16_t)(field_count), (nested_count), \
-      SOFAB_OBJECT_SEQ_HOLDER }
+    { (field_list), (nested_list), NULL, \
+      (uint16_t)((field_count) + SOFAB_OBJECT_ASSERT_SLOT_COUNT(field_count)), \
+      (nested_count), SOFAB_OBJECT_SEQ_HOLDER }
 
 /*!
  * @brief Build a length-carrying (sized) sequence-holder object descriptor.
@@ -463,7 +547,8 @@ extern "C" {
  *                      @p obj (at offset 0), ahead of the element slots.
  */
 #define SOFAB_OBJECT_DESCR_SEQ_SIZED(field_list, field_count, nested_list, nested_count, obj, lfield) \
-    { (field_list), (nested_list), NULL, (uint16_t)(field_count), (nested_count), \
+    { (field_list), (nested_list), NULL, \
+      (uint16_t)((field_count) + SOFAB_OBJECT_ASSERT_SLOT_COUNT(field_count)), (nested_count), \
       (uint8_t)(SOFAB_OBJECT_SEQ_HOLDER \
                 | (sizeof(((obj *)0)->lfield) << SOFAB_OBJECT_SEQ_LEN_SHIFT) \
                 | 0u * sizeof(struct { int length_member_is_too_wide_to_share_fixed_seq_with_the_union_bit \
@@ -616,9 +701,11 @@ typedef struct sofab_object_descr
      *   300-element `array<string>` is 300 slots). A holder never carries a
      *   default image, so there is no extent to store for it.
      * - **Object** (message, struct, union): the low 8 bits are the field count
-     *   -- at most 255, asserted by the descriptor macros -- and the high 8 bits
-     *   are how many bytes of the object @ref default_values describes, counted
-     *   from offset 0.
+     *   (@ref SOFAB_OBJECT_DESCR_FIELD_COUNT_MAX) and the high 8 bits are how
+     *   many bytes of the object @ref default_values describes, counted from
+     *   offset 0 (@ref SOFAB_OBJECT_DESCR_EXTENT_MAX, 0 = the whole object).
+     *   Both ceilings are asserted by the descriptor macros, as is a holder's
+     *   slot count (@ref SOFAB_OBJECT_DESCR_SLOT_COUNT_MAX).
      *
      * Read it through @c _field_count() and @c _default_extent(), never
      * directly.

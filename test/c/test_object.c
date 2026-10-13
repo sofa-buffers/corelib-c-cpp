@@ -4330,13 +4330,20 @@ static const sofab_object_descr_t _prefix_exact_descr =
 
 /* The same two fields, but the image is a whole object and the extent is 0 --
  * what every descriptor written before the extent existed looks like, and what a
- * union image still uses. Hand-built: the macro would fill the extent in. */
+ * union image still uses. Built twice on purpose: hand-rolled the way an old
+ * descriptor looks (an omitted initialiser is 0), and through the macro that
+ * states it, which is the only form left for an image the extent cannot
+ * describe -- one over SOFAB_OBJECT_DESCR_EXTENT_MAX is a build error now, not a
+ * silently clamped prefix. The two must read identically. */
 static const prefix_obj_t _whole_img = { .seeded = 4242, .plain = 77 };
 
 static const sofab_object_descr_t _whole_descr =
 {
     _prefix_fields, NULL, &_whole_img, 2 /* count, extent 0 */, 0, 0
 };
+
+static const sofab_object_descr_t _whole_macro_descr =
+    SOFAB_OBJECT_DESCR_WITH_WHOLE_DEFAULTS(_prefix_fields, 2, NULL, 0, &_whole_img);
 
 static void test_object_default_image_may_be_a_prefix (void)
 {
@@ -4394,6 +4401,19 @@ static void test_object_extent_zero_means_the_whole_object (void)
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(4242, o.seeded, "seeded from the image");
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(77, o.plain,
         "extent 0 reads as 'the whole object', so this field is seeded too");
+
+    /* ...and the macro that states it reads the same, member for member: the
+     * extent is the only thing it sets, so a difference could only be a wrong
+     * extent. */
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(_whole_descr.count_extent,
+        _whole_macro_descr.count_extent,
+        "WITH_WHOLE_DEFAULTS must build the same count word as an old descriptor");
+
+    memset(&o, 0xAA, sizeof o);
+    sofab_object_init(&_whole_macro_descr, &o);
+    TEST_ASSERT_EQUAL_UINT32(4242, o.seeded);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(77, o.plain,
+        "the whole image is read through the macro form too");
 }
 
 /*
