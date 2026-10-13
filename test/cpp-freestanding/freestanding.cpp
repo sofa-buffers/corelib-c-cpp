@@ -203,5 +203,21 @@ extern "C" int sofab_freestanding_roundtrip(void)
     }
 #endif
 
+    // The same bytes again, decoded into an object the caller owns
+    // (generator#744). IStreamInto has to work here of all places: this build
+    // has no std::function, so a decoder that needed one would not compile.
+    Parent into;
+    sofab::IStreamInto<Parent> is2{into};
+    if (is2.feed(os.data(), used).code() != sofab::Error::None)
+    {
+        return -4;
+    }
+
+    if (into.data_.header != 7u || into.data_.child.data_.id != 42u
+        || into.data_.footer != 99u || !into.data_.flag || into.data_.tag != "tag42")
+    {
+        return -5;
+    }
+
     return 0;
 }

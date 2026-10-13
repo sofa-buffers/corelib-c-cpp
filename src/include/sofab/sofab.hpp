@@ -3569,6 +3569,8 @@ namespace sofab
         friend class IStreamImpl;
         template <InputMessage MessageType>
         friend class IStreamObject;
+        template <InputMessage MessageType>
+        friend class IStreamInto;
 
         struct Context
         {
@@ -3679,6 +3681,55 @@ namespace sofab
         const MessageType& operator*() const noexcept
         {
             return data_;
+        }
+    };
+
+    /*!
+     * @brief Decoder that decodes into a message instance the CALLER owns.
+     *
+     * @ref IStreamObject with the instance taken out: it binds the message handed
+     * to the constructor instead of holding one, so fed bytes are dispatched to
+     * that object's @c deserialize and nothing is staged and copied. The whole
+     * difference is where the message lives -- same C-ABI field callback, same
+     * dispatch, no @c std::function -- so it costs a pointer where
+     * @ref IStreamObject costs a whole message, which on a heap-free target is
+     * the difference between one and two copies of it on the stack.
+     *
+     * The bound object is written as the bytes arrive, so a rejected input
+     * leaves the fields decoded before the error in it. Put it back where it
+     * belongs first if that matters -- generated code calls its @c reset() --
+     * and note that a field the bytes do not carry keeps whatever the object
+     * already held (MESSAGE_SPEC §2 omits an all-default
+     * field), which is the same reason.
+     *
+     * The message must outlive the stream, and must not be bound to a second
+     * stream while this one is fed: binding is what the object's own callback
+     * context points at.
+     *
+     * ```cpp
+     * Telemetry msg;              // kept across messages, reused
+     * msg.reset();
+     * sofab::IStreamInto<Telemetry> in{msg};
+     * auto r = in.feed(bytes, len);
+     * ```
+     *
+     * @tparam MessageType  An @ref InputMessage type.
+     */
+    template <InputMessage MessageType>
+    class IStreamInto : public IStreamImpl
+    {
+        MessageType *data_;  //!< The caller's message instance being decoded into.
+
+    public:
+        /*!
+         * @brief Bind @p message to this stream.
+         * @param message  Destination; must outlive the stream.
+         */
+        explicit IStreamInto(MessageType &message) noexcept
+            : data_{&message}
+        {
+            data_->context_ = IStreamMessage::Context{this, data_};
+            sofab_istream_init(&ctx_, MessageType::field_callback_, &data_->context_);
         }
     };
 

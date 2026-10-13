@@ -389,6 +389,58 @@ TEST_CASE("IStream: object feed buffer")
     REQUIRE(istream->value == 3.1415f);
 }
 
+TEST_CASE("IStream: IStreamInto decodes into the caller's object")
+{
+    SimpleObject2 object;
+    sofab::IStreamInto<SimpleObject2> istream{object};
+
+    const uint8_t buffer[] = {0x08, 0x2a, 0x12, 0x20, 0x56, 0x0e, 0x49, 0x40};
+
+    auto result = istream.feed(buffer, sizeof(buffer));
+    REQUIRE(result.code() == sofab::Error::None);
+
+    // The caller's object, not a staged one copied over it afterwards.
+    REQUIRE(object->id == 42);
+    REQUIRE(object->value == 3.1415f);
+}
+
+TEST_CASE("IStream: a bound object keeps what the next message does not carry")
+{
+    // The other half of decoding in place, and the reason generated code calls
+    // reset() first: MESSAGE_SPEC §2 leaves an all-default field out of the
+    // bytes, so a field these bytes do not carry keeps what the object held.
+    SimpleObject2 object;
+
+    const uint8_t both[] = {0x08, 0x2a, 0x12, 0x20, 0x56, 0x0e, 0x49, 0x40};
+    {
+        sofab::IStreamInto<SimpleObject2> istream{object};
+        REQUIRE(istream.feed(both, sizeof(both)).code() == sofab::Error::None);
+    }
+
+    const uint8_t id_only[] = {0x08, 0x07};
+    {
+        sofab::IStreamInto<SimpleObject2> istream{object};
+        REQUIRE(istream.feed(id_only, sizeof(id_only)).code() == sofab::Error::None);
+    }
+
+    REQUIRE(object->id == 7);
+    REQUIRE(object->value == 3.1415f);
+}
+
+TEST_CASE("IStream: a rejected message leaves what was decoded before the error")
+{
+    // The price of decoding in place, stated so it is a decision and not a
+    // surprise: a valid field, then an id varint that overflows.
+    SimpleObject2 object;
+    sofab::IStreamInto<SimpleObject2> istream{object};
+
+    const uint8_t buffer[] = {0x08, 0x2a, 0xF8, 0xFF, 0xFF, 0xFF, 0x7F, 0x00};
+
+    auto result = istream.feed(buffer, sizeof(buffer));
+    REQUIRE(result.code() == sofab::Error::InvalidMessage);
+    REQUIRE(object->id == 42);
+}
+
 //
 // Round-trip tests: serialize with the OStream API, feed the produced bytes
 // back through the IStream API and verify the decoded values. These exercise
