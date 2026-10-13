@@ -199,6 +199,59 @@ static sofab_object_descr_id_t _default_tag(const sofab_object_descr_t *info)
 }
 #endif
 
+/*!
+ * @brief Field count of this descriptor.
+ *
+ * A wrapper-array HOLDER spends all 16 bits of
+ * @ref sofab_object_descr_t::count_extent on its element slot count, so a
+ * 300-element `array<string>` keeps its 300 slots. Every other object spends
+ * the low byte on the field count (255 max, asserted by the macros) and the
+ * high byte on the default image's extent, which is what keeps the descriptor
+ * 16 bytes wide instead of 20.
+ */
+static size_t _field_count(const sofab_object_descr_t *info)
+{
+#if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
+    if (_IS_HOLDER(info)) return (size_t)info->count_extent;
+#endif
+    return (size_t)(info->count_extent & 0xFFu);
+}
+
+/*!
+ * @brief Bytes of the object that @ref sofab_object_descr_t::default_values
+ *        covers, 0 for "the whole object".
+ *
+ * Only read where an image exists, and a holder never carries one -- so the
+ * high byte of a holder's slot count is never mistaken for an extent.
+ */
+static size_t _default_extent(const sofab_object_descr_t *info)
+{
+    return (size_t)(info->count_extent >> 8);
+}
+
+/*!
+ * @brief The default image to compare or seed @p field from, or NULL when the
+ *        field has no declared default.
+ *
+ * The image covers @c [0, extent) of the object, so a field at or past the
+ * extent has no default of its own and the callers fall back to zero -- which is
+ * exactly what "no declared default" means. That is what lets the image be the
+ * PREFIX of the object that carries defaults instead of a copy of all of it: a
+ * message that defaults one byte costs one byte of .rodata. An extent of 0 reads
+ * as "the whole object", the conservative meaning every descriptor written
+ * before the extent existed carries, and what a union image uses.
+ */
+static const void *_field_default(const sofab_object_descr_t *info,
+                                  const sofab_object_descr_field_t *field)
+{
+    size_t extent;
+
+    if (info->default_values == NULL) return NULL;
+    extent = _default_extent(info);
+    if (extent != 0 && (size_t)field->offset + (size_t)field->size > extent) return NULL;
+    return info->default_values;
+}
+
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
 /*!
  * @brief Byte width of a wrapper-array holder's element-count member (0 = none).
@@ -274,7 +327,7 @@ typedef struct {
 static size_t _seq_len (const sofab_object_descr_t *info, const void *obj)
 {
     uint8_t width = _seq_len_width(info);
-    size_t n = info->field_count;
+    size_t n = _field_count(info);
 
     if (width != 0)
     {
@@ -312,7 +365,10 @@ static void _seq_len_observe (const sofab_object_descr_t *info,
 
     off = _SEQ_LEN_OFFSET;
     len = (size_t)id + 1u;
-    if (len > (size_t)info->field_count) len = (size_t)info->field_count;
+    {
+        size_t slots = _field_count(info);
+        if (len > slots) len = slots;
+    }
 
     if ((uint64_t)len > _load_uint(dst + off, width))
     {
@@ -584,7 +640,9 @@ static int _field_is_default (
             return _seq_len(ninfo, nsrc) == 0;
         }
 
-        for (size_t i = 0; i < ninfo->field_count; i++)
+        const size_t nfields = _field_count(ninfo);
+
+        for (size_t i = 0; i < nfields; i++)
         {
             if (!_field_is_default(ninfo, &ninfo->field_list[i], nsrc))
                 return 0;
@@ -593,7 +651,7 @@ static int _field_is_default (
     }
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
-    const void *defaults = info->default_values;
+    const void *defaults = _field_default(info, field);
     const void *val = CAST_TO(const void *, src, field->offset);
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT)
@@ -688,7 +746,9 @@ extern sofab_ret_t sofab_object_init (
         _TAG_W(obj) = _default_tag(info);
 #endif
 
-    for (size_t i = 0; i < info->field_count; i++)
+    const size_t nfields = _field_count(info);
+
+    for (size_t i = 0; i < nfields; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
 
@@ -725,16 +785,20 @@ extern sofab_ret_t sofab_object_init (
         else
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
         {
-            if (info->default_values != NULL)
             {
-                memcpy(
-                    CAST_TO(void *, obj, field->offset),
-                    CAST_TO(const void *, info->default_values, field->offset),
-                    field->size);
-            }
-            else
-            {
-                memset(CAST_TO(void *, obj, field->offset), 0, field->size);
+                const void *fdefault = _field_default(info, field);
+
+                if (fdefault != NULL)
+                {
+                    memcpy(
+                        CAST_TO(void *, obj, field->offset),
+                        CAST_TO(const void *, fdefault, field->offset),
+                        field->size);
+                }
+                else
+                {
+                    memset(CAST_TO(void *, obj, field->offset), 0, field->size);
+                }
             }
 
 #if !defined(SOFAB_DISABLE_FIXLEN_SUPPORT) || !defined(SOFAB_DISABLE_ARRAY_SUPPORT)
@@ -747,8 +811,9 @@ extern sofab_ret_t sofab_object_init (
                 uint8_t width = _sized_width(field);
                 if (width != 0)
                 {
-                    uint64_t dlen = info->default_values != NULL
-                        ? _load_uint(CAST_TO(const void *, info->default_values,
+                    const void *fdefault = _field_default(info, field);
+                    uint64_t dlen = fdefault != NULL
+                        ? _load_uint(CAST_TO(const void *, fdefault,
                                              field->offset - width), width)
                         : 0;
                     _store_uint(CAST_TO(void *, obj, field->offset - width),
@@ -803,7 +868,7 @@ extern sofab_ret_t sofab_object_encode (
      * shortens the value instead of compacting it, and it is gone.)
      */
 #if !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT)
-    count = info->field_count;
+    count = _field_count(info);
     last  = (size_t)-1;
     if (_IS_HOLDER(info))
     {
@@ -813,7 +878,7 @@ extern sofab_ret_t sofab_object_encode (
 #  define _SOFAB_FIELD_COUNT count
 #  define _SOFAB_ELEMENT_HELD(i) ((i) == last)
 #else
-#  define _SOFAB_FIELD_COUNT (info->field_count)
+#  define _SOFAB_FIELD_COUNT (_field_count(info))
 #  define _SOFAB_ELEMENT_HELD(i) 0
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
@@ -1041,7 +1106,9 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
     const uint8_t wire_opt = ctx->target_opt;
 #endif /* !defined(SOFAB_DISABLE_SEQUENCE_SUPPORT) */
 
-    for (size_t i = 0; i < info->field_count; i++)
+    const size_t nfields = _field_count(info);
+
+    for (size_t i = 0; i < nfields; i++)
     {
         const sofab_object_descr_field_t *field = &info->field_list[i];
         if (field->id != id)
@@ -1282,7 +1349,7 @@ extern void sofab_object_field_cb (sofab_istream_t *ctx, sofab_id_t id, size_t s
     // in the istream, before or independently of this callback. §7.3 subordinates
     // the SCHEMA bound only (CORELIB_PLAN §4.8: "the format ceiling still fires on
     // the count word whatever the subtype turns out to be").
-    if (_IS_HOLDER(info) && info->field_count != 0)
+    if (_IS_HOLDER(info) && _field_count(info) != 0)
     {
         /* field_count == 0 above: a holder with no slot has no element type to
          * contradict, so §7.3 cannot be settled -- skip, never reject.
